@@ -239,7 +239,6 @@ enum MenuBarTextRenderer {
 @main
 struct AliyunTokenBarApp: App {
     @StateObject private var model = TokenPlanModel.shared
-    @StateObject private var sparkle = SparkleUpdater.shared
     @StateObject private var themeManager = ThemeManager.shared
     @StateObject private var menuBarStyle = MenuBarStyleManager.shared
 
@@ -247,7 +246,6 @@ struct AliyunTokenBarApp: App {
         Task { @MainActor in
             TokenPlanModel.shared.startTimer()
         }
-        _ = SparkleUpdater.shared
         // 应用保存的主题
         NSApplication.shared.appearance = ThemeManager.shared.theme.nsAppearance
     }
