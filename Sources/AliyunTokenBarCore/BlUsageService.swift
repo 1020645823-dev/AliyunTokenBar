@@ -59,14 +59,19 @@ public final class BlUsageService {
 
     /// 调一个 RPC,返回 stdout 的 Data。失败时抛 UsageError(authExpired/network/unknown)。
     public static func callRPC(_ api: String) async throws -> Data {
+        guard let blPath = BlExecutable.resolve() else {
+            throw UsageError.unknown("未找到 bl CLI(检查 PATH 或安装位置)")
+        }
+        var env = BlExecutable.enrichedEnvironment()
+        env["NO_COLOR"] = "1"
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["NO_COLOR=1", "bl", "console", "call",
+        proc.executableURL = URL(fileURLWithPath: blPath)
+        proc.arguments = ["console", "call",
                           "--api", api, "--data", "{}", "--output", "json"]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
-        proc.environment = ProcessInfo.processInfo.environment
+        proc.environment = env
 
         do {
             try proc.run()

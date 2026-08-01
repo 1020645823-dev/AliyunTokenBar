@@ -2,16 +2,9 @@ import Foundation
 
 /// 环境与鉴权检测:bl 是否安装、控制台是否已登录。
 public final class BlAuthManager {
-    /// 检测 bl 是否在 PATH 中。
+    /// 检测 bl 是否可用(PATH 或常见安装路径)。
     public static func isBlInstalled() -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["which", "bl"]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do { try proc.run(); proc.waitUntilExit() }
-        catch { return false }
-        return proc.terminationStatus == 0
+        BlExecutable.resolve() != nil
     }
 
     /// 解析 `bl auth status --output json` 判断控制台登录态。
@@ -31,12 +24,12 @@ public final class BlAuthManager {
     /// 综合:bl 未装 → .blNotInstalled;装了但解析不出有效 console → .notLoggedIn;否则 .ok。
     /// 注意:.ok 只表示配置存在,实际是否过期要靠调用 RPC 才知道。
     public static func currentAuthState() async -> AuthState {
-        guard isBlInstalled() else { return .blNotInstalled }
+        guard let blPath = BlExecutable.resolve() else { return .blNotInstalled }
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["NO_COLOR=1", "bl", "auth", "status", "--output", "json"]
+        proc.executableURL = URL(fileURLWithPath: blPath)
+        proc.arguments = ["auth", "status", "--output", "json"]
         let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
-        proc.environment = ProcessInfo.processInfo.environment
+        proc.environment = BlExecutable.enrichedEnvironment()
         do { try proc.run() } catch { return .notLoggedIn }
         let out = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
         proc.waitUntilExit()
@@ -45,10 +38,11 @@ public final class BlAuthManager {
 
     /// 拉起浏览器控制台登录:`bl auth login --console --console-site domestic`
     public static func relogin() {
+        guard let blPath = BlExecutable.resolve() else { return }
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["bl", "auth", "login", "--console", "--console-site", "domestic"]
-        proc.environment = ProcessInfo.processInfo.environment
+        proc.executableURL = URL(fileURLWithPath: blPath)
+        proc.arguments = ["auth", "login", "--console", "--console-site", "domestic"]
+        proc.environment = BlExecutable.enrichedEnvironment()
         try? proc.run()
     }
 }
