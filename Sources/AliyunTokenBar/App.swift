@@ -82,14 +82,16 @@ final class ThemeManager: ObservableObject {
 // MARK: - 菜单栏图标样式
 
 enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
-    case compact       // 默认紧凑:5h/7d 双行
+    case cloudPercent  // 默认:云朵 + 7天百分比
+    case compact       // 紧凑:5h/7d 双行
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
 
     var id: String { rawValue }
     var displayName: String {
         switch self {
-        case .compact: return "默认(5h/7d 双行)"
+        case .cloudPercent: return "云朵 + 百分比(默认)"
+        case .compact: return "5h/7d 双行"
         case .singleLine: return "单行(35%·61%)"
         case .iconOnly: return "仅图标"
         }
@@ -104,7 +106,7 @@ final class MenuBarStyleManager: ObservableObject {
     }
     private init() {
         let raw = UserDefaults.standard.string(forKey: "menuBarScheme") ?? ""
-        scheme = MenuBarDisplayScheme(rawValue: raw) ?? .compact
+        scheme = MenuBarDisplayScheme(rawValue: raw) ?? .cloudPercent
     }
 }
 
@@ -115,10 +117,45 @@ enum MenuBarTextRenderer {
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int, oneWeek: Int) -> NSImage {
         switch scheme {
+        case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour, oneWeek: oneWeek)
         }
+    }
+
+    /// 云朵 + 两个可区分百分比:云 ☁ 5h 35% · 7d 61%
+    /// 标签(5h/7d)用更小字号 + 次级灰度,百分比用正常字号,清晰区分两个限额。
+    @MainActor
+    private static func cloudPercentImage(fiveHour: Int, oneWeek: Int) -> NSImage {
+        let content = HStack(spacing: 3) {
+            // 小云朵(Canvas 绘制,模板色由系统染)
+            Canvas { ctx, sz in
+                let w = sz.width, h = sz.height
+                var path = Path()
+                path.move(to: CGPoint(x: w*0.10, y: h*0.70))
+                path.addQuadCurve(to: CGPoint(x: w*0.22, y: h*0.42), control: CGPoint(x: w*0.04, y: h*0.45))
+                path.addQuadCurve(to: CGPoint(x: w*0.38, y: h*0.28), control: CGPoint(x: w*0.24, y: h*0.22))
+                path.addQuadCurve(to: CGPoint(x: w*0.55, y: h*0.18), control: CGPoint(x: w*0.44, y: h*0.12))
+                path.addQuadCurve(to: CGPoint(x: w*0.70, y: h*0.28), control: CGPoint(x: w*0.66, y: h*0.14))
+                path.addQuadCurve(to: CGPoint(x: w*0.85, y: h*0.40), control: CGPoint(x: w*0.86, y: h*0.22))
+                path.addQuadCurve(to: CGPoint(x: w*0.90, y: h*0.70), control: CGPoint(x: w*1.00, y: h*0.50))
+                path.addLine(to: CGPoint(x: w*0.10, y: h*0.70))
+                path.closeSubpath()
+                ctx.fill(path, with: .color(.black))
+            }
+            .frame(width: 14, height: 11)
+            // 5小时:小标签 + 百分比
+            Text("5h").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
+            Text("\(fiveHour)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+            Text("·").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.4))
+            // 7天:小标签 + 百分比
+            Text("7d").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
+            Text("\(oneWeek)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+        }
+        .frame(height: 20)
+        .fixedSize(horizontal: true, vertical: false)
+        return render(content)
     }
 
     /// 默认紧凑:5h/7d 双行
