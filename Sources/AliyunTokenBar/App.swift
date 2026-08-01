@@ -128,31 +128,34 @@ enum MenuBarTextRenderer {
     }
 
     /// 云朵 + 阿里云双百分比 + (可选)OpenCode 双百分比:
-    /// ☁ 5h 35% · 7d 61% | ⚡ 22% · 43%
+    /// ☁ 5h 35% · 7d 61%  ⚡ 22% · 43%
+    /// 用颜色区分:阿里云橙色、OpenCode 紫色。非模板彩色图(放弃明暗自动适配换取区分度)。
     @MainActor
     private static func cloudPercentImage(fiveHour: Int, oneWeek: Int,
                                           openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil) -> NSImage {
-        let content = HStack(spacing: 3) {
-            // 小云朵(阿里云标识)
-            cloudShape.fill(.black).frame(width: 14, height: 11)
-            // 阿里云 5h/7d
-            Text("5h").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
-            Text("\(fiveHour)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
-            Text("·").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.4))
-            Text("7d").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
-            Text("\(oneWeek)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
-            // OpenCode(配置了才显示)
+        let aliyunOrange = Color(red: 1.0, green: 0.42, blue: 0.0)
+        let openCodePurple = Color(red: 0.55, green: 0.35, blue: 0.85)
+        let content = HStack(spacing: 4) {
+            // 阿里云:橙色云朵 + 橙色百分比
+            cloudShape.fill(aliyunOrange).frame(width: 14, height: 11)
+            Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(aliyunOrange.opacity(0.8))
+            Text("\(fiveHour)%").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(aliyunOrange)
+            Text("·").font(.system(size: 11)).foregroundStyle(aliyunOrange.opacity(0.5))
+            Text("7d").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(aliyunOrange.opacity(0.8))
+            Text("\(oneWeek)%").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(aliyunOrange)
+            // OpenCode:紫色闪电 + 紫色百分比(配置了才显示)
             if let rolling = openCodeRolling, let weekly = openCodeWeekly {
-                Text("|").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.3))
-                Image(systemName: "bolt.fill").font(.system(size: 9)).foregroundStyle(.black)
-                Text("\(rolling)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
-                Text("·").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.4))
-                Text("\(weekly)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                // 留白分隔(不用 |,靠间距+颜色切换区分)
+                Spacer().frame(width: 6)
+                Image(systemName: "bolt.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(openCodePurple)
+                Text("\(rolling)%").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(openCodePurple)
+                Text("·").font(.system(size: 11)).foregroundStyle(openCodePurple.opacity(0.5))
+                Text("\(weekly)%").font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(openCodePurple)
             }
         }
         .frame(height: 20)
         .fixedSize(horizontal: true, vertical: false)
-        return render(content)
+        return renderColored(content)
     }
 
     /// 可复用的云朵 Shape(阿里云风格三隆起)
@@ -248,6 +251,16 @@ enum MenuBarTextRenderer {
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
         guard let img = renderer.nsImage else { return NSImage(size: NSSize(width: 48, height: 20)) }
         img.isTemplate = true   // 模板图,菜单栏自动适配明暗
+        return img
+    }
+
+    /// 渲染彩色图(非模板):保留颜色用于区分多个套餐。代价:不随菜单栏明暗自动变色。
+    @MainActor
+    private static func renderColored<V: View>(_ content: V) -> NSImage {
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        guard let img = renderer.nsImage else { return NSImage(size: NSSize(width: 48, height: 20)) }
+        img.isTemplate = false   // 彩色,保留橙/紫区分度
         return img
     }
 }
