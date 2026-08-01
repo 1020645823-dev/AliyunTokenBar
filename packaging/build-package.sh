@@ -18,7 +18,7 @@ VERSION="${VERSION:-1.0.0}"
 BUILD="${BUILD:-1}"
 APP_NAME="AliyunTokenBar"
 BUNDLE_ID="com.zww.aliyuntokenbar"
-APPCAST_URL="${APPCAST_URL:-https://zww.github.io/AliyunTokenBar/appcast.xml}"
+APPCAST_URL="${APPCAST_URL:-https://1020645823-dev.github.io/AliyunTokenBar/appcast.xml}"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
