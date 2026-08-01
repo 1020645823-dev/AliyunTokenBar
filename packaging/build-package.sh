@@ -76,6 +76,10 @@ cp "$ROOT/packaging/Info.plist" "$PLIST"
 
 # 复制 entitlements 进 Resources(签名时引用)
 cp "$ROOT/packaging/AliyunTokenBar.entitlements" "$APP/Contents/Resources/"
+# 复制 App 图标(Info.plist 的 CFBundleIconFile 指向 AppIcon)
+if [ -f "$ROOT/packaging/AppIcon.icns" ]; then
+  cp "$ROOT/packaging/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+fi
 
 # ---------- 3. 嵌入 Sparkle.framework ----------
 echo "==> [3/7] 嵌入 Sparkle.framework"
