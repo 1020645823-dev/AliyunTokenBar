@@ -4,3 +4,5 @@ Packages/
 *.xcodeproj
 DerivedData/
 .DS_Store
+.playwright-mcp/
+login-page.png
