@@ -69,5 +69,18 @@ if ProcessInfo.processInfo.environment["BL_LIVE"] == "1" {
     print("SKIP live bl call (set BL_LIVE=1 to run)")
 }
 
+// --- Task 6: BlAuthManager.parseAuthStatus ---
+let loggedInJson = #"{"authenticated":true,"config":"token-plan","console":{"source":"config","masked":"b2cb...24ef","region":"cn-beijing","site":"domestic"}}"#
+check("auth logged in -> .ok", BlAuthManager.parseAuthStatus(Data(loggedInJson.utf8)) == .ok)
+
+let envSrcJson = #"{"authenticated":true,"console":{"source":"env","masked":""}}"#
+check("auth env source -> .notLoggedIn", BlAuthManager.parseAuthStatus(Data(envSrcJson.utf8)) == .notLoggedIn)
+
+let noConsoleJson = #"{"authenticated":true}"#
+check("auth no console field -> .notLoggedIn", BlAuthManager.parseAuthStatus(Data(noConsoleJson.utf8)) == .notLoggedIn)
+
+let emptyMaskedJson = #"{"console":{"source":"config","masked":""}}"#
+check("auth empty masked -> .notLoggedIn", BlAuthManager.parseAuthStatus(Data(emptyMaskedJson.utf8)) == .notLoggedIn)
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
