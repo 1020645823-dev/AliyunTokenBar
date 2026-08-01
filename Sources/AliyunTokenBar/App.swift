@@ -114,48 +114,66 @@ final class MenuBarStyleManager: ObservableObject {
 
 enum MenuBarTextRenderer {
     /// 按 scheme 渲染菜单栏图标(模板图,系统按明暗自动染色)。
+    /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
     @MainActor
-    static func image(scheme: MenuBarDisplayScheme, fiveHour: Int, oneWeek: Int) -> NSImage {
+    static func image(scheme: MenuBarDisplayScheme, fiveHour: Int, oneWeek: Int,
+                      openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil) -> NSImage {
         switch scheme {
-        case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek)
+        case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
+                                                      openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly)
         case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour, oneWeek: oneWeek)
         }
     }
 
-    /// 云朵 + 两个可区分百分比:云 ☁ 5h 35% · 7d 61%
-    /// 标签(5h/7d)用更小字号 + 次级灰度,百分比用正常字号,清晰区分两个限额。
+    /// 云朵 + 阿里云双百分比 + (可选)OpenCode 双百分比:
+    /// ☁ 5h 35% · 7d 61% | ⚡ 22% · 43%
     @MainActor
-    private static func cloudPercentImage(fiveHour: Int, oneWeek: Int) -> NSImage {
+    private static func cloudPercentImage(fiveHour: Int, oneWeek: Int,
+                                          openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil) -> NSImage {
         let content = HStack(spacing: 3) {
-            // 小云朵(Canvas 绘制,模板色由系统染)
-            Canvas { ctx, sz in
-                let w = sz.width, h = sz.height
-                var path = Path()
-                path.move(to: CGPoint(x: w*0.10, y: h*0.70))
-                path.addQuadCurve(to: CGPoint(x: w*0.22, y: h*0.42), control: CGPoint(x: w*0.04, y: h*0.45))
-                path.addQuadCurve(to: CGPoint(x: w*0.38, y: h*0.28), control: CGPoint(x: w*0.24, y: h*0.22))
-                path.addQuadCurve(to: CGPoint(x: w*0.55, y: h*0.18), control: CGPoint(x: w*0.44, y: h*0.12))
-                path.addQuadCurve(to: CGPoint(x: w*0.70, y: h*0.28), control: CGPoint(x: w*0.66, y: h*0.14))
-                path.addQuadCurve(to: CGPoint(x: w*0.85, y: h*0.40), control: CGPoint(x: w*0.86, y: h*0.22))
-                path.addQuadCurve(to: CGPoint(x: w*0.90, y: h*0.70), control: CGPoint(x: w*1.00, y: h*0.50))
-                path.addLine(to: CGPoint(x: w*0.10, y: h*0.70))
-                path.closeSubpath()
-                ctx.fill(path, with: .color(.black))
-            }
-            .frame(width: 14, height: 11)
-            // 5小时:小标签 + 百分比
+            // 小云朵(阿里云标识)
+            cloudShape.fill(.black).frame(width: 14, height: 11)
+            // 阿里云 5h/7d
             Text("5h").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
             Text("\(fiveHour)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
             Text("·").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.4))
-            // 7天:小标签 + 百分比
             Text("7d").font(.system(size: 8, weight: .medium)).monospacedDigit().foregroundStyle(.black.opacity(0.55))
             Text("\(oneWeek)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+            // OpenCode(配置了才显示)
+            if let rolling = openCodeRolling, let weekly = openCodeWeekly {
+                Text("|").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.3))
+                Image(systemName: "bolt.fill").font(.system(size: 9)).foregroundStyle(.black)
+                Text("\(rolling)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                Text("·").font(.system(size: 11, weight: .medium)).foregroundStyle(.black.opacity(0.4))
+                Text("\(weekly)%").font(.system(size: 11, weight: .medium)).monospacedDigit()
+            }
         }
         .frame(height: 20)
         .fixedSize(horizontal: true, vertical: false)
         return render(content)
+    }
+
+    /// 可复用的云朵 Shape(阿里云风格三隆起)
+    private static var cloudShape: some Shape {
+        struct CloudShape: Shape {
+            func path(in rect: CGRect) -> Path {
+                let w = rect.width, h = rect.height
+                var p = Path()
+                p.move(to: CGPoint(x: w*0.10, y: h*0.70))
+                p.addQuadCurve(to: CGPoint(x: w*0.22, y: h*0.42), control: CGPoint(x: w*0.04, y: h*0.45))
+                p.addQuadCurve(to: CGPoint(x: w*0.38, y: h*0.28), control: CGPoint(x: w*0.24, y: h*0.22))
+                p.addQuadCurve(to: CGPoint(x: w*0.55, y: h*0.18), control: CGPoint(x: w*0.44, y: h*0.12))
+                p.addQuadCurve(to: CGPoint(x: w*0.70, y: h*0.28), control: CGPoint(x: w*0.66, y: h*0.14))
+                p.addQuadCurve(to: CGPoint(x: w*0.85, y: h*0.40), control: CGPoint(x: w*0.86, y: h*0.22))
+                p.addQuadCurve(to: CGPoint(x: w*0.90, y: h*0.70), control: CGPoint(x: w*1.00, y: h*0.50))
+                p.addLine(to: CGPoint(x: w*0.10, y: h*0.70))
+                p.closeSubpath()
+                return p
+            }
+        }
+        return CloudShape()
     }
 
     /// 默认紧凑:5h/7d 双行
@@ -254,10 +272,14 @@ struct AliyunTokenBarApp: App {
         MenuBarExtra {
             TokenPlanMenu()
         } label: {
-            if let q = model.quota {
-                Image(nsImage: MenuBarTextRenderer.image(scheme: menuBarStyle.scheme,
-                                                         fiveHour: q.usage.fiveHour.percentage,
-                                                         oneWeek: q.usage.oneWeek.percentage))
+            if model.quota != nil {
+                Image(nsImage: MenuBarTextRenderer.image(
+                    scheme: menuBarStyle.scheme,
+                    fiveHour: model.quota?.usage.fiveHour.percentage ?? 0,
+                    oneWeek: model.quota?.usage.oneWeek.percentage ?? 0,
+                    openCodeRolling: model.openCodeQuota?.rolling.pct,
+                    openCodeWeekly: model.openCodeQuota?.weekly.pct
+                ))
             } else {
                 Image(systemName: "speedometer")
             }
