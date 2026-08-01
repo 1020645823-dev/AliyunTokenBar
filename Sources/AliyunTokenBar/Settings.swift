@@ -68,6 +68,13 @@ struct SettingsView: View {
                     Text("5 分钟").tag(5); Text("10 分钟").tag(10); Text("30 分钟").tag(30); Text("60 分钟").tag(60)
                 }
             }
+            Section("OpenCode Go") {
+                TextField("Workspace ID", text: $model.openCodeWorkspaceID)
+                    .font(.system(size: 12, design: .monospaced))
+                SecureField("Auth Cookie", text: $model.openCodeCookie)
+                Text("在浏览器登录 opencode.ai 后,F12 → Network → 任一请求的 Cookie 头复制 auth 值;Workspace ID 在 Go 页面 URL(wrk_xxx)。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
             Section("通用") {
                 Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
             }

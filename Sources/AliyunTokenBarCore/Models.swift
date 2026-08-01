@@ -94,5 +94,36 @@ public enum UsageError: Error, Equatable {
     case authExpired
     case network(String)
     case parse
+    case invalidResponse
     case unknown(String)
+}
+
+// MARK: - OpenCode Go 用量(rolling/weekly/monthly 三窗口,与阿里云 5h/7d 结构相似)
+
+/// OpenCode Go 单个用量窗口(rolling≈5h / weekly≈7d / monthly)
+public struct OpenCodeWindow: Equatable {
+    public let pct: Int               // 已用百分比 0-100
+    public let resetInSec: Int64      // 距重置秒数
+    public init(pct: Int, resetInSec: Int64) { self.pct = pct; self.resetInSec = resetInSec }
+    /// "X小时Y分钟后重置" 等
+    public var timeUntilReset: String {
+        guard resetInSec > 0 else { return "未知" }
+        let hrs = resetInSec / 3600
+        let mins = (resetInSec % 3600) / 60
+        let days = hrs / 24
+        if days > 0 { return "\(days)天\(hrs % 24)小时后重置" }
+        if hrs > 0 { return "\(hrs)小时\(mins)分钟后重置" }
+        if mins > 0 { return "\(mins)分钟后重置" }
+        return "即将重置"
+    }
+}
+
+/// OpenCode Go 套餐用量(三窗口)
+public struct OpenCodeQuota: Equatable {
+    public let rolling: OpenCodeWindow    // 滚动窗口(≈5h)
+    public let weekly: OpenCodeWindow     // 每周
+    public let monthly: OpenCodeWindow    // 每月
+    public init(rolling: OpenCodeWindow, weekly: OpenCodeWindow, monthly: OpenCodeWindow) {
+        self.rolling = rolling; self.weekly = weekly; self.monthly = monthly
+    }
 }

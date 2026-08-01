@@ -58,6 +58,7 @@ struct TokenPlanMenu: View {
             actionButtons
             if let sub = model.quota?.subscription { subscriptionRow(sub) }
             if model.authState == .ok { BlVersionRow() }
+            if model.openCodeConfigured { OpenCodeCard() }
             updateRow
         }
         .padding(16)
@@ -303,6 +304,53 @@ struct BlVersionRow: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
+    }
+}
+
+// MARK: - OpenCode Go 用量卡
+
+/// OpenCode Go 套餐用量(rolling/weekly/monthly 三窗口)。
+/// 仅在用户配置了 cookie+workspace 后显示。
+struct OpenCodeCard: View {
+    @StateObject private var model = TokenPlanModel.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(.purple)
+                Text("OpenCode Go").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                Spacer()
+                Button { Task { await model.refreshOpenCode() } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
+                }.buttonStyle(.plain)
+            }
+            if let q = model.openCodeQuota {
+                openCodeWindowRow(name: "滚动", detail: q.rolling, color: .purple)
+                openCodeWindowRow(name: "每周", detail: q.weekly, color: .atbBlue)
+                openCodeWindowRow(name: "每月", detail: q.monthly, color: .orange)
+            } else if let err = model.openCodeError {
+                Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+            } else {
+                Text("加载中…").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func openCodeWindowRow(name: String, detail: OpenCodeWindow, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Text(name).font(.system(size: 11)).foregroundStyle(.atbTextSecondary).frame(width: 30, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().frame(height: 4).foregroundStyle(Color.atbTextPrimary.opacity(0.10))
+                    Capsule().frame(width: proxy.size.width * CGFloat(min(detail.pct, 100)) / 100, height: 4).foregroundStyle(color)
+                }
+            }.frame(height: 4)
+            Text("\(detail.pct)%").font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.atbTextSecondary).frame(width: 36, alignment: .trailing)
+            Text(detail.timeUntilReset).font(.system(size: 9)).foregroundStyle(.atbTextTertiary).lineLimit(1)
+        }
     }
 }
 

@@ -22,6 +22,24 @@ public final class TokenPlanModel: ObservableObject {
         return compareVersions(i, l) < 0
     }
 
+    // MARK: - OpenCode Go
+
+    /// OpenCode Go 用量(三窗口);未配置/未拉取为 nil
+    @Published public var openCodeQuota: OpenCodeQuota?
+    /// OpenCode 是否配置了(cookie+workspace 都填了)
+    public var openCodeConfigured: Bool {
+        !openCodeCookie.isEmpty && !openCodeWorkspaceID.isEmpty
+    }
+    /// OpenCode auth cookie(浏览器 opencode.ai 的 auth cookie)
+    @Published public var openCodeCookie: String {
+        didSet { UserDefaults.standard.set(openCodeCookie, forKey: "openCodeCookie") }
+    }
+    /// OpenCode workspace ID(wrk_xxx)
+    @Published public var openCodeWorkspaceID: String {
+        didSet { UserDefaults.standard.set(openCodeWorkspaceID, forKey: "openCodeWorkspaceID") }
+    }
+    @Published public var openCodeError: String?
+
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes"); resetTimer() }
@@ -36,14 +54,35 @@ public final class TokenPlanModel: ObservableObject {
 
     private init() {
         refreshIntervalMinutes = UserDefaults.standard.object(forKey: "refreshIntervalMinutes") as? Int ?? 10
+        openCodeCookie = UserDefaults.standard.string(forKey: "openCodeCookie") ?? ""
+        openCodeWorkspaceID = UserDefaults.standard.string(forKey: "openCodeWorkspaceID") ?? ""
     }
 
     /// 启动定时刷新
     public func startTimer() {
         resetTimer()
         Task { await checkAuthAndRefresh() }
-        // 后台查 bl 版本(检查是否需要更新 bl,非阻塞)
         Task { await checkBlVersion() }
+        Task { await refreshOpenCode() }
+    }
+
+    /// 拉一次 OpenCode Go 用量(cookie + workspace 配置后)
+    public func refreshOpenCode() async {
+        guard openCodeConfigured else { return }
+        let result = await OpenCodeUsageService.fetchQuota(cookie: openCodeCookie, workspaceID: openCodeWorkspaceID)
+        switch result {
+        case .success(let q):
+            openCodeQuota = q
+            openCodeError = nil
+        case .failure(let e):
+            switch e {
+            case .authExpired: openCodeError = "OpenCode cookie 已过期,请在设置更新"
+            case .network(let s): openCodeError = "OpenCode 网络错误: \(s)"
+            case .parse: openCodeError = "OpenCode 页面格式变化,解析失败"
+            case .invalidResponse: openCodeError = "OpenCode 响应异常"
+            case .unknown(let s): openCodeError = s
+            }
+        }
     }
 
     /// 查 bl 已装版本 + 最新版本(后台,不阻塞主流程)
@@ -57,7 +96,10 @@ public final class TokenPlanModel: ObservableObject {
         timer = Timer.publish(every: TimeInterval(refreshIntervalMinutes * 60), on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                Task { await self?.refresh() }
+                Task {
+                    await self?.refresh()
+                    await self?.refreshOpenCode()   // OpenCode 随定时器一起刷
+                }
             }
     }
 
@@ -131,6 +173,7 @@ public final class TokenPlanModel: ObservableObject {
         case .authExpired: return "控制台登录已过期"
         case .network(let s): return "网络错误: \(s)"
         case .parse: return "数据解析失败"
+        case .invalidResponse: return "响应异常"
         case .unknown(let s): return s
         }
     }

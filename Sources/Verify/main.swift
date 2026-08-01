@@ -82,5 +82,21 @@ check("auth no console field -> .notLoggedIn", BlAuthManager.parseAuthStatus(Dat
 let emptyMaskedJson = #"{"console":{"source":"config","masked":""}}"#
 check("auth empty masked -> .notLoggedIn", BlAuthManager.parseAuthStatus(Data(emptyMaskedJson.utf8)) == .notLoggedIn)
 
+// --- OpenCode Go 用量解析(模拟 SolidJS SSR 注入的 HTML)---
+let ocFixture = """
+<html><script>rollingUsage:$R[38]={status:"ok",resetInSec:12345,usagePercent:22}
+weeklyUsage:$R[39]={status:"ok",resetInSec:504671,usagePercent:43}
+monthlyUsage:$R[40]={status:"ok",resetInSec:2504671,usagePercent:98}</script></html>
+"""
+let oc = OpenCodeUsageService.parse(ocFixture)
+check("opencode rolling 22%", oc?.rolling.pct == 22)
+check("opencode rolling reset", oc?.rolling.resetInSec == 12345)
+check("opencode weekly 43%", oc?.weekly.pct == 43)
+check("opencode monthly 98%", oc?.monthly.pct == 98)
+check("opencode rolling 含 3小时", oc?.rolling.timeUntilReset.contains("3小时") == true)
+// 缺少某窗口应返回 nil
+let ocPartial = "<script>rollingUsage:$R[1]={status:\"ok\",resetInSec:1,usagePercent:5}</script>"
+check("opencode partial -> nil", OpenCodeUsageService.parse(ocPartial) == nil)
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
