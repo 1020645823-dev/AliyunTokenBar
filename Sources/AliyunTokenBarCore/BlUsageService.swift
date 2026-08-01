@@ -113,6 +113,28 @@ public final class BlUsageService {
         return .success(TokenPlanQuota(usage: usage, subscription: sub, addon: addon))
     }
 
+    /// 只拉 usage(1 个 RPC)。辅助数据(subscription/addon)变化慢,由调用方按低频单独拉,
+    /// 避免每轮刷新都 spawn 3 个 node 进程。失败时语义同 fetchQuota。
+    public static func fetchUsageOnly() async -> Result<UsageWindows, UsageError> {
+        do {
+            let data = try await callRPC(usageAPI)
+            if let w = try? parseUsage(data) { return .success(w) }
+            return .failure(.parse)
+        } catch let e as UsageError {
+            return .failure(e)
+        } catch {
+            return .failure(.unknown(error.localizedDescription))
+        }
+    }
+
+    /// 只拉辅助数据(subscription + addon,2 个 RPC 并发)。
+    /// 这两项一天内基本不变(套餐状态/加购包余额),适合 24h 低频拉取。
+    public static func fetchAuxOnly() async -> (subscription: SubscriptionDetail?, addon: AddonSummary?) {
+        async let subRes = (try? await callRPC(subscriptionAPI)).flatMap { try? parseSubscription($0) }
+        async let addonRes = (try? await callRPC(addonAPI)).flatMap { try? parseAddon($0) }
+        return (await subRes, await addonRes)
+    }
+
     /// 抽取三层嵌套的最内层 data: data.DataV2.data.data
     private static func extractInnerPayload(_ data: Data) throws -> [String: Any] {
         struct ParseErr: Error {}

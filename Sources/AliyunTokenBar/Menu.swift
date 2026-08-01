@@ -96,7 +96,7 @@ struct TokenPlanMenu: View {
 
     private var actionButtons: some View {
         HStack(spacing: 8) {
-            ActionButton(title: "刷新", icon: "arrow.clockwise") { Task { await model.refresh() } }
+            ActionButton(title: "刷新", icon: "arrow.clockwise") { Task { await model.refreshFull() } }
             ActionButton(title: "控制台", icon: "globe") { NSWorkspace.shared.open(consoleURL) }
             ActionButton(title: "设置", icon: "gearshape") { SettingsWindowManager.shared.show() }
             ActionButton(title: "退出", icon: "power") { NSApplication.shared.terminate(nil) }
