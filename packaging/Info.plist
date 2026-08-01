@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-CN</string>
+	<!-- 打包脚本写入实际可执行文件名(AliyunTokenBar) -->
+	<key>CFBundleExecutable</key>
+	<string>AliyunTokenBar</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.zww.aliyuntokenbar</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>AliyunTokenBar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- 打包脚本通过 AGVITE 替换为实际版本号 -->
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- 仅菜单栏运行,不显示 Dock 图标 -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- Sparkle 自动更新配置 -->
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<!-- 打包脚本替换为实际 appcast URL -->
+	<key>SUFeedURL</key>
+	<string>__APPCAST_URL__</string>
+	<!-- 打包脚本替换为生成的 EdDSA 公钥 -->
+	<key>SUPublicEDKey</key>
+	<string>__ED_PUBLIC_KEY__</string>
+</dict>
+</plist>

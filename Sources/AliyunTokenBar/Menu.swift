@@ -6,6 +6,8 @@ import AliyunTokenBarCore
 
 struct TokenPlanMenu: View {
     @StateObject private var model = TokenPlanModel.shared
+    // Sparkle 集成就绪后取消注释:
+    // @StateObject private var sparkle = SparkleUpdater.shared
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
     var body: some View {
@@ -16,13 +18,57 @@ struct TokenPlanMenu: View {
             }
             actionButtons
             if let sub = model.quota?.subscription { subscriptionRow(sub) }
+            // Sparkle 集成就绪后取消注释:
+            // updateRow
         }
         .padding(16)
         .frame(width: 340)
         .background(Color.atbPanelBackground)
         .overlay { if needsAuthOverlay { AuthOverlay() } }
-        .task { await model.checkAuthAndRefresh() }
+        .task {
+            await model.checkAuthAndRefresh()
+            // Sparkle 集成就绪后取消注释:
+            // sparkle.checkForUpdateInformation()
+        }
     }
+
+    /// 更新状态行:有新版本可点击安装,否则点击手动检查。
+    /// Sparkle 集成就绪后取消注释整个属性。
+    /*
+    private var updateRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: sparkle.isUpdateReadyToRestart ? "arrow.triangle.2.circlepath" : "sparkles")
+                .font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+            if sparkle.isUpdateReadyToRestart {
+                Text("新版本已就绪,点击重启安装").font(.system(size: 11)).foregroundStyle(.orange)
+                Spacer()
+                Text("重启").font(.system(size: 11, weight: .medium)).foregroundStyle(.atbBlue)
+                    .onTapGesture { sparkle.restartToInstallUpdate() }
+            } else if sparkle.isUpdateAvailable {
+                Text("发现新版本").font(.system(size: 11)).foregroundStyle(.orange)
+                Spacer()
+                Text("更新").font(.system(size: 11, weight: .medium)).foregroundStyle(.atbBlue)
+                    .onTapGesture { sparkle.showStandardUpdateUI() }
+            } else if sparkle.didDownloadFail {
+                Text("更新下载失败").font(.system(size: 11)).foregroundStyle(.red)
+                Spacer()
+                Text("重试").font(.system(size: 11, weight: .medium)).foregroundStyle(.atbBlue)
+                    .onTapGesture { sparkle.showStandardUpdateUI() }
+            } else {
+                Text("检查更新").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !sparkle.isUpdateAvailable && !sparkle.isUpdateReadyToRestart {
+                sparkle.showStandardUpdateUI()
+            }
+        }
+    }
+    */
 
     private var needsAuthOverlay: Bool {
         model.authState == .blNotInstalled || model.authState == .notLoggedIn || model.authState == .expired

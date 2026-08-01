@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 硬化运行时(签名要求)。菜单栏 App 只需基础权限,无特殊能力。 -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<false/>
+	<!-- Sparkle 2.x 在沙盒外运行,ad-hoc 签名无需 Network Client entitlement -->
+	<!-- App 通过 Process 调用 bl(用户已安装),自身不做特权网络操作 -->
+</dict>
+</plist>

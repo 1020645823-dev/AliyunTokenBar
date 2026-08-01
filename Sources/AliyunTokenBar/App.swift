@@ -69,6 +69,8 @@ enum MenuBarTextRenderer {
 @main
 struct AliyunTokenBarApp: App {
     @StateObject private var model = TokenPlanModel.shared
+    // Sparkle 集成就绪后取消注释:
+    // @StateObject private var sparkle = SparkleUpdater.shared
 
     init() {
         // 启动即检测登录态并拉数据(MenuBarExtra 的内容只在面板打开时实例化,
@@ -76,6 +78,8 @@ struct AliyunTokenBarApp: App {
         Task { @MainActor in
             TokenPlanModel.shared.startTimer()
         }
+        // Sparkle 集成就绪后取消注释:
+        // _ = SparkleUpdater.shared
     }
 
     var body: some Scene {
