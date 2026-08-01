@@ -62,14 +62,22 @@ public struct AddonSummary: Equatable {
     }
 }
 
-public struct TokenPlanQuota: Equatable {
+/// 一次 usage 响应同时包含 5 小时和 7 天两个窗口。
+public struct UsageWindows: Equatable {
     public let fiveHour: UsageDetail
     public let oneWeek: UsageDetail
+    public init(fiveHour: UsageDetail, oneWeek: UsageDetail) {
+        self.fiveHour = fiveHour; self.oneWeek = oneWeek
+    }
+}
+
+public struct TokenPlanQuota: Equatable {
+    public let usage: UsageWindows
     public let subscription: SubscriptionDetail?
     public let addon: AddonSummary?
-    public init(fiveHour: UsageDetail, oneWeek: UsageDetail,
+    public init(usage: UsageWindows,
                 subscription: SubscriptionDetail?, addon: AddonSummary?) {
-        self.fiveHour = fiveHour; self.oneWeek = oneWeek
+        self.usage = usage
         self.subscription = subscription; self.addon = addon
     }
 }
