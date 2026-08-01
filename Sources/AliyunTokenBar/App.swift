@@ -87,5 +87,9 @@ struct AliyunTokenBarApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+        }
     }
 }
