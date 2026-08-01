@@ -102,8 +102,8 @@ public final class BlUsageService {
             do { _ = try await callRPC(usageAPI) }
             catch let e as UsageError { return .failure(e) }
             catch { return .failure(.unknown(error.localizedDescription)) }
-            // 不可达
-            return .failure(.parse)
+            // 重试成功但首次并发失败:usage 仍不可用,返回明确错误而非误报 parse 失败
+            return .failure(.unknown("usage 数据暂不可用,请稍后重试"))
         }
         return .success(TokenPlanQuota(usage: usage, subscription: sub, addon: addon))
     }

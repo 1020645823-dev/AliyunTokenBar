@@ -71,13 +71,16 @@ struct AliyunTokenBarApp: App {
     @StateObject private var model = TokenPlanModel.shared
 
     init() {
-        // 启动即检测登录态并拉数据(在首帧后)
+        // 启动即检测登录态并拉数据(MenuBarExtra 的内容只在面板打开时实例化,
+        // 不能依赖 onAppear 触发首拉,否则图标一直停在占位符)
+        Task { @MainActor in
+            TokenPlanModel.shared.startTimer()
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
             TokenPlanMenu()
-                .onAppear { model.startTimer() }
         } label: {
             if let q = model.quota {
                 Image(nsImage: MenuBarTextRenderer.image(fiveHour: q.usage.fiveHour.percentage,
