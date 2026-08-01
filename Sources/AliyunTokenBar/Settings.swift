@@ -49,6 +49,7 @@ struct SettingsView: View {
     @StateObject private var launch = LaunchAtLoginManager.shared
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var menuBarStyle = MenuBarStyleManager.shared
+    @State private var showOpenCodeLogin = false
     var body: some View {
         Form {
             Section("外观") {
@@ -69,15 +70,34 @@ struct SettingsView: View {
                 }
             }
             Section("OpenCode Go") {
-                TextField("Workspace ID", text: $model.openCodeWorkspaceID)
-                    .font(.system(size: 12, design: .monospaced))
-                SecureField("Auth Cookie", text: $model.openCodeCookie)
-                Text("在浏览器登录 opencode.ai 后,F12 → Network → 任一请求的 Cookie 头复制 auth 值;Workspace ID 在 Go 页面 URL(wrk_xxx)。")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                if model.openCodeConfigured {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text("已登录 (workspace: \(model.openCodeWorkspaceID.prefix(12))...)").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    Button("登出") {
+                        model.openCodeCookie = ""
+                        model.openCodeWorkspaceID = ""
+                        model.openCodeQuota = nil
+                    }.buttonStyle(.plain).foregroundStyle(.red).font(.system(size: 12))
+                } else {
+                    Button("登录 OpenCode") { showOpenCodeLogin = true }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(Color.purple.opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    Text("点击登录,在弹出窗口完成 OpenCode 授权。cookie 会过期,届时可重新登录。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
             }
             Section("通用") {
                 Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
             }
-        }.padding(16)
+        }
+        .padding(16)
+        .sheet(isPresented: $showOpenCodeLogin) {
+            OpenCodeLoginView()
+        }
     }
 }

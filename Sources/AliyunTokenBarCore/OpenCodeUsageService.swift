@@ -91,4 +91,34 @@ public final class OpenCodeUsageService {
         guard let range = Range(match.range(at: idx), in: text) else { return nil }
         return String(text[range])
     }
+
+    // MARK: - 登录辅助
+
+    /// 用 auth cookie 访问首页,自动发现 workspace ID(wrk_xxx)。
+    /// 登录后页面 HTML 或 URL 里含 wrk_ 工作区标识,正则提取第一个。
+    public static func discoverWorkspaceID(cookie: String) async -> String? {
+        let cookieHeader = cookie.contains("=") ? cookie : "auth=\(cookie)"
+        guard let url = URL(string: "\(baseURL)/") else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 20
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let html = String(data: data, encoding: .utf8) ?? ""
+            // 找第一个 wrk_xxx
+            guard let regex = try? NSRegularExpression(pattern: "wrk_[A-Za-z0-9]+") else { return nil }
+            let range = NSRange(html.startIndex..., in: html)
+            if let m = regex.firstMatch(in: html, range: range),
+               let r = Range(m.range, in: html) {
+                return String(html[r])
+            }
+            return nil
+        } catch { return nil }
+    }
+
+    /// 验证 cookie 是否有效(能发现 workspace 即视为有效)。
+    public static func validateCookie(_ cookie: String) async -> Bool {
+        await discoverWorkspaceID(cookie: cookie) != nil
+    }
 }
