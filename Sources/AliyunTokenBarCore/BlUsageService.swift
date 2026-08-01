@@ -55,6 +55,59 @@ public final class BlUsageService {
         return .network(String(data: data, encoding: .utf8) ?? "unknown error")
     }
 
+    // MARK: - Execution (shell out to bl)
+
+    /// 调一个 RPC,返回 stdout 的 Data。失败时抛 UsageError(authExpired/network/unknown)。
+    public static func callRPC(_ api: String) async throws -> Data {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = ["NO_COLOR=1", "bl", "console", "call",
+                          "--api", api, "--data", "{}", "--output", "json"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        proc.environment = ProcessInfo.processInfo.environment
+
+        do {
+            try proc.run()
+        } catch {
+            throw UsageError.unknown("bl 启动失败: \(error.localizedDescription)")
+        }
+
+        let outData = try pipe.fileHandleForReading.readToEnd() ?? Data()
+        proc.waitUntilExit()
+
+        let text = String(data: outData, encoding: .utf8) ?? ""
+        if text.contains("not logged in") || text.contains("has expired") {
+            throw UsageError.authExpired
+        }
+        if proc.terminationStatus != 0 {
+            throw UsageError.network(text.isEmpty ? "bl exit \(proc.terminationStatus)" : text)
+        }
+        return outData
+    }
+
+    /// 一次拉取完整套餐数据(3 个 RPC 并发)。usage 是必须项,sub/addon 缺失则 nil。
+    public static func fetchQuota() async -> Result<TokenPlanQuota, UsageError> {
+        async let usageRes = (try? await callRPC(usageAPI)).flatMap { try? parseUsage($0) }
+        async let subRes = (try? await callRPC(subscriptionAPI)).flatMap { try? parseSubscription($0) }
+        async let addonRes = (try? await callRPC(addonAPI)).flatMap { try? parseAddon($0) }
+
+        let usage = await usageRes
+        let sub = await subRes
+        let addon = await addonRes
+
+        guard let usage else {
+            // usage 失败:重新触发以捕获精确错误类型
+            do { _ = try await callRPC(usageAPI) }
+            catch let e as UsageError { return .failure(e) }
+            catch { return .failure(.unknown(error.localizedDescription)) }
+            // 不可达
+            return .failure(.parse)
+        }
+        return .success(TokenPlanQuota(usage: usage, subscription: sub, addon: addon))
+    }
+
     /// 抽取三层嵌套的最内层 data: data.DataV2.data.data
     private static func extractInnerPayload(_ data: Data) throws -> [String: Any] {
         struct ParseErr: Error {}

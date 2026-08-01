@@ -55,5 +55,19 @@ var threwOnGarbage = false
 do { _ = try BlUsageService.parseUsage(Data("not json".utf8)) } catch { threwOnGarbage = true }
 check("parseUsage throws on garbage", threwOnGarbage)
 
+// --- Task 4: live bl call (only runs if BL_LIVE=1) ---
+if ProcessInfo.processInfo.environment["BL_LIVE"] == "1" {
+    do {
+        let data = try await BlUsageService.callRPC(BlUsageService.usageAPI)
+        let w = try BlUsageService.parseUsage(data)
+        check("live usage parses", w.fiveHour.percentage >= 0)
+    } catch {
+        check("live usage parses", false)  // counts as a fail if bl not logged in
+        print("live error: \(error)")
+    }
+} else {
+    print("SKIP live bl call (set BL_LIVE=1 to run)")
+}
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
