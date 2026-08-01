@@ -3,15 +3,15 @@
     <channel>
         <title>AliyunTokenBar</title>
         <item>
-            <title>1.0.4</title>
-            <pubDate>Sat, 01 Aug 2026 07:19:59 +0000</pubDate>
-            <sparkle:version>4</sparkle:version>
-            <sparkle:shortVersionString>1.0.4</sparkle:shortVersionString>
+            <title>1.0.5</title>
+            <pubDate>Sat, 01 Aug 2026 07:32:27 +0000</pubDate>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>1.0.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/1020645823-dev/AliyunTokenBar/releases/download/v1.0.4/AliyunTokenBar-1.0.4-sparkle-update.zip"
-                       length="3107119"
+            <enclosure url="https://github.com/1020645823-dev/AliyunTokenBar/releases/download/v1.0.5/AliyunTokenBar-1.0.5-sparkle-update.zip"
+                       length="3108865"
                        type="application/octet-stream"
-                       sparkle:edSignature="TBL7UpG3MErJpYUMlNZo70TODPepXtiCkaE+4BuHT4SxnVyzcguBX0TVbLRU4FEUhH9exFauhvQlS6Rz2cAyAw=="/>
+                       sparkle:edSignature="ISm3UZPUJjIPjTZSMltbr0z/vrDy+12U8Sn27ODqK/6UB6Pco2Qu+w3nG/iZCJ2Z/M2Biw/No37Z4ql/RBy9AA=="/>
         </item>
     </channel>
 </rss>

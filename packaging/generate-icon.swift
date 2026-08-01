@@ -49,16 +49,37 @@ func render(size: CGFloat) -> NSImage {
     drawArc(0, 360, NSColor(white: 1, alpha: 0.08), ring2W, ring2R)
     drawArc(-90, -90 + 360*0.40, NSColor(red: 0.95, green: 0.55, blue: 0.20, alpha: 1), ring2W, ring2R)
 
-    // 4. 中心 token 符号:闪电或 T。用一个简洁的圆角"T"
-    let tColor = NSColor.white
-    let attrs: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 200*s, weight: .heavy),
-        .foregroundColor: tColor,
-    ]
-    let t = "T" as NSString
-    let tSize = t.size(withAttributes: attrs)
-    let tOrigin = CGPoint(x: center.x - tSize.width/2, y: center.y - tSize.height/2)
-    t.draw(at: tOrigin, withAttributes: attrs)
+    // 4. 中心:阿里云风格云朵(白色,呼应面板 logo)
+    let cloudColor = NSColor.white
+    cloudColor.setFill()
+    // 云朵路径:中心缩放绘制(复用同样的三隆起形状)
+    let cw: CGFloat = 200 * s  // 云宽
+    let ch: CGFloat = 130 * s  // 云高
+    let cx = center.x - cw/2
+    let cy = center.y - ch/2
+    let cloud = NSBezierPath()
+    cloud.move(to: NSPoint(x: cx + cw*0.10, y: cy + ch*0.70))
+    cloud.curve(to: NSPoint(x: cx + cw*0.22, y: cy + ch*0.42),
+                controlPoint1: NSPoint(x: cx + cw*0.04, y: cy + ch*0.45),
+                controlPoint2: NSPoint(x: cx + cw*0.10, y: cy + ch*0.38))
+    cloud.curve(to: NSPoint(x: cx + cw*0.38, y: cy + ch*0.28),
+                controlPoint1: NSPoint(x: cx + cw*0.24, y: cy + ch*0.22),
+                controlPoint2: NSPoint(x: cx + cw*0.30, y: cy + ch*0.22))
+    cloud.curve(to: NSPoint(x: cx + cw*0.55, y: cy + ch*0.18),
+                controlPoint1: NSPoint(x: cx + cw*0.44, y: cy + ch*0.12),
+                controlPoint2: NSPoint(x: cx + cw*0.48, y: cy + ch*0.12))
+    cloud.curve(to: NSPoint(x: cx + cw*0.70, y: cy + ch*0.28),
+                controlPoint1: NSPoint(x: cx + cw*0.62, y: cy + ch*0.14),
+                controlPoint2: NSPoint(x: cx + cw*0.66, y: cy + ch*0.14))
+    cloud.curve(to: NSPoint(x: cx + cw*0.85, y: cy + ch*0.40),
+                controlPoint1: NSPoint(x: cx + cw*0.78, y: cy + ch*0.22),
+                controlPoint2: NSPoint(x: cx + cw*0.86, y: cy + ch*0.22))
+    cloud.curve(to: NSPoint(x: cx + cw*0.90, y: cy + ch*0.70),
+                controlPoint1: NSPoint(x: cx + cw*1.00, y: cy + ch*0.50),
+                controlPoint2: NSPoint(x: cx + cw*0.96, y: cy + ch*0.62))
+    cloud.line(to: NSPoint(x: cx + cw*0.10, y: cy + ch*0.70))
+    cloud.close()
+    cloud.fill()
 
     img.unlockFocus()
     return img

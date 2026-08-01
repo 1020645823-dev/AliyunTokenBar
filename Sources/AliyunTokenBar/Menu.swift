@@ -2,6 +2,46 @@ import SwiftUI
 import AppKit
 import AliyunTokenBarCore
 
+// MARK: - 阿里云风格云朵 logo
+
+/// 风格化阿里云云朵 logo(橙色,Canvas 绘制)。
+/// 视觉:底部平直、顶部三个圆弧隆起的抽象云朵,呼应阿里云标志性视觉。
+struct AliyunCloudLogo: View {
+    var size: CGFloat = 28
+    var body: some View {
+        Canvas { ctx, sz in
+            // 云朵路径:用多个圆弧拼出底部平、顶部三隆起的云形
+            let w = sz.width, h = sz.height
+            var path = Path()
+            // 从左下起,顺时针:左弧 → 左上凸起 → 中间大凸起 → 右上凸起 → 右弧 → 底部直线回起点
+            path.move(to: CGPoint(x: w*0.10, y: h*0.70))
+            // 左侧弧(上行)
+            path.addQuadCurve(to: CGPoint(x: w*0.22, y: h*0.42),
+                              control: CGPoint(x: w*0.04, y: h*0.45))
+            // 左上小凸起
+            path.addQuadCurve(to: CGPoint(x: w*0.38, y: h*0.28),
+                              control: CGPoint(x: w*0.24, y: h*0.22))
+            // 中间大凸起(最高点)
+            path.addQuadCurve(to: CGPoint(x: w*0.55, y: h*0.18),
+                              control: CGPoint(x: w*0.44, y: h*0.12))
+            path.addQuadCurve(to: CGPoint(x: w*0.70, y: h*0.28),
+                              control: CGPoint(x: w*0.66, y: h*0.14))
+            // 右上凸起
+            path.addQuadCurve(to: CGPoint(x: w*0.85, y: h*0.40),
+                              control: CGPoint(x: w*0.86, y: h*0.22))
+            // 右侧弧(下行)
+            path.addQuadCurve(to: CGPoint(x: w*0.90, y: h*0.70),
+                              control: CGPoint(x: w*1.00, y: h*0.50))
+            // 底部直线回起点
+            path.addLine(to: CGPoint(x: w*0.10, y: h*0.70))
+            path.closeSubpath()
+            // 填充阿里云橙
+            ctx.fill(path, with: .color(Color(red: 1.0, green: 0.42, blue: 0.0)))
+        }
+        .frame(width: size, height: size * 0.78)
+    }
+}
+
 // MARK: - 主面板
 
 struct TokenPlanMenu: View {
@@ -71,9 +111,7 @@ struct TokenPlanMenu: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "speedometer")
-                .font(.system(size: 24))
-                .foregroundStyle(.atbBlue)
+            AliyunCloudLogo(size: 28)
             Text("AliyunTokenBar").font(.system(size: 18, weight: .bold)).foregroundStyle(.atbTextPrimary)
             Spacer()
             Button { NSWorkspace.shared.open(consoleURL) } label: {
