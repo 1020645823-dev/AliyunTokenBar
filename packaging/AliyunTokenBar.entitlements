@@ -3,13 +3,11 @@
 <plist version="1.0">
 <dict>
 	<!-- 硬化运行时(签名要求)。
-	     ad-hoc 签名时主程序与嵌入的 Sparkle.framework 团队 ID 不同,
-	     需禁用库校验才能加载第三方框架(无 Developer ID 时的标准做法)。 -->
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
-	<!-- Sparkle Autoupdate 子进程需要执行任意可执行文件(更新安装器) -->
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
+	     Sparkle 已于 v1.0.8 移除,App 不再依赖任何第三方 framework,
+	     故不再需要 disable-library-validation / allow-unsigned-executable-memory——
+	     收紧权限,减小攻击面。
+
+	     通知(UserNotifications)与 Keychain 不需要额外 entitlement:
+	     通知由运行时授权弹窗覆盖;Keychain 默认对同 bundle id 可访问。 -->
 </dict>
 </plist>
-

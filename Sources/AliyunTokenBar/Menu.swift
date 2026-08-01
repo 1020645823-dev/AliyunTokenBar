@@ -49,10 +49,15 @@ struct TokenPlanMenu: View {
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             header
             if model.authState == .ok || model.authState == .unknown {
                 usageSection
+                if model.sparklineEnabled {
+                    LimitEstimateLabel()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 2)
+                }
             }
             actionButtons
             if let sub = model.quota?.subscription { subscriptionRow(sub) }
@@ -64,7 +69,11 @@ struct TokenPlanMenu: View {
         .background(Color.atbPanelBackground)
         .overlay { if needsAuthOverlay { AuthOverlay() } }
         .task {
-            await model.checkAuthAndRefresh()
+            // 通知授权 + sink 注入 + 数据刷新:延迟到 onAppear(App 已完全启动,
+            // bundle 上下文就绪),避免 App.init() 里 UNUserNotificationCenter 崩溃。
+            NotificationManager.shared.requestAuthorization()
+            NotificationManager.shared.attach(to: model)
+            model.startTimer()
         }
     }
 
@@ -84,14 +93,38 @@ struct TokenPlanMenu: View {
     }
 
     private var usageSection: some View {
-        HStack(spacing: 12) {
+        // 上下结构(与 OpenCode 三窗口同向),小空间内信息密度更高
+        VStack(spacing: 12) {
             if let q = model.quota {
-                UsageCard(title: "5小时限额", detail: q.usage.fiveHour, color: .atbBlue, isLoading: model.isLoading)
-                UsageCard(title: "7天限额", detail: q.usage.oneWeek, color: .orange, isLoading: model.isLoading)
+                UsageCard(title: "5小时限额",
+                          percentage: q.usage.fiveHour.percentage, resetText: q.usage.fiveHour.timeUntilReset,
+                          color: .atbBlue, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
+                          showSparkline: model.sparklineEnabled, sparklineWindow: "5h")
+                UsageCard(title: "7天限额",
+                          percentage: q.usage.oneWeek.percentage, resetText: q.usage.oneWeek.timeUntilReset,
+                          color: .orange, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
+                          showSparkline: model.sparklineEnabled, sparklineWindow: "7d")
             } else if model.isLoading {
-                Spacer(); LoadingRing(); Spacer()
+                HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
+                    .padding(14)
+                    .background(Color.atbCardBackground)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else if model.lastError != nil {
+                // 网络/服务故障:卡片显示横杠(—),表示数值不可用
+                UsageCard(title: "5小时限额", percentage: nil, resetText: nil,
+                          color: .atbBlue, isLoading: false, thresholdConfig: model.thresholdConfig,
+                          dataUnavailable: true)
+                UsageCard(title: "7天限额", percentage: nil, resetText: nil,
+                          color: .orange, isLoading: false, thresholdConfig: model.thresholdConfig,
+                          dataUnavailable: true)
             } else {
-                Text(model.lastError ?? "加载中…").foregroundStyle(.atbTextSecondary)
+                Text("加载中…").foregroundStyle(.atbTextSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Color.atbCardBackground)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
     }
@@ -114,6 +147,7 @@ struct TokenPlanMenu: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
     }
 
     private func tagPill(_ text: String, color: Color) -> some View {
@@ -123,34 +157,125 @@ struct TokenPlanMenu: View {
     }
 }
 
-// MARK: - 用量卡片(复刻 KimiCodeBar UsageCard)
+// MARK: - 用量卡片(统一视觉 token:阿里云 5h/7d + OpenCode 三窗口共用)
 
+/// 用量卡片。**所有用量窗口共用此组件**,保证设计 token 完全一致。
+/// 数据源与视觉解耦:`percentage`/`resetText` 由调用方从
+/// UsageDetail(阿里云)或 OpenCodeWindow(OpenCode)提取。
+/// 紧凑模式(默认):数字+进度条+倒计时纵向堆叠,sparkline 折叠成小条。
+/// 当 `dataUnavailable` 为 true 时,数值显示为横杠(—),表示服务/网络不可用。
 struct UsageCard: View {
     let title: String
-    let detail: UsageDetail
+    let percentage: Int?
+    let resetText: String?
     let color: Color
     let isLoading: Bool
+    /// 阈值配置:进度条按风险变色(safe→color / warning→橙 / critical→红)。
+    var thresholdConfig: ThresholdConfig = ThresholdConfig()
+    /// 是否显示 sparkline(由面板按全局开关传入)。
+    var showSparkline: Bool = false
+    /// sparkline 数据序列标识(aliyun 5h/7d、opencode rolling/weekly/monthly)。
+    var sparklineProvider: String = "aliyun"
+    var sparklineWindow: String = "7d"
+    /// 紧凑模式:true 单行高密度(推荐,默认);false 全尺寸展开(大字号)。
+    var compact: Bool = true
+    /// 数据不可用(服务/网络故障):显示横杠而非数值。
+    var dataUnavailable: Bool = false
 
     var body: some View {
+        if compact { compactBody } else { fullBody }
+    }
+
+    /// 紧凑卡:上下两层布局(标题+倒计时 / 数值+进度条),纵向堆叠省横向空间。
+    /// 数据不可用时数值显示为横杠(—)。
+    private var compactBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 上层:标题 + 倒计时
+            HStack {
+                Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                Spacer()
+                if dataUnavailable {
+                    Text("—").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+                } else if let reset = resetText {
+                    Text(reset).font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
+                        .lineLimit(1)
+                }
+            }
+            // 下层:数值 + 进度条
+            HStack(spacing: 8) {
+                if isLoading {
+                    LoadingRing().frame(width: 14, height: 14)
+                } else if dataUnavailable {
+                    Text("—").font(.system(size: 15, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.atbTextTertiary)
+                        .frame(width: 44, alignment: .leading)
+                } else if let pct = percentage {
+                    Text("\(pct)%").font(.system(size: 15, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(thresholdColor(pct, config: thresholdConfig, base: .atbTextPrimary))
+                        .frame(width: 44, alignment: .leading)
+                }
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().frame(height: 4).foregroundStyle(Color.black.opacity(0.12))
+                        if !dataUnavailable, let pct = percentage {
+                            Capsule().frame(width: proxy.size.width * CGFloat(min(pct, 100)) / 100, height: 4)
+                                .foregroundStyle(thresholdColor(pct, config: thresholdConfig, base: color))
+                        }
+                    }
+                }.frame(height: 4)
+            }
+            if showSparkline && !dataUnavailable {
+                UsageSparkline(provider: sparklineProvider, window: sparklineWindow, color: color, height: 16)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(Color.atbCardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))  // 卡片边框区分
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// 全尺寸卡:32pt 大数字 + 进度条 + 倒计时 + sparkline(纵向展开)。
+    private var fullBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
             ZStack(alignment: .leading) {
-                if !isLoading {
-                    Text("\(detail.percentage)%").font(.system(size: 32, weight: .bold, design: .rounded))
-                        .monospacedDigit().foregroundStyle(.atbTextPrimary)
-                } else { LoadingRing().frame(width: 24, height: 24) }
+                if isLoading {
+                    LoadingRing().frame(width: 24, height: 24)
+                } else if dataUnavailable {
+                    Text("—").font(.system(size: 32, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.atbTextTertiary)
+                } else if let pct = percentage {
+                    Text("\(pct)%").font(.system(size: 32, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(thresholdColor(pct, config: thresholdConfig, base: .atbTextPrimary))
+                }
             }.frame(height: 38)
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    Capsule().frame(height: 4).foregroundStyle(Color.atbTextPrimary.opacity(0.10))
-                    Capsule().frame(width: proxy.size.width * CGFloat(min(detail.percentage, 100)) / 100, height: 4)
-                        .foregroundStyle(color)
+                    Capsule().frame(height: 4).foregroundStyle(Color.black.opacity(0.12))
+                    if !dataUnavailable, let pct = percentage {
+                        Capsule().frame(width: proxy.size.width * CGFloat(min(pct, 100)) / 100, height: 4)
+                            .foregroundStyle(thresholdColor(pct, config: thresholdConfig, base: color))
+                    }
                 }
             }.frame(height: 4)
-            Text(detail.timeUntilReset).font(.system(size: 11)).foregroundStyle(.atbTextSecondary)
+            if dataUnavailable {
+                Text("—").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+            } else if let reset = resetText {
+                Text(reset).font(.system(size: 11)).foregroundStyle(.atbTextSecondary)
+            }
+            if showSparkline && !dataUnavailable {
+                UsageSparkline(provider: sparklineProvider, window: sparklineWindow, color: color)
+            }
         }
         .padding(14).frame(maxWidth: .infinity)
-        .background(Color.atbCardBackground).clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(Color.atbCardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))  // 卡片边框区分
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -266,19 +391,22 @@ struct BlVersionRow: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
     }
 }
 
 // MARK: - OpenCode Go 用量卡
 
 /// OpenCode Go 套餐用量(rolling/weekly/monthly 三窗口)。
+/// 与阿里云区域共用 UsageCard——同一套设计 token(紧凑卡/进度条/sparkline)。
 /// 仅在用户配置了 cookie+workspace 后显示。
 struct OpenCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            // 品牌头部行:紫色闪电 + 刷新(OpenCode 专属)
             HStack(spacing: 8) {
-                Image(systemName: "globe").font(.system(size: 13)).foregroundStyle(.purple)
+                Image(systemName: "bolt.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.purple)
                 Text("OpenCode Go").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
                 Spacer()
                 Button { Task { await model.refreshOpenCode() } } label: {
@@ -286,33 +414,57 @@ struct OpenCodeCard: View {
                 }.buttonStyle(.plain)
             }
             if let q = model.openCodeQuota {
-                openCodeWindowRow(name: "滚动", detail: q.rolling, color: .purple)
-                openCodeWindowRow(name: "每周", detail: q.weekly, color: .atbBlue)
-                openCodeWindowRow(name: "每月", detail: q.monthly, color: .orange)
+                // 三窗口各一张卡片,视觉 token 与阿里云 5h/7d 完全一致
+                UsageCard(title: "滚动限额",
+                          percentage: q.rolling.pct, resetText: q.rolling.timeUntilReset,
+                          color: .purple, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
+                          showSparkline: model.sparklineEnabled,
+                          sparklineProvider: "opencode", sparklineWindow: "rolling")
+                UsageCard(title: "每周限额",
+                          percentage: q.weekly.pct, resetText: q.weekly.timeUntilReset,
+                          color: .atbBlue, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
+                          showSparkline: model.sparklineEnabled,
+                          sparklineProvider: "opencode", sparklineWindow: "weekly")
+                UsageCard(title: "每月限额",
+                          percentage: q.monthly.pct, resetText: q.monthly.timeUntilReset,
+                          color: .orange, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
+                          showSparkline: model.sparklineEnabled,
+                          sparklineProvider: "opencode", sparklineWindow: "monthly")
             } else if let err = model.openCodeError {
-                Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+                // 网络/服务故障:卡片显示横杠(—),表示数值不可用
+                let isNetworkError = err.contains("网络") || err.contains("响应") || err.contains("解析")
+                if isNetworkError {
+                    UsageCard(title: "滚动限额", percentage: nil, resetText: nil,
+                              color: .purple, isLoading: false, thresholdConfig: model.thresholdConfig,
+                              dataUnavailable: true)
+                    UsageCard(title: "每周限额", percentage: nil, resetText: nil,
+                              color: .atbBlue, isLoading: false, thresholdConfig: model.thresholdConfig,
+                              dataUnavailable: true)
+                    UsageCard(title: "每月限额", percentage: nil, resetText: nil,
+                              color: .orange, isLoading: false, thresholdConfig: model.thresholdConfig,
+                              dataUnavailable: true)
+                } else {
+                    // 非网络错误(cookie 过期等):保留文本提示
+                    Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(Color.atbCardBackground)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
             } else {
-                Text("加载中…").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+                // 加载态:与阿里云一致的加载环
+                HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
+                    .padding(14)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.atbCardBackground)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func openCodeWindowRow(name: String, detail: OpenCodeWindow, color: Color) -> some View {
-        HStack(spacing: 8) {
-            Text(name).font(.system(size: 11)).foregroundStyle(.atbTextSecondary).frame(width: 30, alignment: .leading)
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().frame(height: 4).foregroundStyle(Color.atbTextPrimary.opacity(0.10))
-                    Capsule().frame(width: proxy.size.width * CGFloat(min(detail.pct, 100)) / 100, height: 4).foregroundStyle(color)
-                }
-            }.frame(height: 4)
-            Text("\(detail.pct)%").font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.atbTextSecondary).frame(width: 36, alignment: .trailing)
-            Text(detail.timeUntilReset).font(.system(size: 9)).foregroundStyle(.atbTextTertiary).lineLimit(1)
-        }
+        .background(Color.atbPanelBackground)
     }
 }
 
@@ -327,6 +479,7 @@ struct ActionButton: View {
                 Text(title).font(.system(size: 11))
             }.frame(maxWidth: .infinity).padding(.vertical, 8).foregroundStyle(.atbTextSecondary)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.atbCardBackground))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08)))
         }.buttonStyle(.plain)
     }
 }

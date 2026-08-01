@@ -98,5 +98,154 @@ check("opencode rolling 含 3小时", oc?.rolling.timeUntilReset.contains("3小�
 let ocPartial = "<script>rollingUsage:$R[1]={status:\"ok\",resetInSec:1,usagePercent:5}</script>"
 check("opencode partial -> nil", OpenCodeUsageService.parse(ocPartial) == nil)
 
+// --- 阈值逻辑 (ThresholdConfig.band / UsageBand) ---
+let tc = ThresholdConfig(warning: 80, critical: 90)
+check("band 30 -> safe", tc.band(for: 30) == .safe)
+check("band 79 -> safe", tc.band(for: 79) == .safe)
+check("band 80 -> warning", tc.band(for: 80) == .warning)
+check("band 89 -> warning", tc.band(for: 89) == .warning)
+check("band 90 -> critical", tc.band(for: 90) == .critical)
+check("band 100 -> critical", tc.band(for: 100) == .critical)
+check("band 0 -> safe", tc.band(for: 0) == .safe)
+
+// ThresholdConfig 钳制:warning 必须 < critical
+let tcClamp = ThresholdConfig(warning: 95, critical: 50)  // 非法输入
+check("threshold clamp: warning < critical", tcClamp.warning < tcClamp.critical)
+check("threshold clamp: warning >= 1", tcClamp.warning >= 1)
+check("threshold clamp: critical <= 100", tcClamp.critical <= 100)
+
+// band 排序 Comparable
+check("band safe < warning", UsageBand.safe < UsageBand.warning)
+check("band warning < critical", UsageBand.warning < UsageBand.critical)
+
+// --- NotificationState 状态机(迟滞) ---
+var ns = NotificationState()
+// 首次(任意值)→ 通知
+check("notify first-seen fires", ns.update(percentage: 30, config: tc) != nil)
+// 同级 safe 区间内爬升 → 不通知(30→60 都在 safe)
+check("notify safe->safe no fire", ns.update(percentage: 60, config: tc) == nil)
+// 上行跨入 warning → 通知
+check("notify safe->warning fires", ns.update(percentage: 82, config: tc) == .warning)
+// warning 内继续爬升 → 不通知
+check("notify warning->warning no fire", ns.update(percentage: 85, config: tc) == nil)
+// 上行跨入 critical → 通知
+check("notify warning->critical fires", ns.update(percentage: 95, config: tc) == .critical)
+// 从 critical 回落到 safe → 不通知(回落不打扰)
+check("notify critical->safe no fire", ns.update(percentage: 50, config: tc) == nil)
+// 再次上行跨入 warning → 通知(新一轮)
+check("notify safe->warning fires again", ns.update(percentage: 81, config: tc) == .warning)
+
+// --- NotificationTracker 多窗口 ---
+var tracker = NotificationTracker()
+let k5h = WatchKey(provider: "aliyun", window: "5h")
+let k7d = WatchKey(provider: "aliyun", window: "7d")
+// 先 seed 两个窗口在 safe 区(首次都会触发,这是预期——首见告知)
+_ = tracker.evaluate([(k5h, 30), (k7d, 30)], config: tc)
+// 第二轮:5h 跨入 warning 触发,7d 仍在 safe 不触发
+let fired1 = tracker.evaluate([(k5h, 85), (k7d, 50)], config: tc)
+check("tracker fires only crossing window", fired1.count == 1 && fired1[0].0 == k5h && fired1[0].1 == .warning)
+// 第三轮:5h 同级不触发,7d 跨入 critical 触发
+let fired2 = tracker.evaluate([(k5h, 88), (k7d, 92)], config: tc)
+check("tracker second eval: only 7d", fired2.count == 1 && fired2[0].0 == k7d && fired2[0].1 == .critical)
+// clear(provider:) 只清该 Provider
+tracker.clear(provider: "aliyun")
+check("tracker clear aliyun empties aliyun", tracker.states[k5h] == nil && tracker.states[k7d] == nil)
+check("tracker clear keeps others", tracker.states.isEmpty)
+
+// --- HistoryStore(内存后端 + 固定时钟)---
+// 用 class 让时钟可变:HistoryStore 持引用,测试推进时间后 store.now() 同步更新。
+final class FixedClock: HistoryClock {
+    var t: Date
+    init(_ t: Date) { self.t = t }
+    func now() -> Date { t }
+}
+let mem = InMemoryHistoryBackend()
+let clock = FixedClock(Date(timeIntervalSince1970: 1_700_000_000))
+let hs = HistoryStore(backend: mem, clock: clock, maxAgeDays: 7, maxPerSeries: 5)
+
+// append + recent
+hs.append(UsageSnapshot(timestamp: clock.now(), aliyunFiveHour: 30, aliyunOneWeek: 40,
+                         opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+hs.append(UsageSnapshot(timestamp: clock.now(), aliyunFiveHour: 50, aliyunOneWeek: 60,
+                         opencodeRolling: 22, opencodeWeekly: 43, opencodeMonthly: 98))
+check("history recent count 2", hs.recent(10).count == 2)
+check("history recent max 1", hs.recent(1).count == 1)
+// series 提取
+let snaps2 = hs.recent(10)
+check("series aliyun 5h", HistoryStore.series(snaps2, provider: "aliyun", window: "5h") == [30, 50])
+check("series opencode rolling", HistoryStore.series(snaps2, provider: "opencode", window: "rolling") == [nil, 22])
+check("series unknown -> all nil", HistoryStore.series(snaps2, provider: "x", window: "y") == [nil, nil])
+
+// 淘汰:超过 maxPerSeries 截断最旧
+for i in 0..<8 {
+    hs.append(UsageSnapshot(timestamp: clock.now(), aliyunFiveHour: i, aliyunOneWeek: nil,
+                             opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+}
+check("history evicts to maxPerSeries", hs.recent(100).count == 5)
+
+// 过期淘汰:8 天前的快照应被 append 时清掉
+let clock2 = FixedClock(Date(timeIntervalSince1970: 1_700_000_000))
+let mem2 = InMemoryHistoryBackend()
+let hs2 = HistoryStore(backend: mem2, clock: clock2, maxAgeDays: 7, maxPerSeries: 100)
+hs2.append(UsageSnapshot(timestamp: clock2.now(), aliyunFiveHour: 1, aliyunOneWeek: nil,
+                          opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+// 推进时钟 8 天(class 引用,store 内 now() 同步变化)
+clock2.t = clock2.now().addingTimeInterval(8 * 86_400)
+hs2.append(UsageSnapshot(timestamp: clock2.now(), aliyunFiveHour: 2, aliyunOneWeek: nil,
+                          opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+check("history evicts expired (>7d)", hs2.recent(100).count == 1)
+check("history expired keeps only new", hs2.recent(100).first?.aliyunFiveHour == 2)
+
+// 预测:线性外推(每 1 小时涨 10%,从 50→60→70,距 100% 还需 3 小时 = 180 分)
+let clock3 = FixedClock(Date(timeIntervalSince1970: 1_700_000_000))
+let mem3 = InMemoryHistoryBackend()
+let hs3 = HistoryStore(backend: mem3, clock: clock3, maxAgeDays: 7, maxPerSeries: 100)
+let baseT = clock3.now()
+for (i, pct) in [50, 60, 70].enumerated() {
+    hs3.append(UsageSnapshot(timestamp: baseT.addingTimeInterval(Double(i) * 3600),
+                              aliyunFiveHour: nil, aliyunOneWeek: pct,
+                              opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+}
+let est = HistoryStore.estimateMinutesToLimit(snapshots: hs3.recent(100))
+check("history estimate ~180min to limit", est != nil && abs(est! - 180) <= 2)
+// 数据不足 → nil
+check("history estimate nil when <2 pts",
+      HistoryStore.estimateMinutesToLimit(snapshots: [UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: 50, opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil)]) == nil)
+// 速率非正 → nil
+let mem4 = InMemoryHistoryBackend()
+let hs4 = HistoryStore(backend: mem4, clock: FixedClock(baseT), maxAgeDays: 7, maxPerSeries: 100)
+hs4.append(UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: 80, opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+hs4.append(UsageSnapshot(timestamp: baseT.addingTimeInterval(3600), aliyunFiveHour: nil, aliyunOneWeek: 70, opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
+check("history estimate nil when non-increasing",
+      HistoryStore.estimateMinutesToLimit(snapshots: hs4.recent(100)) == nil)
+
+// FileHistoryBackend 往返(Codable)
+let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("atb-test-\(Int.random(in: 0..<1_000_000)).json")
+let fb = FileHistoryBackend(url: tmpURL)
+let sampleSnap = UsageSnapshot(timestamp: Date(timeIntervalSince1970: 1_700_000_000), aliyunFiveHour: 11, aliyunOneWeek: 22, opencodeRolling: 33, opencodeWeekly: 44, opencodeMonthly: 55)
+fb.write([sampleSnap])
+check("file backend roundtrip", fb.read() == [sampleSnap])
+try? FileManager.default.removeItem(at: tmpURL)
+
+// --- CredentialStore (InMemory + 迁移) ---
+let cs = InMemoryCredentialStore()
+cs.write("secret123", account: "opencode")
+check("credstore read", cs.read(account: "opencode") == "secret123")
+cs.delete(account: "opencode")
+check("credstore delete", cs.read(account: "opencode") == nil)
+
+// 迁移:UserDefaults 明文 → CredentialStore
+let testDefaults = UserDefaults(suiteName: "atb-migration-test-\(Int.random(in: 0..<1_000_000))")!
+testDefaults.set("legacy-cookie-value", forKey: "openCodeCookie")
+let migrated = CredentialMigration.migrate(legacyKey: "openCodeCookie", account: "opencode",
+                                            from: testDefaults, to: cs)
+check("migration returns true", migrated == true)
+check("migration moved value", cs.read(account: "opencode") == "legacy-cookie-value")
+check("migration cleared defaults", testDefaults.string(forKey: "openCodeCookie") == nil)
+// 幂等:再迁移 no-op,不覆盖
+let migratedAgain = CredentialMigration.migrate(legacyKey: "openCodeCookie", account: "opencode",
+                                                  from: testDefaults, to: cs)
+check("migration idempotent no-op", migratedAgain == false)
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

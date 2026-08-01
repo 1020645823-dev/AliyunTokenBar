@@ -30,11 +30,13 @@ public final class TokenPlanModel: ObservableObject {
     public var openCodeConfigured: Bool {
         !openCodeCookie.isEmpty && !openCodeWorkspaceID.isEmpty
     }
-    /// OpenCode auth cookie(浏览器 opencode.ai 的 auth cookie)
+    /// OpenCode auth cookie(浏览器 opencode.ai 的 auth cookie)。
+    /// 读:CredentialStore(Keychain,默认)/ 写:同步回写。
+    /// cookie 是敏感凭据,不再入 UserDefaults(旧值由首启迁移,见 init)。
     @Published public var openCodeCookie: String {
-        didSet { UserDefaults.standard.set(openCodeCookie, forKey: "openCodeCookie") }
+        didSet { credentialStore.write(openCodeCookie, account: Self.openCodeCookieAccount) }
     }
-    /// OpenCode workspace ID(wrk_xxx)
+    /// OpenCode workspace ID(wrk_xxx,非敏感,仍用 UserDefaults)
     @Published public var openCodeWorkspaceID: String {
         didSet { UserDefaults.standard.set(openCodeWorkspaceID, forKey: "openCodeWorkspaceID") }
     }
@@ -45,6 +47,42 @@ public final class TokenPlanModel: ObservableObject {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes"); resetTimer() }
     }
 
+    // MARK: - 阈值 / 通知 / 历史(P0-P1)
+
+    /// 告警阈值(默认 warning 80 / critical 90),用户可在设置改。
+    @Published public var thresholdConfig: ThresholdConfig = ThresholdConfig() {
+        didSet { UserDefaults.standard.set(thresholdConfig.warning, forKey: "thresholdWarning")
+                 UserDefaults.standard.set(thresholdConfig.critical, forKey: "thresholdCritical") }
+    }
+    /// 是否启用接近上限通知(默认开)。用户可在设置关。
+    @Published public var notificationsEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled") }
+    }
+    /// 面板 sparkline 是否显示(默认开)。
+    @Published public var sparklineEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(sparklineEnabled, forKey: "sparklineEnabled") }
+    }
+    /// 多窗口通知状态机(纯值,内部维护)。
+    public private(set) var notificationTracker = NotificationTracker()
+
+    /// 历史仓库(默认文件落盘;测试/预览可注入内存实现)。
+    public let historyStore: HistoryStore
+
+    /// 通知触发闭包:逻辑层评估出应通知的窗口时回调,executable 层注入真正的 UNUserNotificationCenter。
+    /// 默认 no-op(逻辑层零副作用),避免 Core 依赖 UserNotifications 框架。
+    public var notifySink: ((WatchKey, UsageBand) -> Void)?
+
+    /// 凭据存储(默认 Keychain;测试可注入内存实现)。
+    public let credentialStore: CredentialStore
+
+    /// CredentialStore 里 OpenCode cookie 的 account 名。
+    public static let openCodeCookieAccount = "opencode-auth-cookie"
+
+    /// 菜单栏图标预渲染缓存(数据更新时生成,label 只读)。
+    @Published public var renderedIcon: NSImage?
+    /// 渲染图标的闭包:由 executable 层注入(因 MenuBarTextRenderer 在 executable 层)。
+    public var renderIconSink: ((TokenPlanModel) -> NSImage?)?
+
     private var timer: AnyCancellable?
 
     /// 辅助数据(subscription/addon)上次拉取时间。这俩一天内基本不变,24h 拉一次即可,
@@ -52,28 +90,69 @@ public final class TokenPlanModel: ObservableObject {
     private var lastAuxFetch: Date?
     private let auxRefreshInterval: TimeInterval = 24 * 60 * 60  // 24 小时
 
+    /// Keychain 是否已加载(延迟到首次访问,避免启动时序问题)
+    private var credentialLoaded = false
+
     private init() {
-        refreshIntervalMinutes = UserDefaults.standard.object(forKey: "refreshIntervalMinutes") as? Int ?? 10
-        openCodeCookie = UserDefaults.standard.string(forKey: "openCodeCookie") ?? ""
-        openCodeWorkspaceID = UserDefaults.standard.string(forKey: "openCodeWorkspaceID") ?? ""
+        let defaults = UserDefaults.standard
+        refreshIntervalMinutes = defaults.object(forKey: "refreshIntervalMinutes") as? Int ?? 10
+
+        // 阈值/通知/sparkline 配置
+        let w = defaults.object(forKey: "thresholdWarning") as? Int ?? 80
+        let c = defaults.object(forKey: "thresholdCritical") as? Int ?? 90
+        thresholdConfig = ThresholdConfig(warning: w, critical: c)
+        if defaults.object(forKey: "notificationsEnabled") != nil {
+            notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
+        }
+        if defaults.object(forKey: "sparklineEnabled") != nil {
+            sparklineEnabled = defaults.bool(forKey: "sparklineEnabled")
+        }
+
+        credentialStore = KeychainCredentialStore(service: "com.aliyuntokenbar")
+        openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
+        openCodeWorkspaceID = defaults.string(forKey: "openCodeWorkspaceID") ?? ""
+
+        historyStore = HistoryStore(backend: FileHistoryBackend(url: HistoryStore.defaultURL()))
+    }
+
+    /// 延迟加载 Keychain 中的 cookie(避免启动时序问题)。幂等。
+    public func ensureCredentialLoaded() {
+        guard !credentialLoaded else { return }
+        credentialLoaded = true
+        CredentialMigration.migrate(legacyKey: "openCodeCookie",
+                                    account: Self.openCodeCookieAccount, to: credentialStore)
+        openCodeCookie = credentialStore.read(account: Self.openCodeCookieAccount) ?? ""
     }
 
     /// 启动定时刷新
     public func startTimer() {
         resetTimer()
+        ensureCredentialLoaded()
         Task { await checkAuthAndRefresh() }
         Task { await checkBlVersion() }
-        Task { await refreshOpenCode() }
+        Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
+    }
+
+    /// 自愈:若已有 cookie 但缺 workspace(如旧版登录失败遗留,或 discover 逻辑修复后首次启动),
+    /// 用现存 cookie 自动重新发现 workspace,免去用户手动重登。
+    private func recoverOpenCodeIfNeeded() async {
+        ensureCredentialLoaded()
+        guard !openCodeCookie.isEmpty, openCodeWorkspaceID.isEmpty else { return }
+        if let wsID = await OpenCodeUsageService.discoverWorkspaceID(cookie: openCodeCookie) {
+            openCodeWorkspaceID = wsID
+        }
     }
 
     /// 拉一次 OpenCode Go 用量(cookie + workspace 配置后)
     public func refreshOpenCode() async {
+        ensureCredentialLoaded()
         guard openCodeConfigured else { return }
         let result = await OpenCodeUsageService.fetchQuota(cookie: openCodeCookie, workspaceID: openCodeWorkspaceID)
         switch result {
         case .success(let q):
             openCodeQuota = q
             openCodeError = nil
+            recordAndNotify()
         case .failure(let e):
             switch e {
             case .authExpired: openCodeError = "OpenCode cookie 已过期,请在设置更新"
@@ -83,6 +162,54 @@ public final class TokenPlanModel: ObservableObject {
             case .unknown(let s): openCodeError = s
             }
         }
+    }
+
+    // MARK: - 历史记录 + 通知评估(P0-P1)
+
+    /// 把当前已知用量落盘一条快照,并对所有窗口跑一次通知评估。
+    /// 在任一 Provider 刷新成功后调用(两个 Provider 任一更新都会聚合一条快照)。
+    public func recordAndNotify() {
+        let snap = UsageSnapshot(
+            timestamp: Date(),
+            aliyunFiveHour: quota?.usage.fiveHour.percentage,
+            aliyunOneWeek: quota?.usage.oneWeek.percentage,
+            opencodeRolling: openCodeQuota?.rolling.pct,
+            opencodeWeekly: openCodeQuota?.weekly.pct,
+            opencodeMonthly: openCodeQuota?.monthly.pct
+        )
+        historyStore.append(snap)
+
+        // 预渲染菜单栏图标(数据更新后,主线程上下文稳定)
+        prerenderIcon()
+
+        guard notificationsEnabled else { return }
+        var entries: [(WatchKey, Int)] = []
+        if let q = quota {
+            entries.append((WatchKey(provider: "aliyun", window: "5h"), q.usage.fiveHour.percentage))
+            entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentage))
+        }
+        if let oc = openCodeQuota {
+            entries.append((WatchKey(provider: "opencode", window: "rolling"), oc.rolling.pct))
+            entries.append((WatchKey(provider: "opencode", window: "weekly"), oc.weekly.pct))
+        }
+        for (key, band) in notificationTracker.evaluate(entries, config: thresholdConfig) {
+            notifySink?(key, band)
+        }
+    }
+
+    /// 登出 OpenCode:清凭据 + 重置状态 + 清通知记忆(下次登录重新走首次通知)。
+    public func clearOpenCode() {
+        credentialStore.delete(account: Self.openCodeCookieAccount)
+        openCodeCookie = ""
+        openCodeWorkspaceID = ""
+        openCodeQuota = nil
+        openCodeError = nil
+        notificationTracker.clear(provider: "opencode")
+    }
+
+    /// 预渲染图标:数据更新后调用。若 renderIconSink 为 nil 则跳过。
+    public func prerenderIcon() {
+        renderedIcon = renderIconSink?(self)
     }
 
     /// 查 bl 已装版本 + 最新版本(后台,不阻塞主流程)
@@ -129,6 +256,7 @@ public final class TokenPlanModel: ObservableObject {
                 lastAuxFetch = Date()
                 lastUpdated = Date()
                 lastError = nil
+                recordAndNotify()
             case .failure(let e):
                 if e == .authExpired { authState = .expired }
                 lastError = errorMessage(e)
@@ -143,6 +271,7 @@ public final class TokenPlanModel: ObservableObject {
                                        addon: quota?.addon)
                 lastUpdated = Date()
                 lastError = nil
+                recordAndNotify()
             case .failure(let e):
                 if e == .authExpired { authState = .expired }
                 lastError = errorMessage(e)
@@ -162,6 +291,7 @@ public final class TokenPlanModel: ObservableObject {
             lastAuxFetch = Date()
             lastUpdated = Date()
             lastError = nil
+            recordAndNotify()
         case .failure(let e):
             if e == .authExpired { authState = .expired }
             lastError = errorMessage(e)

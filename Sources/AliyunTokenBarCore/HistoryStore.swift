@@ -1,0 +1,158 @@
+import Foundation
+
+// MARK: - 用量快照(时序持久化)
+
+/// 单次刷新落盘的用量快照(所有窗口聚合成一条)。
+/// nil 字段表示该 Provider 当时未配置/拉取失败——历史不应因部分缺失而丢弃整条。
+public struct UsageSnapshot: Codable, Equatable {
+    public let timestamp: Date
+    public let aliyunFiveHour: Int?
+    public let aliyunOneWeek: Int?
+    public let opencodeRolling: Int?
+    public let opencodeWeekly: Int?
+    public let opencodeMonthly: Int?
+
+    public init(timestamp: Date,
+                aliyunFiveHour: Int?, aliyunOneWeek: Int?,
+                opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?) {
+        self.timestamp = timestamp
+        self.aliyunFiveHour = aliyunFiveHour
+        self.aliyunOneWeek = aliyunOneWeek
+        self.opencodeRolling = opencodeRolling
+        self.opencodeWeekly = opencodeWeekly
+        self.opencodeMonthly = opencodeMonthly
+    }
+}
+
+/// 历史存储:纯 JSON 落盘(不引入 SwiftData/CoreData,免依赖升级)。
+/// 写:append 一条,自动按「同窗口序列最多 N 条」淘汰旧值(环形缓冲语义);
+/// 读:返回最近 max 条,供 sparkline / 趋势预测使用。
+///
+/// 时钟/文件 IO 经协议注入:逻辑(淘汰/截断/预测)可纯内存单测。
+public protocol HistoryClock {
+    func now() -> Date
+}
+public struct SystemHistoryClock: HistoryClock {
+    public init() {}
+    public func now() -> Date { Date() }
+}
+
+public protocol HistoryStorageBackend {
+    func read() -> [UsageSnapshot]
+    func write(_ snapshots: [UsageSnapshot])
+}
+public final class FileHistoryBackend: HistoryStorageBackend {
+    private let url: URL
+    public init(url: URL) { self.url = url }
+    public func read() -> [UsageSnapshot] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601   // 与 write 的编码策略匹配
+        return (try? dec.decode([UsageSnapshot].self, from: data)) ?? []
+    }
+    public func write(_ snapshots: [UsageSnapshot]) {
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        enc.outputFormatting = [.sortedKeys]   // 稳定输出,便于 diff
+        guard let data = try? enc.encode(snapshots) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+public final class InMemoryHistoryBackend: HistoryStorageBackend {
+    public private(set) var data: [UsageSnapshot]
+    public init(_ initial: [UsageSnapshot] = []) { self.data = initial }
+    public func read() -> [UsageSnapshot] { data }
+    public func write(_ snapshots: [UsageSnapshot]) { data = snapshots }
+}
+
+/// 历史仓库。默认保留 7 天、每个 Provider-窗口序列最多 1000 条(约 7 天 × 10 分钟间隔)。
+public final class HistoryStore {
+    public static let defaultMaxAgeDays = 7
+    public static let defaultMaxPerSeries = 1000
+
+    public let backend: HistoryStorageBackend
+    public let clock: HistoryClock
+    public let maxAgeDays: Int
+    public let maxPerSeries: Int
+
+    public init(backend: HistoryStorageBackend, clock: HistoryClock = SystemHistoryClock(),
+                maxAgeDays: Int = defaultMaxAgeDays, maxPerSeries: Int = defaultMaxPerSeries) {
+        self.backend = backend
+        self.clock = clock
+        self.maxAgeDays = maxAgeDays
+        self.maxPerSeries = maxPerSeries
+    }
+
+    /// App Support 子目录下的默认存储路径。
+    public static func defaultURL() -> URL {
+        let fm = FileManager.default
+        let dir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.temporaryDirectory
+        return dir.appendingPathComponent("AliyunTokenBar/history.json", isDirectory: false)
+    }
+
+    /// 追加一条快照,并执行淘汰(超期 + 超量)。
+    public func append(_ snapshot: UsageSnapshot) {
+        var all = backend.read()
+        all.append(snapshot)
+        let cutoff = clock.now().addingTimeInterval(-Double(maxAgeDays) * 86_400)
+        all.removeAll { $0.timestamp < cutoff }
+        if all.count > maxPerSeries {
+            all.removeFirst(all.count - maxPerSeries)
+        }
+        backend.write(all)
+    }
+
+    /// 读取最近 max 条(按时间升序),供 sparkline。
+    public func recent(_ max: Int) -> [UsageSnapshot] {
+        let all = backend.read().sorted { $0.timestamp < $1.timestamp }
+        guard all.count > max else { return all }
+        return Array(all.suffix(max))
+    }
+
+    /// 读取指定时间窗内的快照(升序)。
+    public func within(lastHours: Int) -> [UsageSnapshot] {
+        let cutoff = clock.now().addingTimeInterval(-Double(lastHours) * 3600)
+        return backend.read().filter { $0.timestamp >= cutoff }
+            .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    // MARK: - 纯函数:序列提取 + 线性预测
+
+    /// 从快照序列提取某窗口的百分比序列(保留 nil,长度 = 输入长度)。
+    public static func series(_ snapshots: [UsageSnapshot], provider: String, window: String) -> [Int?] {
+        snapshots.map { snap -> Int? in
+            switch (provider, window) {
+            case ("aliyun", "5h"): return snap.aliyunFiveHour
+            case ("aliyun", "7d"): return snap.aliyunOneWeek
+            case ("opencode", "rolling"): return snap.opencodeRolling
+            case ("opencode", "weekly"): return snap.opencodeWeekly
+            case ("opencode", "monthly"): return snap.opencodeMonthly
+            default: return nil
+            }
+        }
+    }
+
+    /// 基于近 N 条有效点线性外推「距达 100% 还需多少分钟」。
+    /// 用两点间斜率(百分比/小时)推算;数据不足或斜率非正返回 nil。
+    /// 结果仅粗略估算(滚动窗口非固定周期),UI 应标注「估算」。
+    public static func estimateMinutesToLimit(snapshots: [UsageSnapshot]) -> Int? {
+        // 取最近 ≤12 条且非空、且时间严格递增的有效点
+        let pts: [(t: Date, pct: Int)] = snapshots.suffix(12).compactMap { snap in
+            // 默认按阿里云 7d(最长窗口)估算;调用方按窗口传对应序列更准
+            guard let pct = snap.aliyunOneWeek else { return nil }
+            return (snap.timestamp, pct)
+        }
+        guard pts.count >= 2 else { return nil }
+        let first = pts.first!, last = pts.last!
+        let hours = last.t.timeIntervalSince(first.t) / 3600
+        guard hours > 0 else { return nil }
+        let deltaPct = Double(last.pct - first.pct)
+        guard deltaPct > 0 else { return nil }                 // 速率非正:不会达限
+        let remainingPct = Double(100 - last.pct)
+        guard remainingPct > 0 else { return 0 }               // 已达/超限 → 0
+        return Int((remainingPct / (deltaPct / hours)) * 60)
+    }
+}

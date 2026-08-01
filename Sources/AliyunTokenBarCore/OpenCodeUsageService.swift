@@ -94,27 +94,42 @@ public final class OpenCodeUsageService {
 
     // MARK: - 登录辅助
 
-    /// 用 auth cookie 访问首页,自动发现 workspace ID(wrk_xxx)。
-    /// 登录后页面 HTML 或 URL 里含 wrk_ 工作区标识,正则提取第一个。
+    /// 用 auth cookie 自动发现 workspace ID(wrk_xxx)。
+    ///
+    /// 请求 `/auth`:登录态下 opencode.ai 会 302 重定向到用户默认 workspace 页
+    /// (`/workspace/wrk_xxx/...`),该页 HTML 也含 wrk_。从**重定向最终 URL** 和
+    /// **HTML body** 双通道提取,任一命中即返回。
+    ///
+    /// 注意:不能用 `/`(首页)——首页是营销落地页,不含登录用户的 workspace,
+    /// 会导致永远发现不到 workspace(历史 bug)。
     public static func discoverWorkspaceID(cookie: String) async -> String? {
         let cookieHeader = cookie.contains("=") ? cookie : "auth=\(cookie)"
-        guard let url = URL(string: "\(baseURL)/") else { return nil }
+        guard let url = URL(string: "\(baseURL)/auth") else { return nil }
         var request = URLRequest(url: url)
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let html = String(data: data, encoding: .utf8) ?? ""
-            // 找第一个 wrk_xxx
-            guard let regex = try? NSRegularExpression(pattern: "wrk_[A-Za-z0-9]+") else { return nil }
-            let range = NSRange(html.startIndex..., in: html)
-            if let m = regex.firstMatch(in: html, range: range),
-               let r = Range(m.range, in: html) {
-                return String(html[r])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            // 通道 1:重定向后的最终 URL(URLSession 默认跟随重定向)
+            if let http = response as? HTTPURLResponse,
+               let finalURL = http.url?.absoluteString,
+               let wsID = firstWorkspaceID(in: finalURL) {
+                return wsID
             }
-            return nil
+            // 通道 2:HTML body
+            let html = String(data: data, encoding: .utf8) ?? ""
+            return firstWorkspaceID(in: html)
         } catch { return nil }
+    }
+
+    /// 从任意文本提取第一个 wrk_xxx 标识。无则 nil。
+    private static func firstWorkspaceID(in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: "wrk_[A-Za-z0-9]+") else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let m = regex.firstMatch(in: text, range: range),
+              let r = Range(m.range, in: text) else { return nil }
+        return String(text[r])
     }
 
     /// 验证 cookie 是否有效(能发现 workspace 即视为有效)。

@@ -69,6 +69,28 @@ struct SettingsView: View {
                     Text("5 分钟").tag(5); Text("10 分钟").tag(10); Text("30 分钟").tag(30); Text("60 分钟").tag(60)
                 }
             }
+            Section("用量告警") {
+                Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
+                if model.notificationsEnabled {
+                    // 告警阈值(提示级):50/70/80
+                    Picker("提示阈值", selection: Binding(
+                        get: { model.thresholdConfig.warning },
+                        set: { model.thresholdConfig = ThresholdConfig(warning: $0, critical: model.thresholdConfig.critical) }
+                    )) {
+                        Text("50%").tag(50); Text("70%").tag(70); Text("80%").tag(80)
+                    }
+                    // 严重阈值:80/90/95
+                    Picker("严重阈值", selection: Binding(
+                        get: { model.thresholdConfig.critical },
+                        set: { model.thresholdConfig = ThresholdConfig(warning: model.thresholdConfig.warning, critical: $0) }
+                    )) {
+                        Text("80%").tag(80); Text("90%").tag(90); Text("95%").tag(95)
+                    }
+                }
+            }
+            Section("面板趋势") {
+                Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
+            }
             Section("OpenCode Go") {
                 if model.openCodeConfigured {
                     HStack {
@@ -76,9 +98,7 @@ struct SettingsView: View {
                         Text("已登录 (workspace: \(model.openCodeWorkspaceID.prefix(12))...)").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Button("登出") {
-                        model.openCodeCookie = ""
-                        model.openCodeWorkspaceID = ""
-                        model.openCodeQuota = nil
+                        model.clearOpenCode()
                     }.buttonStyle(.plain).foregroundStyle(.red).font(.system(size: 12))
                 } else {
                     Button("登录 OpenCode") { showOpenCodeLogin = true }
@@ -98,6 +118,10 @@ struct SettingsView: View {
         .padding(16)
         .sheet(isPresented: $showOpenCodeLogin) {
             OpenCodeLoginView()
+        }
+        .onChange(of: model.notificationsEnabled) { on in
+            // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过
+            if on { NotificationManager.shared.requestAuthorization() }
         }
     }
 }
