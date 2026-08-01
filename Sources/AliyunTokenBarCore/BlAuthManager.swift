@@ -45,4 +45,59 @@ public final class BlAuthManager {
         proc.environment = BlExecutable.enrichedEnvironment()
         try? proc.run()
     }
+
+    /// 查询已安装 bl 的版本号(如 "bl 1.13.0" → "1.13.0")。失败返回 nil。
+    public static func installedVersion() -> String? {
+        guard let blPath = BlExecutable.resolve() else { return nil }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: blPath)
+        proc.arguments = ["--version"]
+        let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
+        proc.environment = BlExecutable.enrichedEnvironment()
+        do { try proc.run() } catch { return nil }
+        let out = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let raw = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // 形如 "bl 1.13.0",取最后的 x.y.z
+        return raw.split(separator: " ").last.map(String.init) ?? raw
+    }
+
+    /// 查询 npm 上最新 bl 版本(`npm view bailian-cli version`)。失败返回 nil。
+    public static func latestVersion() async -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = ["npm", "view", "bailian-cli", "version"]
+        let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
+        proc.environment = BlExecutable.enrichedEnvironment()
+        do { try proc.run() } catch { return nil }
+        // npm view 会联网,给足时间
+        for _ in 0..<60 {
+            if !proc.isRunning { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        if proc.isRunning { proc.terminate() }
+        let out = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+        return String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+            ? String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
+    }
+
+    /// 一键更新 bl:`npm install -g bailian-cli@latest`。
+    /// 在新终端窗口跑(让用户看到进度),返回是否成功拉起。
+    @discardableResult
+    public static func updateBl() -> Bool {
+        // 用 osascript 开 Terminal 跑,用户可见进度
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", """
+        tell application "Terminal"
+            activate
+            do script "npm install -g bailian-cli@latest && echo \\"✓ bl 已更新,可关闭此窗口\\"" 
+        end tell
+        """]
+        proc.environment = BlExecutable.enrichedEnvironment()
+        do { try proc.run(); return true } catch { return false }
+    }
 }

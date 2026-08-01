@@ -12,6 +12,16 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var lastError: String?
     @Published public var lastUpdated: Date?
 
+    /// 已安装的 bl 版本(如 "1.13.0");未装为 nil
+    @Published public var blInstalledVersion: String?
+    /// npm 上最新 bl 版本;查询失败为 nil
+    @Published public var blLatestVersion: String?
+    /// bl 是否可更新(installed < latest)
+    public var blUpdateAvailable: Bool {
+        guard let i = blInstalledVersion, let l = blLatestVersion else { return false }
+        return compareVersions(i, l) < 0
+    }
+
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes"); resetTimer() }
@@ -32,6 +42,14 @@ public final class TokenPlanModel: ObservableObject {
     public func startTimer() {
         resetTimer()
         Task { await checkAuthAndRefresh() }
+        // 后台查 bl 版本(检查是否需要更新 bl,非阻塞)
+        Task { await checkBlVersion() }
+    }
+
+    /// 查 bl 已装版本 + 最新版本(后台,不阻塞主流程)
+    public func checkBlVersion() async {
+        blInstalledVersion = BlAuthManager.installedVersion()
+        blLatestVersion = await BlAuthManager.latestVersion()
     }
 
     private func resetTimer() {
@@ -115,5 +133,18 @@ public final class TokenPlanModel: ObservableObject {
         case .parse: return "数据解析失败"
         case .unknown(let s): return s
         }
+    }
+
+    /// 语义化版本比较:返回 -1(a<b)/0(=)/1(a>b)。解析失败按字符串比。
+    private func compareVersions(_ a: String, _ b: String) -> Int {
+        let pa = a.split(separator: ".").compactMap { Int($0) }
+        let pb = b.split(separator: ".").compactMap { Int($0) }
+        if pa.isEmpty || pb.isEmpty { return a < b ? -1 : (a > b ? 1 : 0) }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x < y ? -1 : 1 }
+        }
+        return 0
     }
 }
