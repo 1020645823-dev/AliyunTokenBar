@@ -67,14 +67,12 @@ mkdir -p "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
 
-# Info.plist:替换版本号 / appcast url
+# Info.plist:用 PlistBuddy 写入版本号/appcast url(避免 sed 遇 URL 里的 / 出错)
 PLIST="$APP/Contents/Info.plist"
 cp "$ROOT/packaging/Info.plist" "$PLIST"
-# 替换占位符(macOS sed -i 需要空串)
-sed -i '' "s/__APPCAST_URL__/$APPCAST_URL/" "$PLIST"
-# 版本号
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :SUFeedURL $APPCAST_URL" "$PLIST"
 
 # 复制 entitlements 进 Resources(签名时引用)
 cp "$ROOT/packaging/AliyunTokenBar.entitlements" "$APP/Contents/Resources/"

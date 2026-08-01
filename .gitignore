@@ -6,3 +6,8 @@ DerivedData/
 .DS_Store
 .playwright-mcp/
 login-page.png
+dist/
+Vendor/Sparkle/Sparkle.framework/
+packaging/Frameworks/
+packaging/bin/
+packaging/keys/

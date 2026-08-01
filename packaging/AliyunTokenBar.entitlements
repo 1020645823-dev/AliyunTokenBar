@@ -2,10 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 硬化运行时(签名要求)。菜单栏 App 只需基础权限,无特殊能力。 -->
+	<!-- 硬化运行时(签名要求)。
+	     ad-hoc 签名时主程序与嵌入的 Sparkle.framework 团队 ID 不同,
+	     需禁用库校验才能加载第三方框架(无 Developer ID 时的标准做法)。 -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- Sparkle Autoupdate 子进程需要执行任意可执行文件(更新安装器) -->
 	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<false/>
-	<!-- Sparkle 2.x 在沙盒外运行,ad-hoc 签名无需 Network Client entitlement -->
-	<!-- App 通过 Process 调用 bl(用户已安装),自身不做特权网络操作 -->
+	<true/>
 </dict>
 </plist>
+

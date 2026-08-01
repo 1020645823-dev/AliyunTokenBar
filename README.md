@@ -22,20 +22,24 @@ macOS 菜单栏 App,实时显示**阿里云百炼 Token Plan 个人订阅套餐*
 ## 开发
 
 ```bash
-swift build              # 构建
-swift run AliyunTokenBar # 运行
-swift run Verify         # 跑逻辑层断言测试(本机无完整 Xcode,用此替代 XCTest)
+./packaging/dev-prepare.sh   # 首次/清理后:把 Sparkle.framework 拷到 swift run 的 rpath 路径
+swift build                  # 构建
+swift run AliyunTokenBar     # 运行
+swift run Verify             # 跑逻辑层断言测试(本机无完整 Xcode,用此替代 XCTest)
 ```
+
+> Sparkle.framework 必须物理存在于 `.build/.../Frameworks/`(SIP 下 DYLD 无效),
+> 所以 `swift run` 前要跑 `dev-prepare.sh`。打包脚本(`build-package.sh`)会自动嵌入 framework,不依赖此步。
 
 ### 结构(3 个 SPM target)
 
 ```
 Sources/
 ├── AliyunTokenBarCore/   # library:模型/解析/鉴权/状态(逻辑层)
-├── AliyunTokenBar/       # executable:@main SwiftUI App + UI(依赖 Core + Sparkle)
+├── AliyunTokenBar/       # executable:@main SwiftUI App + UI(通过 unsafeFlags 链接 Sparkle)
 └── Verify/               # executable:纯 Swift 断言(替代 XCTest)
-Vendor/Sparkle/           # 本地 Sparkle 包(预编译 xcframework,避开 github 网络问题)
-packaging/                # 打包脚本 + Info.plist + entitlements + appcast 模板
+Vendor/Sparkle/Sparkle.framework   # 预编译 Sparkle.framework(供编译-F + 运行时嵌入)
+packaging/               # build-package.sh / dev-prepare.sh / setup-sparkle.sh + Info.plist + entitlements + appcast 模板
 ```
 
 ## 打包成 .app + .dmg
@@ -45,24 +49,24 @@ packaging/                # 打包脚本 + Info.plist + entitlements + appcast �
 # 产出:dist/AliyunTokenBar.app 和 dist/AliyunTokenBar-1.0.0-mac.dmg
 ```
 
-**前置**:把 Sparkle.framework 和工具放到 `packaging/`(见下),并生成 EdDSA 密钥。
+ad-hoc 签名(`codesign -s -`,无需开发者账号)。本机能直接跑;分发给别人时 macOS Gatekeeper
+会拦(用户右键打开即可)。Sparkle 用 EdDSA 签名验证更新,不依赖 Apple 公证。
 
-### Sparkle 依赖(首次准备)
+### Sparkle 依赖(首次准备,已做好)
 
-本机 GitHub 网络受限,无法用远程 SPM 依赖,改用本地预编译:
+本机 GitHub 网络极慢无法走远程 SPM,改用本地预编译 Sparkle.framework + `unsafeFlags` 链接:
 
-1. 下载 [Sparkle-x.x.x.tar.xz](https://github.com/sparkle-project/Sparkle/releases)
-2. 解压后:
-   - `Sparkle.framework/` → `packaging/Frameworks/Sparkle.framework`(嵌入 .app)
-   - 从中提取 `Sparkle.xcframework` → 打 zip → `Vendor/Sparkle/Sparkle.xcframework.zip`(供 `import Sparkle`)
-   - `bin/generate_keys`、`bin/sign_update` → `packaging/bin/`(签名工具)
-3. 首次生成 EdDSA 密钥(存 macOS Keychain):`packaging/bin/generate_keys`,记录输出的公钥
+1. `packaging/setup-sparkle.sh <Sparkle-x.x.x.tar.xz>` —— 解压 tar,把 framework/工具就位
+2. 把 framework 拷到 `Vendor/Sparkle/Sparkle.framework`(供编译 `-F` + 打包嵌入)
+3. Package.swift 用 `unsafeFlags(["-F","Vendor/Sparkle"])` + `linkerSettings` `-framework Sparkle`
+4. entitlements 加 `disable-library-validation`(ad-hoc 签名加载第三方框架必需)
 
-### 发布更新
+### 发布更新(需线上 appcast + EdDSA 私钥)
 
-1. 改版本号跑 `VERSION=1.0.1 ./packaging/build-package.sh`
-2. 把产出的 `appcast-fragment-1.0.1.xml` 合并进线上 `appcast.xml`
-3. 上传 dmg 到 release,app 会通过 Sparkle 自动检测更新
+1. 首次:`packaging/bin/generate_keys`(私钥存 macOS Keychain,记录公钥填 Info.plist `SUPublicEDKey`)
+2. 改版本号跑 `VERSION=1.0.1 ./packaging/build-package.sh`
+3. 把产出的 `dist/appcast-fragment-1.0.1.xml` 合并进线上 `appcast.xml`(`sign_update` 签 dmg)
+4. 上传 dmg 到 release,app 通过 Sparkle 自动检测更新
 
 ## 技术约束(已实测)
 

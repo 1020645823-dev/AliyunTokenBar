@@ -6,8 +6,7 @@ import AliyunTokenBarCore
 
 struct TokenPlanMenu: View {
     @StateObject private var model = TokenPlanModel.shared
-    // Sparkle 集成就绪后取消注释:
-    // @StateObject private var sparkle = SparkleUpdater.shared
+    @StateObject private var sparkle = SparkleUpdater.shared
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
     var body: some View {
@@ -18,8 +17,7 @@ struct TokenPlanMenu: View {
             }
             actionButtons
             if let sub = model.quota?.subscription { subscriptionRow(sub) }
-            // Sparkle 集成就绪后取消注释:
-            // updateRow
+            updateRow
         }
         .padding(16)
         .frame(width: 340)
@@ -27,14 +25,11 @@ struct TokenPlanMenu: View {
         .overlay { if needsAuthOverlay { AuthOverlay() } }
         .task {
             await model.checkAuthAndRefresh()
-            // Sparkle 集成就绪后取消注释:
-            // sparkle.checkForUpdateInformation()
+            sparkle.checkForUpdateInformation()
         }
     }
 
-    /// 更新状态行:有新版本可点击安装,否则点击手动检查。
-    /// Sparkle 集成就绪后取消注释整个属性。
-    /*
+    /// 更新状态行:有新版本可点击安装,否则点击手动检查
     private var updateRow: some View {
         HStack(spacing: 6) {
             Image(systemName: sparkle.isUpdateReadyToRestart ? "arrow.triangle.2.circlepath" : "sparkles")
@@ -68,7 +63,6 @@ struct TokenPlanMenu: View {
             }
         }
     }
-    */
 
     private var needsAuthOverlay: Bool {
         model.authState == .blNotInstalled || model.authState == .notLoggedIn || model.authState == .expired

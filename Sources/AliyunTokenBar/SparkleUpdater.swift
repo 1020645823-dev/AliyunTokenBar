@@ -46,9 +46,11 @@ final class SparkleUpdater: ObservableObject {
         updaterController.updater.checkForUpdates()
     }
 
-    /// 重启并安装已下载的更新
+    /// 重启并安装已下载的更新。
+    /// Sparkle 2.x 没有独立的 "立即安装" API——更新就绪后由 user driver 弹窗引导安装/重启,
+    /// 所以这里复用标准 UI(它会显示"安装并重启"选项)。
     func restartToInstallUpdate() {
-        updaterController.updater.activateUpdate()
+        updaterController.updater.checkForUpdates()
     }
 }
 
