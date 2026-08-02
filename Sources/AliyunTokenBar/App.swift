@@ -120,16 +120,19 @@ enum MenuBarTextRenderer {
     /// 按 scheme 渲染菜单栏图标(模板图,系统按明暗自动染色)。
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
     /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
+    /// kimiWeekly 为 nil 时不显示 Kimi 部分。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
+                      kimiWeekly: Int? = nil,
                       thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         switch scheme {
         case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
                                                       openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
+                                                      kimiWeekly: kimiWeekly,
                                                       thresholdConfig: thresholdConfig)
-        case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek)
+        case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek, kimiWeekly: kimiWeekly)
         case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
                                               thresholdConfig: thresholdConfig)
@@ -141,15 +144,16 @@ enum MenuBarTextRenderer {
         v.map { "\($0)%" } ?? "—"
     }
 
-    /// 云朵 + 阿里云双百分比 + (可选)OpenCode 双百分比:
-    /// ☁ 5h 35% · 7d 61%  ⚡ 22% · 43%
+    /// 云朵 + 阿里云双百分比 + OpenCode 双百分比 + Kimi 周百分比:
+    /// ☁ 5h 35% · 7d 61%  ⚡ 22% · 43%  ✨ 58%
     /// 用**模板图**(系统自动适配明暗:深色菜单栏自动染白)。
-    /// 双 Provider 区分靠**形状**(云朵 vs 闪电)而非颜色——符合 macOS 菜单栏规范。
+    /// 三 Provider 区分靠**形状**(云朵 vs 闪电 vs 星星)而非颜色——符合 macOS 菜单栏规范。
     /// 阈值变色:百分比数字按风险变色(safe→黑/白 / warning→橙 / critical→红)。
     /// 服务不可用(nil)时数值显示为横杠(—)。
     @MainActor
     private static func cloudPercentImage(fiveHour: Int?, oneWeek: Int?,
                                           openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
+                                          kimiWeekly: Int? = nil,
                                           thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
@@ -172,6 +176,13 @@ enum MenuBarTextRenderer {
                 Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
                 Text(pctText(openCodeWeekly)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(openCodeWeekly.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
+            }
+            // Kimi:星星 + 周百分比(配置了才显示;服务不可用时显示横杠)
+            if kimiWeekly != nil {
+                Spacer().frame(width: 6)
+                Image(systemName: "sparkles").font(.system(size: 10, weight: .bold)).foregroundStyle(.black)
+                Text(pctText(kimiWeekly)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(kimiWeekly.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
         }
         .frame(height: 20)
@@ -200,9 +211,9 @@ enum MenuBarTextRenderer {
         return CloudShape()
     }
 
-    /// 默认紧凑:5h/7d 双行(nil 时显示横杠)
+    /// 默认紧凑:5h/7d 双行 + Kimi 周百分比行(nil 时显示横杠)
     @MainActor
-    private static func compactImage(fiveHour: Int?, oneWeek: Int?) -> NSImage {
+    private static func compactImage(fiveHour: Int?, oneWeek: Int?, kimiWeekly: Int? = nil) -> NSImage {
         let content = VStack(alignment: .trailing, spacing: -1) {
             HStack(spacing: 2) {
                 Text("5h").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
@@ -211,6 +222,12 @@ enum MenuBarTextRenderer {
             HStack(spacing: 2) {
                 Text("7d").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
                 Text(pctText(oneWeek)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+            }
+            if kimiWeekly != nil {
+                HStack(spacing: 2) {
+                    Image(systemName: "sparkles").font(.system(size: 9, weight: .bold)).frame(width: 16, alignment: .leading)
+                    Text(pctText(kimiWeekly)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+                }
             }
         }
         .foregroundStyle(.black)
@@ -293,14 +310,15 @@ enum MenuBarTextRenderer {
 
 @main
 struct AliyunTokenBarApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = TokenPlanModel.shared
     @StateObject private var themeManager = ThemeManager.shared
     @StateObject private var menuBarStyle = MenuBarStyleManager.shared
     @StateObject private var notifier = NotificationManager.shared
 
     init() {
-        // 注入图标渲染闭包:数据更新时 Core 预渲染缓存,label 只读缓存
-        // (避免 label 闭包实时渲染在 MenuBarExtra 上下文的不稳定问题)。
+        // 注入图标渲染闭包:数据更新时 Core 预渲染缓存,NSStatusItem 按钮只读缓存
+        // (避免每次渲染都走 ImageRenderer,保持菜单栏响应)。
         TokenPlanModel.shared.renderIconSink = { model in
             // OpenCode:已配置但出错时传 Optional(nil) → 菜单栏显示横杠;
             // 未配置时整个 OpenCode 部分不显示。
@@ -308,33 +326,27 @@ struct AliyunTokenBarApp: App {
                 ?? (model.openCodeConfigured && model.openCodeError != nil ? .some(nil) : nil)
             let ocWeekly: Int?? = model.openCodeQuota.map { .some($0.weekly.pct) }
                 ?? (model.openCodeConfigured && model.openCodeError != nil ? .some(nil) : nil)
+            // Kimi:已配置但出错时显示横杠;未配置时整个 Kimi 部分不显示。
+            let kimiWeekly: Int?? = model.kimiQuota.map { .some($0.weekly.pctInt) }
+                ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
             return MenuBarTextRenderer.image(
                 scheme: MenuBarStyleManager.shared.scheme,
-                fiveHour: model.quota?.usage.fiveHour.percentage,
-                oneWeek: model.quota?.usage.oneWeek.percentage,
+                fiveHour: model.quota?.usage.fiveHour.percentageInt,
+                oneWeek: model.quota?.usage.oneWeek.percentageInt,
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,
+                kimiWeekly: kimiWeekly ?? nil,
                 thresholdConfig: model.thresholdConfig
             )
         }
         // 应用保存的主题
         NSApplication.shared.appearance = ThemeManager.shared.theme.nsAppearance
-        // 数据刷新也延迟到 onAppear(与通知授权一起,bundle 上下文就绪后)
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            TokenPlanMenu()
-        } label: {
-            // 只读预渲染缓存(无实时渲染);无缓存时用固定图标
-            if let icon = model.renderedIcon {
-                Image(nsImage: icon)
-            } else {
-                Image(systemName: "cloud.fill")
-            }
-        }
-        .menuBarExtraStyle(.window)
-
+        // 注意:不再用 MenuBarExtra——macOS 26 会因系统隐藏状态项而回收进程。
+        // 状态项由 AppDelegate 手动管理(NSStatusItem + NSPopover)。
+        // 设置窗口走自定义 NSPanel(SettingsWindowManager),故此处无 Settings scene。
         Settings {
             SettingsView()
         }

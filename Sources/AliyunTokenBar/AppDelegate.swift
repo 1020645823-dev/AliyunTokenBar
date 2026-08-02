@@ -1,0 +1,94 @@
+import SwiftUI
+import AppKit
+import Combine
+import UserNotifications
+import AliyunTokenBarCore
+
+/// 手动管理 NSStatusItem + NSPopover 的 AppDelegate。
+///
+/// 为什么不用 MenuBarExtra:macOS 26 的「允许在菜单栏中显示」开关一旦被系统关闭,
+/// MenuBarExtra 的场景无法挂载,整个进程会被框架优雅回收(exit 0,无崩溃日志)。
+/// 手动 NSStatusItem 在系统隐藏时只是 isVisible=false,进程存活。
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
+    private var cancellables = Set<AnyCancellable>()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // 禁用自动终止(双保险:NSStatusItem 本身已规避 MenuBarExtra 的回收路径)
+        ProcessInfo.processInfo.disableAutomaticTermination("menubar-extra")
+        setupStatusItem()
+        setupPopover()
+        observeModel()
+        // 延迟检查 isVisible:若系统隐藏了状态项,回退为 Dock 图标 + 通知
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.handleVisibilityFallback()
+        }
+        // 数据刷新(原 MenuBarExtra 的 .task 逻辑)——App 启动即开始,不等面板打开
+        NotificationManager.shared.requestAuthorization()
+        NotificationManager.shared.attach(to: TokenPlanModel.shared)
+        TokenPlanModel.shared.startTimer()
+    }
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            button.image = TokenPlanModel.shared.renderedIcon ?? fallbackIcon()
+            button.image?.isTemplate = true
+            button.target = self
+            button.action = #selector(togglePopover)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        statusItem = item
+    }
+
+    private func setupPopover() {
+        let p = NSPopover()
+        p.contentSize = NSSize(width: 340, height: 560)
+        p.behavior = .transient
+        p.animates = true
+        p.contentViewController = NSHostingController(rootView: TokenPlanMenu())
+        popover = p
+    }
+
+    /// 订阅模型:renderedIcon 更新时同步到状态项按钮。
+    private func observeModel() {
+        let model = TokenPlanModel.shared
+        model.$renderedIcon
+            .receive(on: RunLoop.main)
+            .sink { [weak self] icon in
+                guard let self, let button = self.statusItem?.button else { return }
+                button.image = icon ?? self.fallbackIcon()
+                button.image?.isTemplate = true
+            }
+            .store(in: &cancellables)
+    }
+
+    @objc private func togglePopover() {
+        guard let popover, let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    /// 状态项被系统隐藏时回退:改为 .regular 显示 Dock 图标 + 通知引导。
+    private func handleVisibilityFallback() {
+        guard let statusItem, statusItem.isVisible == false else { return }
+        NSApp.setActivationPolicy(.regular)
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "菜单栏图标被隐藏"
+        content.body = "请在 系统设置 → 控制中心 → 菜单栏 中重新打开 AliyunTokenBar 的开关,或从 Dock 图标打开。"
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "menubar-hidden-fallback", content: content, trigger: nil))
+    }
+
+    private func fallbackIcon() -> NSImage {
+        NSImage(systemSymbolName: "cloud.fill", accessibilityDescription: "AliyunTokenBar")
+            ?? NSImage(size: NSSize(width: 22, height: 22))
+    }
+}

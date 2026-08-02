@@ -11,16 +11,23 @@ public struct UsageSnapshot: Codable, Equatable {
     public let opencodeRolling: Int?
     public let opencodeWeekly: Int?
     public let opencodeMonthly: Int?
+    public let kimiFiveHour: Int?
+    public let kimiWeekly: Int?
+    public let kimiMonthly: Int?
 
     public init(timestamp: Date,
                 aliyunFiveHour: Int?, aliyunOneWeek: Int?,
-                opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?) {
+                opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?,
+                kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil, kimiMonthly: Int? = nil) {
         self.timestamp = timestamp
         self.aliyunFiveHour = aliyunFiveHour
         self.aliyunOneWeek = aliyunOneWeek
         self.opencodeRolling = opencodeRolling
         self.opencodeWeekly = opencodeWeekly
         self.opencodeMonthly = opencodeMonthly
+        self.kimiFiveHour = kimiFiveHour
+        self.kimiWeekly = kimiWeekly
+        self.kimiMonthly = kimiMonthly
     }
 }
 
@@ -130,6 +137,9 @@ public final class HistoryStore {
             case ("opencode", "rolling"): return snap.opencodeRolling
             case ("opencode", "weekly"): return snap.opencodeWeekly
             case ("opencode", "monthly"): return snap.opencodeMonthly
+            case ("kimi", "5h"): return snap.kimiFiveHour
+            case ("kimi", "weekly"): return snap.kimiWeekly
+            case ("kimi", "monthly"): return snap.kimiMonthly
             default: return nil
             }
         }

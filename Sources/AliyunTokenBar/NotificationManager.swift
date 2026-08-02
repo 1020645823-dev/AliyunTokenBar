@@ -38,6 +38,7 @@ final class NotificationManager: NSObject, ObservableObject {
         switch key.provider {
         case "aliyun": providerName = "阿里云"
         case "opencode": providerName = "OpenCode Go"
+        case "kimi": providerName = "Kimi Code"
         default: providerName = key.provider
         }
         let windowName: String

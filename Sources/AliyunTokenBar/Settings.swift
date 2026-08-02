@@ -50,6 +50,7 @@ struct SettingsView: View {
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var menuBarStyle = MenuBarStyleManager.shared
     @State private var showOpenCodeLogin = false
+    @State private var showKimiLogin = false
     var body: some View {
         Form {
             Section("外观") {
@@ -111,6 +112,37 @@ struct SettingsView: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
+            Section("Kimi Code") {
+                if model.kimiConfigured {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text("已连接(复用本机 KimiCodeBar / Kimi CLI 凭证)").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    if model.kimiWebLoggedIn {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text("已登录网页控制台(订阅总额度可用)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        Button("登出网页控制台") {
+                            model.clearKimi()
+                        }.buttonStyle(.plain).foregroundStyle(.red).font(.system(size: 12))
+                    } else {
+                        Button("登录 Kimi 网页控制台") { showKimiLogin = true }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .background(Color.teal.opacity(0.8))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Text("登录后可查看订阅总额度(月度用量)。点击登录,在弹出窗口完成 Kimi 账号授权。")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Button("立即刷新") { Task { await model.refreshKimi() } }
+                        .buttonStyle(.plain).foregroundStyle(.atbBlue).font(.system(size: 12))
+                } else {
+                    Text("未检测到本机 Kimi 登录凭证。请先安装并登录 Kimi Code CLI 或 KimiCodeBar。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
             Section("通用") {
                 Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
             }
@@ -118,6 +150,9 @@ struct SettingsView: View {
         .padding(16)
         .sheet(isPresented: $showOpenCodeLogin) {
             OpenCodeLoginView()
+        }
+        .sheet(isPresented: $showKimiLogin) {
+            KimiLoginView()
         }
         .onChange(of: model.notificationsEnabled) { on in
             // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过

@@ -9,13 +9,27 @@ public struct UsageDetail: Equatable {
         self.resetTimeMs = resetTimeMs
     }
 
-    /// 0–100 整数百分比(从 0.x 浮点四舍五入,钳制到 0...100)
-    public var percentage: Int {
-        let pct = Int((percentageRaw * 100).rounded())
+    /// 0–100 浮点百分比(2 位小数精度,钳制到 0...100)。对齐官方控制台显示精度。
+    public var percentage: Double {
+        let pct = (percentageRaw * 100 * 100).rounded() / 100  // 保留 2 位小数
         return min(max(pct, 0), 100)
     }
 
-    /// "X小时Y分钟后重置" / "X天后重置" / "即将重置" / "未知"
+    /// 整数百分比(用于阈值判定/通知,向下兼容)
+    public var percentageInt: Int {
+        Int(percentage.rounded())
+    }
+
+    /// 完整重置时间字符串:"2026-08-03 05:19:00" 格式,对齐官方控制台。
+    public var resetTimeDisplay: String {
+        guard resetTimeMs > 0 else { return "未知" }
+        let reset = Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return fmt.string(from: reset)
+    }
+
+    /// "X小时Y分钟后重置" / "X天后重置" / "即将重置" / "未知"(相对时间,菜单栏等紧凑场景用)
     public var timeUntilReset: String {
         guard resetTimeMs > 0 else { return "未知" }
         let reset = Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000)

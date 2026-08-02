@@ -1,0 +1,114 @@
+import Foundation
+
+// MARK: - Kimi Code 用量模型(与官方 API 响应结构对齐)
+
+/// Kimi Code 单个用量窗口。
+/// 对齐官方语义:limits[0](duration=300) = 5小时窗口,usage = 滚动周窗口,totalQuota = 月度总额。
+public struct KimiWindow: Equatable {
+    public let used: Int          // 已用 tokens
+    public let limit: Int         // 限额 tokens
+    public let resetTimeMs: Int64? // 重置时间(ms epoch);API 有时不返回
+
+    public init(used: Int, limit: Int, resetTimeMs: Int64?) {
+        self.used = used
+        self.limit = limit
+        self.resetTimeMs = resetTimeMs
+    }
+
+    /// 剩余
+    public var remaining: Int { max(0, limit - used) }
+
+    /// 0–100 浮点百分比(2 位小数精度,钳制 0...100)
+    public var pct: Double {
+        guard limit > 0 else { return 0 }
+        let pct = (Double(used) / Double(limit) * 100 * 100).rounded() / 100
+        return min(max(pct, 0), 100)
+    }
+
+    /// 整数百分比(阈值/通知用)
+    public var pctInt: Int { Int(pct.rounded()) }
+
+    /// 完整重置时间:"2026-08-04 14:36:22"(本地时区)
+    public var resetTimeDisplay: String {
+        guard let resetTimeMs else { return "未知" }
+        let reset = Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return fmt.string(from: reset)
+    }
+
+    /// "X小时Y分钟后重置" / "X天后重置" / "即将重置" / "未知"
+    public var timeUntilReset: String {
+        guard let resetTimeMs else { return "未知" }
+        let reset = Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000)
+        let now = Date()
+        if reset <= now { return "即将重置" }
+        let comps = Calendar.current.dateComponents([.day, .hour, .minute], from: now, to: reset)
+        if let day = comps.day, day > 0 {
+            return "\(day)天\(comps.hour ?? 0)小时后重置"
+        }
+        if let hour = comps.hour, hour > 0 {
+            return "\(hour)小时\(comps.minute ?? 0)分钟后重置"
+        }
+        if let minute = comps.minute, minute > 0 {
+            return "\(minute)分钟后重置"
+        }
+        return "即将重置"
+    }
+}
+
+/// Kimi Code 套餐用量(5h / 周 / 月度总额 + 加油包)。
+public struct KimiQuota: Equatable {
+    /// 5 小时窗口(limits[0],duration=300)
+    public let fiveHour: KimiWindow
+    /// 滚动周窗口(usage 字段)
+    public let weekly: KimiWindow
+    /// 月度总额度(totalQuota 字段;API 未返回时为 nil)
+    public let monthly: KimiWindow?
+    /// 加油包(未开通/未启用时为 nil)
+    public let booster: KimiBooster?
+    /// 会员等级(LEVEL_* 枚举,如 "LEVEL_ADVANCED")
+    public let membershipLevel: String?
+    /// 订阅到期时间(ms epoch,web 控制台 GetSubscriptionStats 提供;月度卡片"重置"时间)
+    public let subscriptionExpireMs: Int64?
+
+    public init(fiveHour: KimiWindow, weekly: KimiWindow, monthly: KimiWindow?,
+                booster: KimiBooster?, membershipLevel: String?,
+                subscriptionExpireMs: Int64? = nil) {
+        self.fiveHour = fiveHour
+        self.weekly = weekly
+        self.monthly = monthly
+        self.booster = booster
+        self.membershipLevel = membershipLevel
+        self.subscriptionExpireMs = subscriptionExpireMs
+    }
+
+    /// 月度卡片重置时间:优先订阅到期时间,否则走 monthly 窗口自身。
+    public var monthlyResetDisplay: String? {
+        if let ms = subscriptionExpireMs {
+            let reset = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
+            return fmt.string(from: reset)
+        }
+        return monthly?.resetTimeDisplay
+    }
+}
+
+/// Kimi 加油包余额(官方后台已开通才展示)。
+public struct KimiBooster: Equatable {
+    public let enabled: Bool
+    /// 余额(元);接口未返回真实余额时为 0
+    public let balanceYuan: Double
+    /// 本月消费(元)
+    public let monthlyUsedYuan: Double
+    /// 月度消费上限(元);0 = 无限制
+    public let monthlyLimitYuan: Double
+
+    public init(enabled: Bool, balanceYuan: Double, monthlyUsedYuan: Double, monthlyLimitYuan: Double) {
+        self.enabled = enabled
+        self.balanceYuan = balanceYuan
+        self.monthlyUsedYuan = monthlyUsedYuan
+        self.monthlyLimitYuan = monthlyLimitYuan
+    }
+}

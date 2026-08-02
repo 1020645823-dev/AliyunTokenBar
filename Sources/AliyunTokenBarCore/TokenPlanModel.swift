@@ -42,6 +42,20 @@ public final class TokenPlanModel: ObservableObject {
     }
     @Published public var openCodeError: String?
 
+    // MARK: - Kimi Code
+
+    /// Kimi Code 套餐用量(5h/周/月度总额 + 加油包)
+    @Published public var kimiQuota: KimiQuota?
+    /// Kimi 是否已配置(本机存在 KimiCodeBar / Kimi CLI 凭证)
+    public var kimiConfigured: Bool {
+        KimiUsageService.tokenExists()
+    }
+    /// Kimi 网页控制台是否已登录(提供月度总额度数据)
+    public var kimiWebLoggedIn: Bool {
+        KimiUsageService.loadWebToken() != nil
+    }
+    @Published public var kimiError: String?
+
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes"); resetTimer() }
@@ -131,6 +145,7 @@ public final class TokenPlanModel: ObservableObject {
         Task { await checkAuthAndRefresh() }
         Task { await checkBlVersion() }
         Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
+        Task { await refreshKimi() }
     }
 
     /// 自愈:若已有 cookie 但缺 workspace(如旧版登录失败遗留,或 discover 逻辑修复后首次启动),
@@ -164,6 +179,37 @@ public final class TokenPlanModel: ObservableObject {
         }
     }
 
+    // MARK: - Kimi Code
+
+    /// 拉取 Kimi Code 套餐用量(读本机 KimiCodeBar/Kimi CLI 凭证 + web 控制台登录)。
+    /// 凭证不存在时静默跳过(设置页有引导)。
+    public func refreshKimi() async {
+        guard kimiConfigured else { return }
+        let result = await KimiUsageService.fetchQuota()
+        switch result {
+        case .success(let q):
+            kimiQuota = q
+            kimiError = nil
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: kimiError = "Kimi 登录已过期,请重新登录 KimiCodeBar / Kimi CLI"
+            case .network(let s): kimiError = "Kimi 网络错误: \(s)"
+            case .parse: kimiError = "Kimi 响应格式变化,解析失败"
+            case .invalidResponse: kimiError = "Kimi 响应异常"
+            case .unknown(let s): kimiError = s
+            }
+        }
+    }
+
+    /// 清空 Kimi 状态(不删共享凭证文件;web 登录 token 一并清)。
+    public func clearKimi() {
+        kimiQuota = nil
+        kimiError = nil
+        KimiUsageService.clearWebToken()
+        notificationTracker.clear(provider: "kimi")
+    }
+
     // MARK: - 历史记录 + 通知评估(P0-P1)
 
     /// 把当前已知用量落盘一条快照,并对所有窗口跑一次通知评估。
@@ -171,11 +217,14 @@ public final class TokenPlanModel: ObservableObject {
     public func recordAndNotify() {
         let snap = UsageSnapshot(
             timestamp: Date(),
-            aliyunFiveHour: quota?.usage.fiveHour.percentage,
-            aliyunOneWeek: quota?.usage.oneWeek.percentage,
+            aliyunFiveHour: quota?.usage.fiveHour.percentageInt,
+            aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
             opencodeRolling: openCodeQuota?.rolling.pct,
             opencodeWeekly: openCodeQuota?.weekly.pct,
-            opencodeMonthly: openCodeQuota?.monthly.pct
+            opencodeMonthly: openCodeQuota?.monthly.pct,
+            kimiFiveHour: kimiQuota?.fiveHour.pctInt,
+            kimiWeekly: kimiQuota?.weekly.pctInt,
+            kimiMonthly: kimiQuota?.monthly?.pctInt
         )
         historyStore.append(snap)
 
@@ -185,12 +234,19 @@ public final class TokenPlanModel: ObservableObject {
         guard notificationsEnabled else { return }
         var entries: [(WatchKey, Int)] = []
         if let q = quota {
-            entries.append((WatchKey(provider: "aliyun", window: "5h"), q.usage.fiveHour.percentage))
-            entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentage))
+            entries.append((WatchKey(provider: "aliyun", window: "5h"), q.usage.fiveHour.percentageInt))
+            entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentageInt))
         }
         if let oc = openCodeQuota {
             entries.append((WatchKey(provider: "opencode", window: "rolling"), oc.rolling.pct))
             entries.append((WatchKey(provider: "opencode", window: "weekly"), oc.weekly.pct))
+        }
+        if let k = kimiQuota {
+            entries.append((WatchKey(provider: "kimi", window: "5h"), k.fiveHour.pctInt))
+            entries.append((WatchKey(provider: "kimi", window: "weekly"), k.weekly.pctInt))
+            if let m = k.monthly {
+                entries.append((WatchKey(provider: "kimi", window: "monthly"), m.pctInt))
+            }
         }
         for (key, band) in notificationTracker.evaluate(entries, config: thresholdConfig) {
             notifySink?(key, band)
@@ -226,6 +282,7 @@ public final class TokenPlanModel: ObservableObject {
                 Task {
                     await self?.refresh()
                     await self?.refreshOpenCode()   // OpenCode 随定时器一起刷
+                    await self?.refreshKimi()       // Kimi 随定时器一起刷
                 }
             }
     }

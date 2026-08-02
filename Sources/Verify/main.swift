@@ -9,11 +9,17 @@ func check(_ name: String, _ cond: Bool) {
 
 // --- Task 2: Models ---
 let d1 = UsageDetail(percentageRaw: 0.349956963, resetTimeMs: 1785560220000)
-check("pct 0.3499->35", d1.percentage == 35)
+check("pct 0.3499->35.0", d1.percentage == 35.0)
+check("pctInt 0.3499->35", d1.percentageInt == 35)
 check("resetTimeMs stored", d1.resetTimeMs == 1785560220000)
 
-check("pct clamp at 100", UsageDetail(percentageRaw: 1.5, resetTimeMs: 0).percentage == 100)
-check("pct negative -> 0", UsageDetail(percentageRaw: -0.1, resetTimeMs: 0).percentage == 0)
+check("pct clamp at 100", UsageDetail(percentageRaw: 1.5, resetTimeMs: 0).percentage == 100.0)
+check("pct negative -> 0", UsageDetail(percentageRaw: -0.1, resetTimeMs: 0).percentage == 0.0)
+
+// 2 位小数精度:小数值不再截断为 0
+let dSmall = UsageDetail(percentageRaw: 0.0025827426666666666, resetTimeMs: 0)
+check("pct small 0.26", dSmall.percentage == 0.26)
+check("pctInt small -> 0", dSmall.percentageInt == 0)
 
 // 90 min from now → "1小时N分钟后重置" (N may be 28-30 due to sub-second truncation; assert hour only)
 let reset90 = Int64((Date().addingTimeInterval(90 * 60).timeIntervalSince1970) * 1000)
@@ -28,15 +34,21 @@ check("specDisplay Pro", sub.specDisplay == "Pro")
 check("statusDisplay 生效中", sub.statusDisplay == "生效中")
 
 // --- Task 3: BlUsageService JSON parsing ---
+// ⚠️ 数据契约:以下 fixture 必须与 BlUsageService.swift 的解析函数保持同步。
+// 修改 BlUsageService 的 JSON 键名/结构时,同步更新对应 fixture 字段:
+//   usageFixture       ↔ BlUsageService.parseUsage()
+//   subscriptionFixture ↔ BlUsageService.parseSubscription()
+//   addonFixture        ↔ BlUsageService.parseAddon()
+//   expiredFixture      ↔ BlUsageService.classifyError()
 let usageFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per5HourPercentage":0.349956963,"per1WeekResetTime":1785687360000,"per5HourResetTime":1785560220000,"per1WeekPercentage":0.61428294255},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
 let subscriptionFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"instanceCode":"sfm_x","specCode":"pro","remainingDays":291,"startTime":1784451307000,"endTime":1810742400000,"autoRenewFlag":false,"status":"VALID"},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
 let addonFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"remainingCredits":0.0,"activeCount":0,"totalCredits":0.0},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
 let expiredFixture = #"{"error":{"code":3,"message":"Console session is not logged in or has expired.","hint":"Run `bl auth login --console` to sign in or refresh your console session."}}"#
 
 let u = try? BlUsageService.parseUsage(Data(usageFixture.utf8))
-check("usage 5h pct 35", u?.fiveHour.percentage == 35)
+check("usage 5h pct 35.0", u?.fiveHour.percentage == 35.0)
 check("usage 5h reset", u?.fiveHour.resetTimeMs == 1785560220000)
-check("usage 7d pct 61", u?.oneWeek.percentage == 61)
+check("usage 7d pct 61.43", u?.oneWeek.percentage == 61.43)
 check("usage 7d reset", u?.oneWeek.resetTimeMs == 1785687360000)
 
 let s = try? BlUsageService.parseSubscription(Data(subscriptionFixture.utf8))
@@ -97,6 +109,112 @@ check("opencode rolling 含 3小时", oc?.rolling.timeUntilReset.contains("3小�
 // 缺少某窗口应返回 nil
 let ocPartial = "<script>rollingUsage:$R[1]={status:\"ok\",resetInSec:1,usagePercent:5}</script>"
 check("opencode partial -> nil", OpenCodeUsageService.parse(ocPartial) == nil)
+
+// --- Kimi Code:官方 usages API 解析 ---
+let kimiFixture = """
+{"user":{"userId":"cp5vaei34pe4b64f8rfg","membership":{"level":"LEVEL_ADVANCED"}},
+"usage":{"limit":"100","used":"58","remaining":"42","resetTime":"2026-08-04T06:36:22.762591Z"},
+"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","remaining":"100","resetTime":"2026-08-02T18:36:22.762591Z"}}],
+"totalQuota":{},
+"boosterWallet":{"status":"STATUS_ACTIVE","balance":{"unit":"UNIT_CURRENCY"},"monthlyChargeLimit":{"currency":"CNY","priceInCents":"10000"},"monthlyUsed":{"currency":"CNY","priceInCents":"0"}}}
+"""
+let kq = KimiUsageService.parse(Data(kimiFixture.utf8))
+check("kimi weekly 58%", kq?.weekly.pct == 58.0)
+check("kimi weekly used 58", kq?.weekly.used == 58)
+check("kimi weekly limit 100", kq?.weekly.limit == 100)
+check("kimi 5h used 0", kq?.fiveHour.used == 0)
+check("kimi 5h limit 100", kq?.fiveHour.limit == 100)
+check("kimi monthly nil (empty totalQuota)", kq?.monthly == nil)
+check("kimi booster enabled", kq?.booster?.enabled == true)
+check("kimi booster monthlyUsed 0", kq?.booster?.monthlyUsedYuan == 0.0)
+check("kimi booster monthlyLimit 100", kq?.booster?.monthlyLimitYuan == 100.0)
+check("kimi membership LEVEL_ADVANCED", kq?.membershipLevel == "LEVEL_ADVANCED")
+check("kimi weekly resetTimeDisplay", kq?.weekly.resetTimeDisplay == "2026-08-04 14:36:22")
+
+// 5h 窗口 used 缺失时用 limit - remaining 推算
+let kimiFixtureFiveHourUsed = """
+{"usage":{"limit":"100","used":"58","remaining":"42","resetTime":"2026-08-04T06:36:22.762591Z"},
+"limits":[{"window":{"duration":300},"detail":{"limit":"200","used":"40","remaining":"160","resetTime":"2026-08-02T18:36:22.762591Z"}}],
+"totalQuota":{"limit":"1000000","used":"300000","remaining":"700000"}}
+"""
+let kq2 = KimiUsageService.parse(Data(kimiFixtureFiveHourUsed.utf8))
+check("kimi 5h used 40", kq2?.fiveHour.used == 40)
+check("kimi 5h pct 20", kq2?.fiveHour.pct == 20.0)
+check("kimi monthly present", kq2?.monthly != nil)
+check("kimi monthly pct 30", kq2?.monthly?.pct == 30.0)
+check("kimi monthly used 300000", kq2?.monthly?.used == 300000)
+check("kimi parse garbage -> nil", KimiUsageService.parse(Data("not json".utf8)) == nil)
+
+// KimiWindow.pct 边界
+let kw = KimiWindow(used: 5, limit: 1000, resetTimeMs: nil)
+check("kimi window pct 0.5", kw.pct == 0.5)
+check("kimi window pctInt 1", kw.pctInt == 1)
+check("kimi window remaining 995", kw.remaining == 995)
+check("kimi window zero limit pct 0", KimiWindow(used: 5, limit: 0, resetTimeMs: nil).pct == 0)
+
+// --- Kimi Web 控制台:GetUsages 响应解析(月度总额度数据源)---
+let kimiWebFixture = """
+{"usages":[{"scope":"FEATURE_CODING","detail":{"limit":"100","used":"58","remaining":"42","resetTime":"2026-08-04T06:36:22.762591Z"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","remaining":"100","resetTime":"2026-08-02T18:36:22.762591Z"}}]}],
+"totalQuota":{"limit":"100","used":"41","remaining":"59"}}
+"""
+// 用 parseWebUsages 纯函数验证(需在 KimiUsageService 暴露)
+// 通过 fetchWebQuota 的解析逻辑直接验证:构造一个可测的解析函数
+let webParsed = KimiUsageService.parseWebUsages(Data(kimiWebFixture.utf8))
+check("web weekly 58%", webParsed?.weekly.pct == 58.0)
+check("web 5h limit 100", webParsed?.fiveHour.limit == 100)
+check("web monthly 41%", webParsed?.monthly?.pct == 41.0)
+check("web monthly used 41", webParsed?.monthly?.used == 41)
+check("web monthly limit 100", webParsed?.monthly?.limit == 100)
+check("web monthly nil when empty", KimiUsageService.parseWebUsages(Data(#"{"usages":[],"totalQuota":{}}"#.utf8))?.monthly == nil) 
+check("web parse garbage -> nil", KimiUsageService.parseWebUsages(Data("bad".utf8)) == nil)
+
+// KimiQuota.monthlyResetDisplay 用订阅到期时间
+let kq3 = KimiQuota(fiveHour: KimiWindow(used: 0, limit: 100, resetTimeMs: nil),
+                    weekly: KimiWindow(used: 58, limit: 100, resetTimeMs: nil),
+                    monthly: KimiWindow(used: 41, limit: 100, resetTimeMs: nil),
+                    booster: nil, membershipLevel: nil,
+                    subscriptionExpireMs: 1784678400000)
+check("kimi monthlyReset uses expire", kq3.monthlyResetDisplay == "2026-07-22 08:00:00")
+
+// --- Kimi Code:live API(仅 KIMI_LIVE=1 时跑)---
+if ProcessInfo.processInfo.environment["KIMI_LIVE"] == "1" {
+    let r = await KimiUsageService.fetchQuota()
+    switch r {
+    case .success(let q):
+        check("kimi live weekly pct >= 0", q.weekly.pct >= 0)
+        check("kimi live 5h limit > 0", q.fiveHour.limit > 0)
+    case .failure(let e):
+        check("kimi live fetch", false)
+        print("kimi live error: \(e)")
+    }
+} else {
+    print("SKIP kimi live call (set KIMI_LIVE=1 to run)")
+}
+
+// --- Kimi Web 控制台:live(仅 KIMI_WEB_LIVE=1 时跑;env 传 KIMI_WEB_AT/KIMI_WEB_RT)---
+if ProcessInfo.processInfo.environment["KIMI_WEB_LIVE"] == "1" {
+    let env = ProcessInfo.processInfo.environment
+    if let at = env["KIMI_WEB_AT"], let rt = env["KIMI_WEB_RT"], !at.isEmpty, !rt.isEmpty {
+        let token = KimiUsageService.KimiWebToken(accessToken: at, refreshToken: rt, expiresAt: Date().timeIntervalSince1970 + 900)
+        KimiUsageService.saveWebToken(token)
+        let r = await KimiUsageService.fetchQuota()
+        switch r {
+        case .success(let q):
+            check("kimi web live weekly >= 0", q.weekly.pct >= 0)
+            check("kimi web live monthly present", q.monthly != nil)
+            check("kimi web live monthly pct > 0", (q.monthly?.pct ?? 0) > 0)
+        case .failure(let e):
+            check("kimi web live fetch", false)
+            print("kimi web live error: \(e)")
+        }
+        KimiUsageService.clearWebToken()
+    } else {
+        check("kimi web live token env", false)
+        print("need KIMI_WEB_AT / KIMI_WEB_RT env")
+    }
+} else {
+    print("SKIP kimi web live call (set KIMI_WEB_LIVE=1 + KIMI_WEB_AT/KIMI_WEB_RT)")
+}
 
 // --- 阈值逻辑 (ThresholdConfig.band / UsageBand) ---
 let tc = ThresholdConfig(warning: 80, critical: 90)
@@ -175,6 +293,18 @@ let snaps2 = hs.recent(10)
 check("series aliyun 5h", HistoryStore.series(snaps2, provider: "aliyun", window: "5h") == [30, 50])
 check("series opencode rolling", HistoryStore.series(snaps2, provider: "opencode", window: "rolling") == [nil, 22])
 check("series unknown -> all nil", HistoryStore.series(snaps2, provider: "x", window: "y") == [nil, nil])
+// kimi 字段(缺省 nil,由 append 时显式传入)
+let kimiSnaps = [
+    UsageSnapshot(timestamp: clock.now(), aliyunFiveHour: nil, aliyunOneWeek: nil,
+                  opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
+                  kimiFiveHour: 58, kimiWeekly: 30, kimiMonthly: 10),
+    UsageSnapshot(timestamp: clock.now(), aliyunFiveHour: nil, aliyunOneWeek: nil,
+                  opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
+                  kimiFiveHour: 0, kimiWeekly: 35, kimiMonthly: nil),
+]
+check("series kimi 5h", HistoryStore.series(kimiSnaps, provider: "kimi", window: "5h") == [58, 0])
+check("series kimi weekly", HistoryStore.series(kimiSnaps, provider: "kimi", window: "weekly") == [30, 35])
+check("series kimi monthly", HistoryStore.series(kimiSnaps, provider: "kimi", window: "monthly") == [10, nil])
 
 // 淘汰:超过 maxPerSeries 截断最旧
 for i in 0..<8 {
