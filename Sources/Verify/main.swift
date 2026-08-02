@@ -357,6 +357,15 @@ fb.write([sampleSnap])
 check("file backend roundtrip", fb.read() == [sampleSnap])
 try? FileManager.default.removeItem(at: tmpURL)
 
+// --- 菜单栏状态项可见性去抖 ---
+var visibility = StatusItemVisibilityMonitor(requiredHiddenSamples: 3)
+check("visibility transient hidden does not notify", visibility.record(isVisible: false) == false)
+check("visibility recovery resets hidden samples", visibility.record(isVisible: true) == false)
+check("visibility hidden sample 1", visibility.record(isVisible: false) == false)
+check("visibility hidden sample 2", visibility.record(isVisible: false) == false)
+check("visibility sustained hidden notifies", visibility.record(isVisible: false) == true)
+check("visibility notifies only once", visibility.record(isVisible: false) == false)
+
 // --- CredentialStore (InMemory + 迁移) ---
 let cs = InMemoryCredentialStore()
 cs.write("secret123", account: "opencode")
