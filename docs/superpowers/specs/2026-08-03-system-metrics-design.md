@@ -53,7 +53,7 @@ public final class SystemMetricsMonitor: ObservableObject {
   - `busy = (user + system + nice) 差值`, `total = busy + idle 差值`
   - `percent = busy / total * 100`(四舍五入到 Int;total=0 时按 0 处理避免除零)
 - 数字含义 = "过去 30 秒平均 CPU",天然平滑,与 30s 刷新节奏自洽。
-- `start()` 先取基线,第一个 30 秒即可出数字,不空白。
+- `start()` 先取基线(CPU 基线 + 内存值);CPU 首个真实值在 30 秒后第一个周期出现,期间 cpuPercent 为 nil(菜单栏显示横杠)——2026-08-03 最终审查修订:启动即 tick 会以微秒间隔算出 ≈0% 的误导值,故移除。
 - 采样/计算拆成静态纯函数以便测试:
   - `static func sampleCPUTicks() -> CPUTicks?`(user/system/nice/idle 聚合)
   - `static func cpuPercent(previous: CPUTicks, current: CPUTicks) -> Int`
