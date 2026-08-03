@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover?
     private var cancellables = Set<AnyCancellable>()
     private var visibilityMonitor = StatusItemVisibilityMonitor(requiredHiddenSamples: 3)
+    private var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 禁用自动终止(双保险:NSStatusItem 本身已规避 MenuBarExtra 的回收路径)
@@ -51,10 +52,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.isVisible = true
         if let button = item.button {
             button.image = TokenPlanModel.shared.renderedIcon ?? fallbackIcon()
-            button.image?.isTemplate = true
+            // 不再强制 isTemplate:渲染器已为各 scheme 设好(迷你表格=非模板,其余=模板);
+            // fallbackIcon(SF Symbol)默认即模板,无需处理。
             button.target = self
             button.action = #selector(togglePopover)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = TokenPlanModel.shared.menuBarTooltip
+            // 菜单栏明暗:初始读 + KVO 跟踪;变化时重渲染(迷你表格基底色依赖它)。
+            MenuBarAppearance.shared.isDark =
+                button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { button, _ in
+                let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                Task { @MainActor in
+                    MenuBarAppearance.shared.isDark = dark
+                    TokenPlanModel.shared.prerenderIcon()
+                }
+            }
+            // 用真实明暗值重渲染一次(首个图标可能在读到 appearance 前已按默认浅色基底渲染)
+            TokenPlanModel.shared.prerenderIcon()
         }
         statusItem = item
     }
@@ -68,15 +83,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover = p
     }
 
-    /// 订阅模型:renderedIcon 更新时同步到状态项按钮。
+    /// 订阅模型:renderedIcon 更新时同步到状态项按钮(含 tooltip)。
     private func observeModel() {
         let model = TokenPlanModel.shared
         model.$renderedIcon
             .receive(on: RunLoop.main)
             .sink { [weak self] icon in
                 guard let self, let button = self.statusItem?.button else { return }
-                button.image = icon ?? self.fallbackIcon()
-                button.image?.isTemplate = true
+                if let icon {
+                    button.image = icon   // isTemplate 由渲染器决定,此处不覆写
+                } else {
+                    button.image = self.fallbackIcon()
+                    button.image?.isTemplate = true
+                }
+                button.toolTip = model.menuBarTooltip
             }
             .store(in: &cancellables)
     }
@@ -115,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func fallbackIcon() -> NSImage {
-        NSImage(systemSymbolName: "cloud.fill", accessibilityDescription: "AliyunTokenBar")
+        NSImage(systemSymbolName: "cloud.fill", accessibilityDescription: "CodingTokenBar")
             ?? NSImage(size: NSSize(width: 22, height: 22))
     }
 }
