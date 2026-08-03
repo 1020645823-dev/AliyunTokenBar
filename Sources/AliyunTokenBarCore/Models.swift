@@ -21,8 +21,9 @@ public struct UsageDetail: Equatable {
     }
 
     /// 完整重置时间字符串:"2026-08-03 05:19:00" 格式,对齐官方控制台。
-    public var resetTimeDisplay: String {
-        guard resetTimeMs > 0 else { return "未知" }
+    /// nil = 服务端未给重置时间(如空窗),调用方应隐藏重置行而非显示"未知"。
+    public var resetTimeDisplay: String? {
+        guard resetTimeMs > 0 else { return nil }
         let reset = Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000)
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -119,6 +120,19 @@ public struct OpenCodeWindow: Equatable {
     public let pct: Int               // 已用百分比 0-100
     public let resetInSec: Int64      // 距重置秒数
     public init(pct: Int, resetInSec: Int64) { self.pct = pct; self.resetInSec = resetInSec }
+
+    /// OpenCode Go 滚动窗口时长(秒,官方 5 小时)。
+    public static let rollingWindowSec: Int64 = 5 * 3600
+
+    /// 滚动窗口重置提示:空窗时服务端恒返完整窗口时长(resetInSec=18000),
+    /// 倒计时没有意义,返回 nil 让面板隐藏,避免"永远 5 小时后重置"的误解
+    /// (2026-08-03 用户反馈)。窗口内有用量时 resetInSec < 完整时长,正常显示。
+    /// 仅用于 rolling 卡;weekly/monthly 是固定边界,始终显示 timeUntilReset。
+    public var rollingResetText: String? {
+        guard resetInSec > 0, resetInSec < Self.rollingWindowSec else { return nil }
+        return timeUntilReset
+    }
+
     /// "X小时Y分钟后重置" 等
     public var timeUntilReset: String {
         guard resetInSec > 0 else { return "未知" }

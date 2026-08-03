@@ -178,6 +178,7 @@ struct TokenPlanMenu: View {
     private var usageSection: some View {
         // 上下结构(与 OpenCode 三窗口同向),小空间内信息密度更高
         VStack(spacing: 12) {
+            aliyunStatusRow
             if let q = model.quota {
                 UsageCard(title: "5小时限额",
                           percentage: q.usage.fiveHour.percentage, resetText: q.usage.fiveHour.resetTimeDisplay,
@@ -210,6 +211,36 @@ struct TokenPlanMenu: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
+    }
+
+    /// 数据时间戳行:对齐官方"最后统计时间"。刷新失败但保留旧数据时显示橙色告警,
+    /// 避免面板静默展示过期值(2026-08-03 事故:旧值连显 7 小时无任何提示)。
+    private var aliyunStatusRow: some View {
+        HStack(alignment: .top, spacing: 6) {
+            if let err = model.lastError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+                Text("刷新失败:\(err)(显示 \(Self.statusTimeText(model.lastUpdated)) 的旧数据)")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+                    .lineLimit(2)
+            } else {
+                Text("最后统计时间 \(Self.statusTimeText(model.lastUpdated))")
+                    .font(.system(size: 9)).foregroundStyle(.atbTextTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private static let statusTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    private static func statusTimeText(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        return statusTimeFormatter.string(from: date)
     }
 
     private var actionButtons: some View {
@@ -543,7 +574,7 @@ struct OpenCodeCard: View {
             if let q = model.openCodeQuota {
                 // 三窗口各一张卡片,视觉 token 与阿里云 5h/7d 完全一致
                 UsageCard(title: "滚动限额",
-                          percentage: Double(q.rolling.pct), resetText: q.rolling.timeUntilReset,
+                          percentage: Double(q.rolling.pct), resetText: q.rolling.rollingResetText,
                           color: .purple, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
                           showSparkline: model.sparklineEnabled,
                           sparklineProvider: "opencode", sparklineWindow: "rolling")
@@ -622,7 +653,7 @@ struct KimiCodeCard: View {
             if let q = model.kimiQuota {
                 // 三窗口各一张卡片,视觉 token 与阿里云 5h/7d 完全一致
                 UsageCard(title: "5小时限额",
-                          percentage: q.fiveHour.pct, resetText: q.fiveHour.resetTimeDisplay,
+                          percentage: q.fiveHour.pct, resetText: q.fiveHour.slidingResetText,
                           color: .teal, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
                           showSparkline: model.sparklineEnabled,
                           sparklineProvider: "kimi", sparklineWindow: "5h")

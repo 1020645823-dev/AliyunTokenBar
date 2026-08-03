@@ -51,6 +51,20 @@ check("usage 5h reset", u?.fiveHour.resetTimeMs == 1785560220000)
 check("usage 7d pct 61.43", u?.oneWeek.percentage == 61.43)
 check("usage 7d reset", u?.oneWeek.resetTimeMs == 1785687360000)
 
+// 空窗形态(2026-08-03 事故根因回归):字段 null/缺失 → 宽容解析为 0,不再整次抛错
+let usageEmptyFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per5HourPercentage":null,"per1WeekResetTime":1785687360000,"per1WeekPercentage":0.61428294255},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
+let ue = try? BlUsageService.parseUsage(Data(usageEmptyFixture.utf8))
+check("usage empty-window parses", ue != nil)
+check("usage empty-window 5h pct 0", ue?.fiveHour.percentage == 0.0)
+check("usage empty-window 5h reset 0", ue?.fiveHour.resetTimeMs == 0)
+check("usage empty-window 7d kept", ue?.oneWeek.percentage == 61.43)
+// 整数 0(JSON 可能返回 Int 形态)也应解析
+let usageIntFixture = #"{"code":"200","data":{"DataV2":{"data":{"data":{"per5HourPercentage":0,"per1WeekResetTime":1785687360000,"per5HourResetTime":1785560220000,"per1WeekPercentage":0}}}}}"#
+check("usage int-zero parses", (try? BlUsageService.parseUsage(Data(usageIntFixture.utf8)))?.fiveHour.percentage == 0.0)
+// resetTimeDisplay 可选语义:无重置时间 → nil(调用方隐藏重置行)
+check("usage resetText nil when 0", UsageDetail(percentageRaw: 0, resetTimeMs: 0).resetTimeDisplay == nil)
+check("usage resetText some when >0", u?.fiveHour.resetTimeDisplay != nil)
+
 let s = try? BlUsageService.parseSubscription(Data(subscriptionFixture.utf8))
 check("sub specCode pro", s?.specCode == "pro")
 check("sub remainingDays 291", s?.remainingDays == 291)
@@ -110,6 +124,10 @@ check("opencode rolling 含 3小时", oc?.rolling.timeUntilReset.contains("3小�
 let ocPartial = "<script>rollingUsage:$R[1]={status:\"ok\",resetInSec:1,usagePercent:5}</script>"
 check("opencode partial -> nil", OpenCodeUsageService.parse(ocPartial) == nil)
 
+// rolling 空窗:服务端恒返完整 5h 时长(18000)→ 隐藏倒计时(2026-08-03 用户反馈回归)
+check("opencode rolling empty hides reset", OpenCodeWindow(pct: 0, resetInSec: 18000).rollingResetText == nil)
+check("opencode rolling active shows reset", OpenCodeWindow(pct: 3, resetInSec: 3600).rollingResetText?.contains("1小时") == true)
+
 // --- Kimi Code:官方 usages API 解析 ---
 let kimiFixture = """
 {"user":{"userId":"cp5vaei34pe4b64f8rfg","membership":{"level":"LEVEL_ADVANCED"}},
@@ -151,6 +169,13 @@ check("kimi window pct 0.5", kw.pct == 0.5)
 check("kimi window pctInt 1", kw.pctInt == 1)
 check("kimi window remaining 995", kw.remaining == 995)
 check("kimi window zero limit pct 0", KimiWindow(used: 5, limit: 0, resetTimeMs: nil).pct == 0)
+
+// 5h 空窗:API 返上一窗口的过去时间戳 → 隐藏倒计时(2026-08-03 活体验证回归)
+let kimiPastMs = Int64((Date().addingTimeInterval(-3600).timeIntervalSince1970) * 1000)
+check("kimi 5h past reset hides", KimiWindow(used: 0, limit: 100, resetTimeMs: kimiPastMs).slidingResetText == nil)
+// 用 2h+余量:避免两次 Date() 之间的毫秒级竞态把"2小时0分"变成"1小时59分"
+let kimiFutureMs = Int64((Date().addingTimeInterval(2 * 3600 + 60).timeIntervalSince1970) * 1000)
+check("kimi 5h future reset shows", KimiWindow(used: 5, limit: 100, resetTimeMs: kimiFutureMs).slidingResetText?.contains("2小时") == true)
 
 // --- Kimi Web 控制台:GetUsages 响应解析(月度总额度数据源)---
 let kimiWebFixture = """

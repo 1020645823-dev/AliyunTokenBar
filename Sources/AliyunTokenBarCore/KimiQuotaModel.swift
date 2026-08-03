@@ -37,6 +37,17 @@ public struct KimiWindow: Equatable {
         return fmt.string(from: reset)
     }
 
+    /// 滑动窗口(5h)重置提示:空窗时 API 返回**上一窗口的过去时间戳**,
+    /// 按 timeUntilReset 会误显"即将重置";过去时间戳返回 nil 隐藏倒计时
+    /// (2026-08-03 活体验证:remaining==limit 且 resetTime 在过去)。
+    /// 窗口内有用量时时间戳在未来,正常显示。仅用于 5h 卡;
+    /// weekly/monthly 是固定边界,始终显示 timeUntilReset。
+    public var slidingResetText: String? {
+        guard let resetTimeMs,
+              Date(timeIntervalSince1970: TimeInterval(resetTimeMs) / 1000) > Date() else { return nil }
+        return timeUntilReset
+    }
+
     /// "X小时Y分钟后重置" / "X天后重置" / "即将重置" / "未知"
     public var timeUntilReset: String {
         guard let resetTimeMs else { return "未知" }

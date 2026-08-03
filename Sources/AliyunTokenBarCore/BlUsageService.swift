@@ -11,16 +11,19 @@ public final class BlUsageService {
     // MARK: - Parsing (pure functions, fully tested)
 
     /// 解析 usage 响应。JSON 三层嵌套:data.DataV2.data.data.<字段>
+    /// 宽容解析:窗口为空(如 5h 内零用量)时服务端可能返回 null/缺失字段,
+    /// 官方控制台该状态显示 0%;这里同样按 0 处理,避免严格解析把整次更新
+    /// 打成 .parse 失败、UI 静默保留几小时前的旧值(2026-08-03 事故根因)。
     public static func parseUsage(_ data: Data) throws -> UsageWindows {
         let p = try extractInnerPayload(data)
         return UsageWindows(
             fiveHour: UsageDetail(
-                percentageRaw: try p.value("per5HourPercentage", as: Double.self),
-                resetTimeMs: try p.value("per5HourResetTime", as: Int64.self)
+                percentageRaw: p.optionalDouble("per5HourPercentage") ?? 0,
+                resetTimeMs: p.optionalInt64("per5HourResetTime") ?? 0
             ),
             oneWeek: UsageDetail(
-                percentageRaw: try p.value("per1WeekPercentage", as: Double.self),
-                resetTimeMs: try p.value("per1WeekResetTime", as: Int64.self)
+                percentageRaw: p.optionalDouble("per1WeekPercentage") ?? 0,
+                resetTimeMs: p.optionalInt64("per1WeekResetTime") ?? 0
             )
         )
     }
@@ -156,5 +159,14 @@ private extension Dictionary where Key == String, Value == Any {
     func value<T>(_ key: String, as type: T.Type) throws -> T {
         guard let v = self[key] as? T else { throw BlValueMismatch() }
         return v
+    }
+
+    /// 数值字段宽容取值:缺失/null/非数字 → nil;JSON 数字(Int/Double)经 NSNumber 统一转换。
+    func optionalDouble(_ key: String) -> Double? {
+        (self[key] as? NSNumber)?.doubleValue
+    }
+
+    func optionalInt64(_ key: String) -> Int64? {
+        (self[key] as? NSNumber)?.int64Value
     }
 }
