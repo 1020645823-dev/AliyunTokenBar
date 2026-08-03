@@ -96,7 +96,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .cloudPercent: return "云朵 + 百分比(默认)"
-        case .compact: return "2×2 网格(默认)"
+        case .compact: return "迷你表格(默认)"
         case .singleLine: return "单行(35%·61%)"
         case .iconOnly: return "仅图标"
         case .systemStats: return "本机 CPU/内存"
@@ -118,6 +118,15 @@ final class MenuBarStyleManager: ObservableObject {
 
 // MARK: - 菜单栏图标渲染
 
+/// 菜单栏明暗状态:AppDelegate 对 statusItem button 的 effectiveAppearance 做 KVO 写入;
+/// 非模板渲染(miniTableImage)读它选基底色——深菜单栏→白,浅菜单栏→黑。
+@MainActor
+final class MenuBarAppearance {
+    static let shared = MenuBarAppearance()
+    var isDark = false
+    private init() {}
+}
+
 enum MenuBarTextRenderer {
     /// 按 scheme 渲染菜单栏图标(模板图,系统按明暗自动染色)。
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
@@ -130,16 +139,15 @@ enum MenuBarTextRenderer {
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                       kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
                       cpu: Int? = nil, memory: Int? = nil,
+                      columns: [MenuBarTableColumn]? = nil, isDark: Bool = false,
                       thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         switch scheme {
         case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
                                                       openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
                                                       kimiWeekly: kimiWeekly, cpu: cpu, memory: memory,
                                                       thresholdConfig: thresholdConfig)
-        case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek,
-                                           openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
-                                           kimiFiveHour: kimiFiveHour, kimiWeekly: kimiWeekly,
-                                           cpu: cpu, memory: memory)
+        case .compact: return miniTableImage(columns: columns ?? [], isDark: isDark,
+                                             thresholdConfig: thresholdConfig)
         case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
                                               thresholdConfig: thresholdConfig)
@@ -229,49 +237,40 @@ enum MenuBarTextRenderer {
         return CloudShape()
     }
 
-    /// 默认紧凑:2×2 网格(两行两列,总高 2 行,不超出菜单栏上下边界)。
-    /// 第 1 行:阿里云(5h/7d)+ Kimi(5h/周);第 2 行:OpenCode(滚/周)+ 本机 C/M。
-    /// 每个 Provider 一块,块内两窗口并排;未配置/未采样的块留空位(网格形状恒定)。
-    /// 2026-08-03 用户反馈:4 行纵向排布超出菜单栏边界,改为 2×2(方案 B)。
+    /// 默认紧凑:迷你表格——列=数据源(☁✨⚡▣,顺序固定),行=主/次指标。
+    /// 每列固定宽:图标位 10pt + 值域 30pt("100%" @11pt 等宽数字为最宽),值右对齐;
+    /// 下行缩进图标位宽度,8 个数字严格成网格。
+    /// 非模板渲染:基底色按菜单栏明暗手选;数字独立按阈值 band 变色
+    /// (safe→基底 / warning→橙 / critical→红),图标恒基底色——颜色只编码风险。
+    /// 横杠(pct=nil)不着色。总高 ≈21pt;若视觉验收发现溢出/挤压,先把 11pt 降 10.5pt 再调 valueWidth。
     @MainActor
-    private static func compactImage(fiveHour: Int?, oneWeek: Int?,
-                                     openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
-                                     kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
-                                     cpu: Int? = nil, memory: Int? = nil) -> NSImage {
-        // 单块:可选 Provider 字形 + 两窗口(标签+数值)。列宽固定,跨块对齐稳定。
-        func block(_ glyph: String?, _ l1: String, _ v1: Int?, _ l2: String, _ v2: Int?) -> some View {
-            HStack(spacing: 2) {
-                if let glyph {
-                    Image(systemName: glyph).font(.system(size: 9, weight: .bold)).frame(width: 11, alignment: .leading)
-                }
-                Text(l1).font(.system(size: 9, weight: .medium)).monospacedDigit().frame(width: 14, alignment: .leading)
-                Text(pctText(v1)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 28, alignment: .trailing)
-                Text(l2).font(.system(size: 9, weight: .medium)).monospacedDigit().frame(width: 14, alignment: .leading)
-                Text(pctText(v2)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 28, alignment: .trailing)
-            }
-        }
-        let showOpenCode = openCodeRolling != nil || openCodeWeekly != nil
-        let showKimi = kimiFiveHour != nil || kimiWeekly != nil
-        let showSystem = cpu != nil || memory != nil
-        let content = VStack(alignment: .leading, spacing: -1) {
-            HStack(spacing: 6) {
-                block("cloud.fill", "5h", fiveHour, "7d", oneWeek)   // 阿里云恒显示
-                if showKimi {
-                    block("sparkles", "5h", kimiFiveHour, "周", kimiWeekly)
-                }
-            }
-            HStack(spacing: 6) {
-                if showOpenCode {
-                    block("bolt.fill", "滚", openCodeRolling, "周", openCodeWeekly)
-                }
-                if showSystem {
-                    block(nil, "C", cpu, "M", memory)
+    private static func miniTableImage(columns: [MenuBarTableColumn], isDark: Bool,
+                                       thresholdConfig: ThresholdConfig) -> NSImage {
+        let base: Color = isDark ? .white : .black
+        let valueWidth: CGFloat = 30
+        let iconWidth: CGFloat = 10
+        let content = HStack(alignment: .top, spacing: 7) {
+            ForEach(columns, id: \.kind) { col in
+                VStack(spacing: -1) {
+                    HStack(spacing: 2) {
+                        Image(systemName: col.kind.symbolName)
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: iconWidth, alignment: .leading)
+                        Text(col.primary.text)
+                            .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            .frame(width: valueWidth, alignment: .trailing)
+                            .foregroundStyle(col.primary.pct.map { thresholdColor($0, config: thresholdConfig, base: base) } ?? base)
+                    }
+                    Text(col.secondary.text)
+                        .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                        .frame(width: iconWidth + 2 + valueWidth, alignment: .trailing)
+                        .foregroundStyle(col.secondary.pct.map { thresholdColor($0, config: thresholdConfig, base: base) } ?? base)
                 }
             }
         }
-        .foregroundStyle(.black)
+        .foregroundStyle(base)   // 图标继承;Text 各自显式覆盖
         .fixedSize(horizontal: true, vertical: true)
-        return render(content)
+        return render(content, isTemplate: false)
     }
 
     /// 单行:35%·61%(nil 时显示横杠);尾部追加 C/M 段
@@ -361,14 +360,14 @@ enum MenuBarTextRenderer {
     }
 
     @MainActor
-    private static func render<V: View>(_ content: V) -> NSImage {
+    private static func render<V: View>(_ content: V, isTemplate: Bool = true) -> NSImage {
         let renderer = ImageRenderer(content: content)
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
         guard let img = renderer.nsImage, img.size.width > 0, img.size.height > 0 else {
             // 渲染失败:返回固定云朵图标(确保 label 非空,避免系统自动终止)
-            return NSImage(systemSymbolName: "cloud.fill", accessibilityDescription: "AliyunTokenBar") ?? NSImage(size: NSSize(width: 48, height: 20))
+            return NSImage(systemSymbolName: "cloud.fill", accessibilityDescription: "CodingTokenBar") ?? NSImage(size: NSSize(width: 48, height: 20))
         }
-        img.isTemplate = true   // 模板图,菜单栏自动适配明暗
+        img.isTemplate = isTemplate   // 迷你表格传 false:保留风险变色;其余 scheme 维持模板
         return img
     }
 }
@@ -409,8 +408,13 @@ struct AliyunTokenBarApp: App {
                 kimiWeekly: kimiWeekly ?? nil,
                 cpu: model.systemStatsEnabled ? monitor.cpuPercent : nil,
                 memory: model.systemStatsEnabled ? monitor.memoryPercent : nil,
+                columns: model.menuBarColumns(),
+                isDark: MenuBarAppearance.shared.isDark,
                 thresholdConfig: model.thresholdConfig
             )
+        }
+        TokenPlanModel.shared.renderTooltipSink = { model in
+            MenuBarTable.tooltip(columns: model.menuBarColumns())
         }
         // 应用保存的主题
         NSApplication.shared.appearance = ThemeManager.shared.theme.nsAppearance
