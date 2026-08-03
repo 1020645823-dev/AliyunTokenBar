@@ -87,7 +87,7 @@ final class ThemeManager: ObservableObject {
 
 enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     case cloudPercent  // 默认:云朵 + 7天百分比
-    case compact       // 默认:2×2 网格(阿里云/Kimi 行 + OpenCode/C-M 行)
+    case compact       // 默认:迷你表格(列=数据源,行=主/次指标)
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
     case systemStats   // 仅本机 CPU/内存
@@ -129,6 +129,7 @@ final class MenuBarAppearance {
 
 enum MenuBarTextRenderer {
     /// 按 scheme 渲染菜单栏图标(模板图,系统按明暗自动染色)。
+    /// compact 迷你表格为非模板(基底色按菜单栏明暗手选,数字阈值变色);其余 scheme 为模板图。
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
     /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
     /// kimiFiveHour/kimiWeekly 为 nil 时不显示 Kimi 部分。
@@ -238,7 +239,7 @@ enum MenuBarTextRenderer {
     }
 
     /// 默认紧凑:迷你表格——列=数据源(☁✨⚡▣,顺序固定),行=主/次指标。
-    /// 每列固定宽:图标位 10pt + 值域 30pt("100%" @11pt 等宽数字为最宽),值右对齐;
+    /// 每列固定宽:图标位 10pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt,留 1pt 余量;过窄会换行破网格),值右对齐;
     /// 下行缩进图标位宽度,8 个数字严格成网格。
     /// 非模板渲染:基底色按菜单栏明暗手选;数字独立按阈值 band 变色
     /// (safe→基底 / warning→橙 / critical→红),图标恒基底色——颜色只编码风险。
@@ -247,7 +248,7 @@ enum MenuBarTextRenderer {
     private static func miniTableImage(columns: [MenuBarTableColumn], isDark: Bool,
                                        thresholdConfig: ThresholdConfig) -> NSImage {
         let base: Color = isDark ? .white : .black
-        let valueWidth: CGFloat = 30
+        let valueWidth: CGFloat = 34
         let iconWidth: CGFloat = 10
         let content = HStack(alignment: .top, spacing: 7) {
             ForEach(columns, id: \.kind) { col in

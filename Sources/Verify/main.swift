@@ -630,5 +630,9 @@ let mtTip = MenuBarTable.tooltip(columns: mtAll)
 check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | 本机 CPU 12% · 内存 25%")
 check("mt tooltip 横杠形态", MenuBarTable.tooltip(columns: mtErr).contains("Kimi 5小时 — · 周 —"))
 
+// 渲染契约:值文本最长 4 字符("100%"),renderer 按此定值域宽;超 4 字符会破网格
+check("mt 值文本≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, cpu: 100, mem: 100)
+    .allSatisfy { $0.primary.text.count <= 4 && $0.secondary.text.count <= 4 })
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
