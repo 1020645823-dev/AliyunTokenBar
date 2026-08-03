@@ -70,6 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // 用真实明暗值重渲染一次(首个图标可能在读到 appearance 前已按默认浅色基底渲染)
             TokenPlanModel.shared.prerenderIcon()
+            // 首启竞态防御:按钮完成菜单栏托管前 effectiveAppearance 可能是陈旧值;
+            // 1 秒后重读一次,变化则重渲染(与 scheduleVisibilityCheck 同模式)。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                guard let button = item.button else { return }
+                let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                if dark != MenuBarAppearance.shared.isDark {
+                    MenuBarAppearance.shared.isDark = dark
+                    TokenPlanModel.shared.prerenderIcon()
+                }
+            }
         }
         statusItem = item
     }
