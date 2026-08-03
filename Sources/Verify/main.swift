@@ -599,5 +599,36 @@ let smokeAll = ProcessListMonitor.sampleAll(previousTicks: [:]).list
 check("smoke sampleAll non-empty", !smokeAll.isEmpty)
 check("smoke sampleAll contains self", smokeAll.contains { $0.pid == getpid() })
 
+// --- MenuBarTable:迷你表格列模型 ---
+func mtCols(
+    a5: Int? = 40, a7: Int? = 18,
+    kConf: Bool = true, kErr: Bool = false, k5: Int? = 0, kW: Int? = 58,
+    oConf: Bool = true, oErr: Bool = false, oR: Int? = 3, oW: Int? = 2,
+    sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25
+) -> [MenuBarTableColumn] {
+    MenuBarTable.columns(aliyunFiveHour: a5, aliyunOneWeek: a7,
+        kimiConfigured: kConf, kimiHasError: kErr, kimiFiveHour: k5, kimiWeekly: kW,
+        openCodeConfigured: oConf, openCodeHasError: oErr, openCodeRolling: oR, openCodeWeekly: oW,
+        systemEnabled: sysOn, cpu: cpu, memory: mem)
+}
+
+let mtAll = mtCols()
+check("mt 4列全显示且固定顺序", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .system])
+check("mt 阿里云主次值", mtAll[0].primary.text == "40%" && mtAll[0].secondary.text == "18%")
+check("mt 0% 不省略", mtAll[1].primary.text == "0%" && mtAll[1].primary.pct == 0)
+check("mt 未配置Kimi→隐藏", mtCols(kConf: false).map(\.kind) == [.aliyun, .openCode, .system])
+check("mt 未配置OpenCode→隐藏", mtCols(oConf: false).map(\.kind) == [.aliyun, .kimi, .system])
+check("mt 本机关闭→隐藏", mtCols(sysOn: false).map(\.kind) == [.aliyun, .kimi, .openCode])
+let mtErr = mtCols(kErr: true, k5: nil, kW: nil)
+check("mt 已配置+出错→横杠列", mtErr.map(\.kind).contains(.kimi)
+      && mtErr[1].primary.text == "—" && mtErr[1].primary.pct == nil
+      && mtErr[1].secondary.text == "—")
+check("mt 已配置无数据无错→隐藏", !mtCols(k5: nil, kW: nil).map(\.kind).contains(.kimi))
+check("mt 本机未采样→横杠", mtCols(cpu: nil, mem: nil)[3].primary.text == "—")
+check("mt 阿里云恒显示(nil→横杠)", mtCols(a5: nil, a7: nil)[0].primary.text == "—")
+let mtTip = MenuBarTable.tooltip(columns: mtAll)
+check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | 本机 CPU 12% · 内存 25%")
+check("mt tooltip 横杠形态", MenuBarTable.tooltip(columns: mtErr).contains("Kimi 5小时 — · 周 —"))
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
