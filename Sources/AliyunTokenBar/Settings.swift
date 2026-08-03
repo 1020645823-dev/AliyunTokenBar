@@ -33,7 +33,7 @@ private final class SettingsWindow {
         if panel == nil {
             let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            p.title = "AliyunTokenBar 设置"
+            p.title = "CodingTokenBar 设置"
             p.isFloatingPanel = true
             p.center()
             panel = p

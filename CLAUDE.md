@@ -60,5 +60,6 @@ VERSION=1.0.14 ./packaging/build-package.sh
 ```
 
 - ad-hoc 签名(`codesign -s -`,无需开发者账号)
-- 产出: `dist/AliyunTokenBar.app` + `dist/AliyunTokenBar-<version>-mac.dmg`
+- 产出: `dist/CodingTokenBar.app` + `dist/CodingTokenBar-<version>-mac.dmg`
+- 命名约定: 显示名/包名 = CodingTokenBar;SwiftPM target 与二进制仍叫 AliyunTokenBar(`BIN_NAME` vs `APP_NAME`),bundle id `com.zww.aliyuntokenbar` 不变(保设置/钥匙串连续性)
 - 分发时 macOS Gatekeeper 会拦截(用户右键打开即可)

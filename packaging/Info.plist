@@ -13,7 +13,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AliyunTokenBar</string>
+	<string>CodingTokenBar</string>
+	<key>CFBundleDisplayName</key>
+	<string>CodingTokenBar</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

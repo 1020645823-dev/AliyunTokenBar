@@ -68,7 +68,8 @@ packaging/               # build-package.sh / dev-prepare.sh / Info.plist / enti
 
 ```bash
 ./packaging/build-package.sh
-# 产出:dist/AliyunTokenBar.app 和 dist/AliyunTokenBar-<version>-mac.dmg
+# 产出:dist/CodingTokenBar.app 和 dist/CodingTokenBar-<version>-mac.dmg
+# (显示名 CodingTokenBar;SwiftPM target/二进制名仍为 AliyunTokenBar,不受影响)
 ```
 
 ad-hoc 签名(`codesign -s -`,无需开发者账号)。本机能直接跑;分发给别人时 macOS Gatekeeper

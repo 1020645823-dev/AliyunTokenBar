@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# build-package.sh — 构建 AliyunTokenBar,封装成签名 .app,再打成 .dmg
+# build-package.sh — 构建 CodingTokenBar,封装成签名 .app,再打成 .dmg
 #
 # 用法:
 #   ./packaging/build-package.sh              # 默认 1.0.0
 #   VERSION=1.0.8 ./packaging/build-package.sh
 #
-# 产出: dist/AliyunTokenBar-{VERSION}-mac.dmg  和  dist/AliyunTokenBar.app
+# 产出: dist/CodingTokenBar-{VERSION}-mac.dmg  和  dist/CodingTokenBar.app
 #
 # 注:已移除 Sparkle 自动更新,无需 appcast/EdDSA/framework。
 set -euo pipefail
@@ -15,7 +15,10 @@ cd "$(dirname "$0")/.."   # 切到项目根
 ROOT="$(pwd)"
 VERSION="${VERSION:-1.0.0}"
 BUILD="${BUILD:-1}"
-APP_NAME="AliyunTokenBar"
+# BIN_NAME = SwiftPM 可执行 target 名(二进制名,用户不可见)
+# APP_NAME = .app 包名/系统显示名(与 Info.plist 的 CFBundleName/CFBundleDisplayName 一致)
+BIN_NAME="AliyunTokenBar"
+APP_NAME="CodingTokenBar"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
@@ -28,7 +31,7 @@ command -v hdiutil >/dev/null || { echo "缺少 hdiutil"; exit 1; }
 # ---------- 1. 构建 release ----------
 echo "==> [1/5] swift build -c release"
 swift build -c release
-BIN="$ROOT/.build/release/$APP_NAME"
+BIN="$ROOT/.build/release/$BIN_NAME"
 [ -f "$BIN" ] || { echo "❌ 构建产物缺失: $BIN"; exit 1; }
 
 # ---------- 2. 组装 .app bundle ----------
@@ -37,7 +40,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
-cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+# 可执行文件名与 Info.plist 的 CFBundleExecutable 保持一致(BIN_NAME)
+cp "$BIN" "$APP/Contents/MacOS/$BIN_NAME"
 
 # Info.plist:用 PlistBuddy 写入版本号
 PLIST="$APP/Contents/Info.plist"

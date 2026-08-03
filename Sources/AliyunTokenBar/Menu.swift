@@ -111,7 +111,7 @@ struct TokenPlanMenu: View {
     private var header: some View {
         HStack(spacing: 12) {
             AliyunCloudLogo(size: 28)
-            Text("AliyunTokenBar").font(.system(size: 18, weight: .bold)).foregroundStyle(.atbTextPrimary)
+            Text("CodingTokenBar").font(.system(size: 18, weight: .bold)).foregroundStyle(.atbTextPrimary)
             Spacer()
             Button { NSWorkspace.shared.open(consoleURL) } label: {
                 Image(systemName: "arrow.up.right.square").foregroundStyle(.atbTextTertiary)
@@ -493,7 +493,7 @@ struct AliyunAuthCard: View {
     /// 未装 bl 时的安装引导:安装命令(可复制)+ Node.js 要求链接
     private var blInstallGuide: some View {
         VStack(spacing: 10) {
-            Text("AliyunTokenBar 依赖百炼 CLI (bl) 获取套餐用量,但未检测到 bl。")
+            Text("CodingTokenBar 依赖百炼 CLI (bl) 获取套餐用量,但未检测到 bl。")
                 .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
                 .multilineTextAlignment(.center)
             // 安装命令框
@@ -525,7 +525,7 @@ struct AliyunAuthCard: View {
                         .font(.system(size: 11)).foregroundStyle(.atbBlue)
                 }
             }
-            Text("安装后重启 AliyunTokenBar").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+            Text("安装后重启 CodingTokenBar").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
         }
     }
 
