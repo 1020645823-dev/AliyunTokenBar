@@ -1020,7 +1020,7 @@ struct SystemProcessesCard: View {
             confirmingPid = p.pid
             confirmDeadline = Date().addingTimeInterval(3)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                if confirmingPid == p.pid { confirmingPid = nil }
+                if confirmingPid == p.pid, confirmDeadline <= Date() { confirmingPid = nil }
             }
         }
     }

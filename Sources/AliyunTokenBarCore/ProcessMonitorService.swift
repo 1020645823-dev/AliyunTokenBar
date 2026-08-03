@@ -148,7 +148,8 @@ extension ProcessListMonitor {
     /// elapsedSeconds <= 0 → nil;不钳制(多核进程可 >100%)。
     public static func cpuPercent(previousTicks: UInt64, currentTicks: UInt64,
                                   elapsedSeconds: Double) -> Double? {
-        guard elapsedSeconds > 0 else { return nil }
+        // pid 复用/基线错位时 current < previous,&- 回绕会产生天文数字假值 → 视为新基线返回 nil(下轮自愈)
+        guard elapsedSeconds > 0, currentTicks >= previousTicks else { return nil }
         var tb = mach_timebase_info_data_t()
         mach_timebase_info(&tb)
         let deltaTicks = currentTicks &- previousTicks

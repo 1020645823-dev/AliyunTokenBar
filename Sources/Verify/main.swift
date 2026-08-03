@@ -591,6 +591,9 @@ check("appBundlePath weird safe", ProcessListMonitor.appBundlePath(fromExecutabl
 // CPU%:elapsed<=0 → nil
 check("cpuPercent zero elapsed nil",
       ProcessListMonitor.cpuPercent(previousTicks: 100, currentTicks: 200, elapsedSeconds: 0) == nil)
+// pid 复用/回绕:current < previous → nil(不产生天文数字假值)
+check("cpuPercent wrap -> nil",
+      ProcessListMonitor.cpuPercent(previousTicks: 1000, currentTicks: 5, elapsedSeconds: 3) == nil)
 // 冒烟:全量采样非空且含本进程
 let smokeAll = ProcessListMonitor.sampleAll(previousTicks: [:]).list
 check("smoke sampleAll non-empty", !smokeAll.isEmpty)
