@@ -444,6 +444,10 @@ check("mem clamp 100",
 check("mem zero total -> nil",
       SystemMetricsMonitor.memoryUsedPercent(active: 1, wired: 1, compressed: 1,
                                              pageSize: 4096, totalBytes: 0) == nil)
+// pageSize=0 → nil(纯函数契约)
+check("mem zero pageSize -> nil",
+      SystemMetricsMonitor.memoryUsedPercent(active: 1, wired: 1, compressed: 1,
+                                             pageSize: 0, totalBytes: 16 * 1024 * 1024) == nil)
 // 冒烟:本机真实采样必然非 nil
 check("smoke sampleCPUTicks", SystemMetricsMonitor.sampleCPUTicks() != nil)
 check("smoke sampleMemoryPercent", SystemMetricsMonitor.sampleMemoryPercent() != nil)

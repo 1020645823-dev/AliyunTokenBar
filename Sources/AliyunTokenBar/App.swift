@@ -123,7 +123,7 @@ enum MenuBarTextRenderer {
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
     /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
     /// kimiWeekly 为 nil 时不显示 Kimi 部分。
-    /// cpu/memory 为 nil 时(开关关闭或尚未采样)显示横杠(—);systemStats 样式下两者皆 nil 时回退云朵图标。
+    /// cpu/memory 均为 nil(开关关闭)时各样式整段隐藏、systemStats 回退云朵;仅一个为 nil(采样未就绪)时该数值显示横杠(—)。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,

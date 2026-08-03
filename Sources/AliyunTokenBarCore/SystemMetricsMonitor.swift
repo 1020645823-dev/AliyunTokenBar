@@ -33,13 +33,12 @@ public final class SystemMetricsMonitor: ObservableObject {
     private var timer: AnyCancellable?
     private var lastTicks: CPUTicks?
 
-    /// 启动采样:立即取 CPU 基线 + 内存值(第一个 30 秒就能出数字),再按周期推进。
-    /// 幂等:已在运行则 no-op。
+    /// 启动采样:立即取 CPU 基线 + 内存值;CPU 首个真实值在 30 秒后第一个周期出现,
+    /// 期间 cpuPercent 为 nil(菜单栏显示横杠)。幂等:已在运行则 no-op。
     public func start() {
         guard timer == nil else { return }
         lastTicks = Self.sampleCPUTicks()
         memoryPercent = Self.sampleMemoryPercent()
-        tick()
         timer = Timer.publish(every: Self.sampleInterval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.tick() }
@@ -86,6 +85,7 @@ extension SystemMetricsMonitor {
         }
         var ticks = CPUTicks(user: 0, system: 0, nice: 0, idle: 0)
         let buf = UnsafeBufferPointer(start: raw, count: Int(infoCount))
+        guard buf.count % Int(CPU_STATE_MAX) == 0 else { return nil }
         // 每个核心按 CPU_STATE_MAX 个状态值依次排列;按核心步进,累加四类 ticks
         for i in stride(from: 0, to: buf.count, by: Int(CPU_STATE_MAX)) {
             ticks = CPUTicks(
@@ -131,10 +131,11 @@ extension SystemMetricsMonitor {
     }
 
     /// 纯函数:active/wired/compressed 页数 × pageSize = 已用字节 → 0-100 百分比。
-    /// totalBytes=0 → nil;结果钳制 0-100。
+    /// totalBytes=0 或 pageSize=0 → nil;结果钳制 0-100。
     public static func memoryUsedPercent(active: UInt64, wired: UInt64, compressed: UInt64,
                                          pageSize: UInt64, totalBytes: UInt64) -> Int? {
         guard totalBytes > 0 else { return nil }
+        guard pageSize > 0 else { return nil }
         let used = (active + wired + compressed) * pageSize
         let pct = Double(used) / Double(totalBytes) * 100
         return min(max(Int(pct.rounded()), 0), 100)
