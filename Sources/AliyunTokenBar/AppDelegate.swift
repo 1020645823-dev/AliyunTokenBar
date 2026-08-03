@@ -28,6 +28,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationManager.shared.requestAuthorization()
         NotificationManager.shared.attach(to: TokenPlanModel.shared)
         TokenPlanModel.shared.startTimer()
+        // 本机 CPU/内存:开关变化 → 启停采样(@Published 订阅即回放当前值,启动即生效);
+        // 采样值变化 → 重渲染图标(renderIconSink 内部读 monitor 现值)。
+        TokenPlanModel.shared.$systemStatsEnabled
+            .sink { enabled in
+                if enabled {
+                    SystemMetricsMonitor.shared.start()
+                } else {
+                    SystemMetricsMonitor.shared.stop()
+                }
+                TokenPlanModel.shared.prerenderIcon()
+            }
+            .store(in: &cancellables)
+        SystemMetricsMonitor.shared.$cpuPercent
+            .combineLatest(SystemMetricsMonitor.shared.$memoryPercent)
+            .sink { _ in TokenPlanModel.shared.prerenderIcon() }
+            .store(in: &cancellables)
     }
 
     private func setupStatusItem() {

@@ -123,6 +123,7 @@ enum MenuBarTextRenderer {
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
     /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
     /// kimiWeekly 为 nil 时不显示 Kimi 部分。
+    /// cpu/memory 为 nil 时(开关关闭或尚未采样)显示横杠(—);systemStats 样式下两者皆 nil 时回退云朵图标。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
@@ -381,6 +382,7 @@ struct AliyunTokenBarApp: App {
             // Kimi:已配置但出错时显示横杠;未配置时整个 Kimi 部分不显示。
             let kimiWeekly: Int?? = model.kimiQuota.map { .some($0.weekly.pctInt) }
                 ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
+            let monitor = SystemMetricsMonitor.shared
             return MenuBarTextRenderer.image(
                 scheme: MenuBarStyleManager.shared.scheme,
                 fiveHour: model.quota?.usage.fiveHour.percentageInt,
@@ -388,6 +390,8 @@ struct AliyunTokenBarApp: App {
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,
                 kimiWeekly: kimiWeekly ?? nil,
+                cpu: model.systemStatsEnabled ? monitor.cpuPercent : nil,
+                memory: model.systemStatsEnabled ? monitor.memoryPercent : nil,
                 thresholdConfig: model.thresholdConfig
             )
         }
