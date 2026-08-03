@@ -105,3 +105,21 @@ public enum MenuBarTable {
         }.joined(separator: " | ")
     }
 }
+
+extension TokenPlanModel {
+    /// 从模型现值计算迷你表格列(菜单栏渲染与 tooltip 共用这一个映射)。
+    /// 可见性语义与原 renderIconSink 内联逻辑一致:
+    /// Kimi/OpenCode = 有数据,或已配置且出错(→横杠列);本机 = 开关开。
+    public func menuBarColumns() -> [MenuBarTableColumn] {
+        let monitor = SystemMetricsMonitor.shared
+        return MenuBarTable.columns(
+            aliyunFiveHour: quota?.usage.fiveHour.percentageInt,
+            aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
+            kimiConfigured: kimiConfigured, kimiHasError: kimiError != nil,
+            kimiFiveHour: kimiQuota?.fiveHour.pctInt, kimiWeekly: kimiQuota?.weekly.pctInt,
+            openCodeConfigured: openCodeConfigured, openCodeHasError: openCodeError != nil,
+            openCodeRolling: openCodeQuota?.rolling.pct, openCodeWeekly: openCodeQuota?.weekly.pct,
+            systemEnabled: systemStatsEnabled,
+            cpu: monitor.cpuPercent, memory: monitor.memoryPercent)
+    }
+}

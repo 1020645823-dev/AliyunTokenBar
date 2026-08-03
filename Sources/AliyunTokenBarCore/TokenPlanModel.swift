@@ -100,8 +100,12 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 菜单栏图标预渲染缓存(数据更新时生成,label 只读)。
     @Published public var renderedIcon: NSImage?
+    /// 最近一次预渲染的菜单栏 tooltip(与 renderedIcon 同批更新)。
+    @Published public var menuBarTooltip: String?
     /// 渲染图标的闭包:由 executable 层注入(因 MenuBarTextRenderer 在 executable 层)。
     public var renderIconSink: ((TokenPlanModel) -> NSImage?)?
+    /// 菜单栏 tooltip 渲染闭包(App 目标注入,与 renderIconSink 同批)。
+    public var renderTooltipSink: ((TokenPlanModel) -> String?)?
 
     private var timer: AnyCancellable?
 
@@ -274,6 +278,7 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 预渲染图标:数据更新后调用。若 renderIconSink 为 nil 则跳过。
     public func prerenderIcon() {
+        menuBarTooltip = renderTooltipSink?(self)
         renderedIcon = renderIconSink?(self)
     }
 
