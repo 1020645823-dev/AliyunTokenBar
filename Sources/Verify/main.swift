@@ -411,5 +411,42 @@ let migratedAgain = CredentialMigration.migrate(legacyKey: "openCodeCookie", acc
                                                   from: testDefaults, to: cs)
 check("migration idempotent no-op", migratedAgain == false)
 
+// --- SystemMetricsMonitor:CPU/内存纯函数 ---
+// CPU 差值:busy +100, total +1000 → 20%
+check("cpu delta 20%",
+      SystemMetricsMonitor.cpuPercent(previous: CPUTicks(user: 100, system: 100, nice: 0, idle: 800),
+                                      current: CPUTicks(user: 200, system: 200, nice: 0, idle: 1600)) == 20)
+// 全 idle → 0%
+check("cpu all idle -> 0",
+      SystemMetricsMonitor.cpuPercent(previous: CPUTicks(user: 100, system: 100, nice: 0, idle: 100),
+                                      current: CPUTicks(user: 100, system: 100, nice: 0, idle: 200)) == 0)
+// 两次采样相同(total=0)→ 0,不除零
+check("cpu same ticks -> 0",
+      SystemMetricsMonitor.cpuPercent(previous: CPUTicks(user: 1, system: 1, nice: 1, idle: 1),
+                                      current: CPUTicks(user: 1, system: 1, nice: 1, idle: 1)) == 0)
+// 计数器回绕(&- 减法):idle 从 UInt64.max 回绕到 0,user 增 1 → busy=1, total=2 → 50%
+check("cpu wrap-around safe",
+      SystemMetricsMonitor.cpuPercent(previous: CPUTicks(user: 0, system: 0, nice: 0, idle: UInt64.max),
+                                      current: CPUTicks(user: 1, system: 0, nice: 0, idle: 0)) == 50)
+// 内存:2048 页 × 4096 = 8MB / 16MB → 50%
+check("mem 50%",
+      SystemMetricsMonitor.memoryUsedPercent(active: 1024, wired: 512, compressed: 512,
+                                             pageSize: 4096, totalBytes: 16 * 1024 * 1024) == 50)
+// 小占用 → Int 四舍五入为 0%
+check("mem small -> 0",
+      SystemMetricsMonitor.memoryUsedPercent(active: 1, wired: 1, compressed: 1,
+                                             pageSize: 4096, totalBytes: 16 * 1024 * 1024) == 0)
+// 钳制:5000 页 × 4096 = 20MB vs 8MB → 244% → 100
+check("mem clamp 100",
+      SystemMetricsMonitor.memoryUsedPercent(active: 3000, wired: 1000, compressed: 1000,
+                                             pageSize: 4096, totalBytes: 8 * 1024 * 1024) == 100)
+// total=0 → nil
+check("mem zero total -> nil",
+      SystemMetricsMonitor.memoryUsedPercent(active: 1, wired: 1, compressed: 1,
+                                             pageSize: 4096, totalBytes: 0) == nil)
+// 冒烟:本机真实采样必然非 nil
+check("smoke sampleCPUTicks", SystemMetricsMonitor.sampleCPUTicks() != nil)
+check("smoke sampleMemoryPercent", SystemMetricsMonitor.sampleMemoryPercent() != nil)
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
