@@ -118,7 +118,8 @@ final class MenuBarStyleManager: ObservableObject {
 
 // MARK: - 菜单栏图标渲染
 
-/// 菜单栏明暗状态:AppDelegate 对 statusItem button 的 effectiveAppearance 做 KVO 写入;
+/// 菜单栏明暗状态:AppDelegate 从系统全局域 AppleInterfaceStyle 读取并写入
+/// (不用 button.effectiveAppearance——app 强制主题会污染它)。
 /// 非模板渲染(miniTableImage)读它选基底色——深菜单栏→白,浅菜单栏→黑。
 @MainActor
 final class MenuBarAppearance {
