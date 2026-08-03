@@ -49,12 +49,14 @@ enum ProviderTab: String, CaseIterable, Identifiable {
     case aliyun
     case opencode
     case kimi
+    case system
     var id: String { rawValue }
     var title: String {
         switch self {
         case .aliyun: return "阿里云"
         case .opencode: return "OpenCode"
         case .kimi: return "Kimi"
+        case .system: return "本机"
         }
     }
     var icon: String {
@@ -62,6 +64,7 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .aliyun: return "cloud.fill"
         case .opencode: return "bolt.fill"
         case .kimi: return "sparkles"
+        case .system: return "cpu"
         }
     }
 }
@@ -76,6 +79,7 @@ struct TokenPlanMenu: View {
         var tabs: [ProviderTab] = [.aliyun]
         if model.openCodeConfigured { tabs.append(.opencode) }
         if model.kimiConfigured { tabs.append(.kimi) }
+        tabs.append(.system)
         return tabs
     }
 
@@ -154,6 +158,7 @@ struct TokenPlanMenu: View {
         case .aliyun: aliyunContent
         case .opencode: OpenCodeCard()
         case .kimi: KimiCodeCard()
+        case .system: SystemProcessesCard()
         }
     }
 
@@ -901,5 +906,230 @@ struct LoadingRing: View {
             .rotationEffect(.degrees(rotate ? 360 : 0))
             .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: rotate)
             .onAppear { rotate = true }
+    }
+}
+
+// MARK: - 本机进程(CPU/内存 Top 10 + kill)
+
+/// 面板「本机」tab:分段显示 CPU/内存占用前 10 进程,可两步确认 kill(SIGKILL)。
+/// 数据源:ProcessListMonitor(libproc,3s 采样,面板关闭即停)。
+struct SystemProcessesCard: View {
+    enum SubTab: String, CaseIterable, Identifiable {
+        case cpu, memory
+        var id: String { rawValue }
+        var title: String { self == .cpu ? "CPU" : "内存" }
+    }
+
+    @State private var subTab: SubTab = .cpu
+    /// 两步确认 kill:确认中的 pid + 到期时间(3 秒未二次点击自动还原)。
+    @State private var confirmingPid: Int32?
+    @State private var confirmDeadline: Date = .distantPast
+
+    private var monitor: ProcessListMonitor { ProcessListMonitor.shared }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            subTabPicker
+            processList
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbPanelBackground)
+        .onAppear { monitor.start() }
+        .onDisappear {
+            monitor.stop()
+            confirmingPid = nil
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cpu").font(.system(size: 13, weight: .bold)).foregroundStyle(.green)
+            Text("本机进程").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
+            Spacer()
+            Button { monitor.refreshNow() } label: {
+                Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
+            }.buttonStyle(.plain)
+        }
+    }
+
+    private var subTabPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(SubTab.allCases) { t in
+                Button {
+                    subTab = t
+                } label: {
+                    Text(t.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(subTab == t ? .white : .atbTextSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(subTab == t ? Color.atbBlue : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// 当前子页签的 Top 10 列表。
+    private var topList: [ProcessSnapshot] {
+        switch subTab {
+        case .cpu: return ProcessListMonitor.topByCPU(monitor.snapshots)
+        case .memory: return ProcessListMonitor.topByMemory(monitor.snapshots)
+        }
+    }
+
+    private var processList: some View {
+        let list = topList
+        let maxValue: Double = {
+            switch subTab {
+            case .cpu: return list.compactMap(\.cpuPercent).max() ?? 1
+            case .memory: return Double(list.map(\.memoryBytes).max() ?? 1)
+            }
+        }()
+        return VStack(spacing: 6) {
+            if list.isEmpty {
+                HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
+                    .padding(14)
+                    .background(Color.atbCardBackground)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                ForEach(list) { p in
+                    ProcessRow(snapshot: p, subTab: subTab, maxValue: maxValue,
+                               isConfirming: confirmingPid == p.pid && Date() < confirmDeadline,
+                               onKill: { killTapped(p) })
+                }
+            }
+        }
+    }
+
+    /// kill 两步确认:第一次点 → 进入确认态;3 秒内第二次点 → SIGKILL;root 进程不可点。
+    /// 超时还原:asyncAfter 到期后若仍处于确认态则清除(二次点击已杀成功时 confirmingPid 已置 nil,不会误清)。
+    private func killTapped(_ p: ProcessSnapshot) {
+        guard !p.isRoot else { return }
+        if confirmingPid == p.pid, Date() < confirmDeadline {
+            _ = ProcessListMonitor.kill(p.pid)   // 失败静默:下轮刷新该行自然消失
+            confirmingPid = nil
+        } else {
+            confirmingPid = p.pid
+            confirmDeadline = Date().addingTimeInterval(3)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if confirmingPid == p.pid { confirmingPid = nil }
+            }
+        }
+    }
+}
+
+/// 进程行:app 图标 + 名称(副行进程名)+ 数值 + 迷你进度条 + kill 按钮。
+private struct ProcessRow: View {
+    let snapshot: ProcessSnapshot
+    let subTab: SystemProcessesCard.SubTab
+    let maxValue: Double
+    let isConfirming: Bool
+    let onKill: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            procIcon
+            VStack(alignment: .leading, spacing: 1) {
+                Text(snapshot.appName)
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                    .lineLimit(1)
+                if snapshot.name != snapshot.appName {
+                    Text(snapshot.name)
+                        .font(.system(size: 9)).foregroundStyle(.atbTextTertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(valueText)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(.atbTextPrimary)
+                    if snapshot.isRoot {
+                        Text("系统")
+                            .font(.system(size: 8, weight: .medium)).foregroundStyle(.atbTextTertiary)
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(Color.atbTextTertiary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
+                miniBar
+            }
+            killButton
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color.atbCardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// app 图标(.app 进程)或齿轮占位。
+    @ViewBuilder
+    private var procIcon: some View {
+        if let appPath = snapshot.appPath {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: appPath))
+                .resizable().frame(width: 20, height: 20)
+        } else {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 14)).foregroundStyle(.atbTextTertiary)
+                .frame(width: 20, height: 20)
+        }
+    }
+
+    /// 数值:CPU 不钳制可 >100%,首采 nil → 横杠;内存人类可读。
+    private var valueText: String {
+        switch subTab {
+        case .cpu:
+            guard let pct = snapshot.cpuPercent else { return "—" }
+            return String(format: "%.1f%%", pct)
+        case .memory:
+            return ProcessListMonitor.bytesToHuman(snapshot.memoryBytes)
+        }
+    }
+
+    /// 迷你进度条:相对本列表最大值(视觉参考,非 100% 上限)。
+    private var miniBar: some View {
+        let value: Double = {
+            switch subTab {
+            case .cpu: return snapshot.cpuPercent ?? 0
+            case .memory: return Double(snapshot.memoryBytes)
+            }
+        }()
+        let ratio = maxValue > 0 ? min(value / maxValue, 1) : 0
+        return GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().frame(height: 3).foregroundStyle(Color.black.opacity(0.08))
+                Capsule().frame(width: proxy.size.width * CGFloat(ratio), height: 3)
+                    .foregroundStyle(Color.atbBlue.opacity(0.7))
+            }
+        }
+        .frame(width: 64, height: 3)
+    }
+
+    /// kill 按钮:root 置灰;确认态红色文字"确认?";常态 xmark.circle。
+    private var killButton: some View {
+        Button(action: onKill) {
+            if isConfirming {
+                Text("确认?")
+                    .font(.system(size: 10, weight: .bold)).foregroundStyle(Color(red: 0.92, green: 0.23, blue: 0.21))
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Color(red: 0.92, green: 0.23, blue: 0.21).opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            } else {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(snapshot.isRoot ? Color.atbTextTertiary.opacity(0.35) : .atbTextSecondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(snapshot.isRoot)
     }
 }
