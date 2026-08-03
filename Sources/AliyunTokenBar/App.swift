@@ -87,7 +87,7 @@ final class ThemeManager: ObservableObject {
 
 enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     case cloudPercent  // 默认:云朵 + 7天百分比
-    case compact       // 紧凑:5h/7d 双行
+    case compact       // 默认:2×2 网格(阿里云/Kimi 行 + OpenCode/C-M 行)
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
     case systemStats   // 仅本机 CPU/内存
@@ -96,7 +96,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .cloudPercent: return "云朵 + 百分比(默认)"
-        case .compact: return "5h/7d 双行"
+        case .compact: return "2×2 网格(默认)"
         case .singleLine: return "单行(35%·61%)"
         case .iconOnly: return "仅图标"
         case .systemStats: return "本机 CPU/内存"
@@ -122,13 +122,13 @@ enum MenuBarTextRenderer {
     /// 按 scheme 渲染菜单栏图标(模板图,系统按明暗自动染色)。
     /// 百分比参数为 nil 时表示服务/网络不可用,显示横杠(—)。
     /// openCodeRolling/openCodeWeekly 为 nil 时不显示 OpenCode 部分。
-    /// kimiWeekly 为 nil 时不显示 Kimi 部分。
+    /// kimiFiveHour/kimiWeekly 为 nil 时不显示 Kimi 部分。
     /// cpu/memory 均为 nil(开关关闭)时各样式整段隐藏、systemStats 回退云朵;仅一个为 nil(采样未就绪)时该数值显示横杠(—)。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
-                      kimiWeekly: Int? = nil,
+                      kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
                       cpu: Int? = nil, memory: Int? = nil,
                       thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         switch scheme {
@@ -137,7 +137,9 @@ enum MenuBarTextRenderer {
                                                       kimiWeekly: kimiWeekly, cpu: cpu, memory: memory,
                                                       thresholdConfig: thresholdConfig)
         case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek,
-                                           kimiWeekly: kimiWeekly, cpu: cpu, memory: memory)
+                                           openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
+                                           kimiFiveHour: kimiFiveHour, kimiWeekly: kimiWeekly,
+                                           cpu: cpu, memory: memory)
         case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
                                               thresholdConfig: thresholdConfig)
@@ -227,31 +229,43 @@ enum MenuBarTextRenderer {
         return CloudShape()
     }
 
-    /// 默认紧凑:5h/7d 双行 + Kimi 周百分比行(nil 时显示横杠)+ 本机 C/M 行
+    /// 默认紧凑:2×2 网格(两行两列,总高 2 行,不超出菜单栏上下边界)。
+    /// 第 1 行:阿里云(5h/7d)+ Kimi(5h/周);第 2 行:OpenCode(滚/周)+ 本机 C/M。
+    /// 每个 Provider 一块,块内两窗口并排;未配置/未采样的块留空位(网格形状恒定)。
+    /// 2026-08-03 用户反馈:4 行纵向排布超出菜单栏边界,改为 2×2(方案 B)。
     @MainActor
-    private static func compactImage(fiveHour: Int?, oneWeek: Int?, kimiWeekly: Int? = nil,
+    private static func compactImage(fiveHour: Int?, oneWeek: Int?,
+                                     openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
+                                     kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
                                      cpu: Int? = nil, memory: Int? = nil) -> NSImage {
-        let content = VStack(alignment: .trailing, spacing: -1) {
+        // 单块:可选 Provider 字形 + 两窗口(标签+数值)。列宽固定,跨块对齐稳定。
+        func block(_ glyph: String?, _ l1: String, _ v1: Int?, _ l2: String, _ v2: Int?) -> some View {
             HStack(spacing: 2) {
-                Text("5h").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
-                Text(pctText(fiveHour)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+                if let glyph {
+                    Image(systemName: glyph).font(.system(size: 9, weight: .bold)).frame(width: 11, alignment: .leading)
+                }
+                Text(l1).font(.system(size: 9, weight: .medium)).monospacedDigit().frame(width: 14, alignment: .leading)
+                Text(pctText(v1)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 28, alignment: .trailing)
+                Text(l2).font(.system(size: 9, weight: .medium)).monospacedDigit().frame(width: 14, alignment: .leading)
+                Text(pctText(v2)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 28, alignment: .trailing)
             }
-            HStack(spacing: 2) {
-                Text("7d").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
-                Text(pctText(oneWeek)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
-            }
-            if kimiWeekly != nil {
-                HStack(spacing: 2) {
-                    Image(systemName: "sparkles").font(.system(size: 9, weight: .bold)).frame(width: 16, alignment: .leading)
-                    Text(pctText(kimiWeekly)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+        }
+        let showOpenCode = openCodeRolling != nil || openCodeWeekly != nil
+        let showKimi = kimiFiveHour != nil || kimiWeekly != nil
+        let showSystem = cpu != nil || memory != nil
+        let content = VStack(alignment: .leading, spacing: -1) {
+            HStack(spacing: 6) {
+                block("cloud.fill", "5h", fiveHour, "7d", oneWeek)   // 阿里云恒显示
+                if showKimi {
+                    block("sparkles", "5h", kimiFiveHour, "周", kimiWeekly)
                 }
             }
-            if cpu != nil || memory != nil {
-                HStack(spacing: 2) {
-                    Text("C").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
-                    Text(pctText(cpu)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
-                    Text("M").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
-                    Text(pctText(memory)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+            HStack(spacing: 6) {
+                if showOpenCode {
+                    block("bolt.fill", "滚", openCodeRolling, "周", openCodeWeekly)
+                }
+                if showSystem {
+                    block(nil, "C", cpu, "M", memory)
                 }
             }
         }
@@ -380,6 +394,8 @@ struct AliyunTokenBarApp: App {
             let ocWeekly: Int?? = model.openCodeQuota.map { .some($0.weekly.pct) }
                 ?? (model.openCodeConfigured && model.openCodeError != nil ? .some(nil) : nil)
             // Kimi:已配置但出错时显示横杠;未配置时整个 Kimi 部分不显示。
+            let kimiFiveHour: Int?? = model.kimiQuota.map { .some($0.fiveHour.pctInt) }
+                ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
             let kimiWeekly: Int?? = model.kimiQuota.map { .some($0.weekly.pctInt) }
                 ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
             let monitor = SystemMetricsMonitor.shared
@@ -389,6 +405,7 @@ struct AliyunTokenBarApp: App {
                 oneWeek: model.quota?.usage.oneWeek.percentageInt,
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,
+                kimiFiveHour: kimiFiveHour ?? nil,
                 kimiWeekly: kimiWeekly ?? nil,
                 cpu: model.systemStatsEnabled ? monitor.cpuPercent : nil,
                 memory: model.systemStatsEnabled ? monitor.memoryPercent : nil,
