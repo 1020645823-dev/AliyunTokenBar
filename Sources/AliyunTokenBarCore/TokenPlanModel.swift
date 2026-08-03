@@ -76,6 +76,10 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var sparklineEnabled: Bool = true {
         didSet { UserDefaults.standard.set(sparklineEnabled, forKey: "sparklineEnabled") }
     }
+    /// 菜单栏是否显示本机 CPU/内存(默认开)。
+    @Published public var systemStatsEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: "systemStatsEnabled") }
+    }
     /// 多窗口通知状态机(纯值,内部维护)。
     public private(set) var notificationTracker = NotificationTracker()
 
@@ -120,6 +124,9 @@ public final class TokenPlanModel: ObservableObject {
         }
         if defaults.object(forKey: "sparklineEnabled") != nil {
             sparklineEnabled = defaults.bool(forKey: "sparklineEnabled")
+        }
+        if defaults.object(forKey: "systemStatsEnabled") != nil {
+            systemStatsEnabled = defaults.bool(forKey: "systemStatsEnabled")
         }
 
         credentialStore = KeychainCredentialStore(service: "com.aliyuntokenbar")

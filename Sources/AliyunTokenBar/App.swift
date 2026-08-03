@@ -90,6 +90,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     case compact       // 紧凑:5h/7d 双行
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
+    case systemStats   // 仅本机 CPU/内存
 
     var id: String { rawValue }
     var displayName: String {
@@ -98,6 +99,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
         case .compact: return "5h/7d 双行"
         case .singleLine: return "单行(35%·61%)"
         case .iconOnly: return "仅图标"
+        case .systemStats: return "本机 CPU/内存"
         }
     }
 }
@@ -126,16 +128,19 @@ enum MenuBarTextRenderer {
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                       kimiWeekly: Int? = nil,
+                      cpu: Int? = nil, memory: Int? = nil,
                       thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         switch scheme {
         case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
                                                       openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
-                                                      kimiWeekly: kimiWeekly,
+                                                      kimiWeekly: kimiWeekly, cpu: cpu, memory: memory,
                                                       thresholdConfig: thresholdConfig)
-        case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek, kimiWeekly: kimiWeekly)
-        case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek)
+        case .compact: return compactImage(fiveHour: fiveHour, oneWeek: oneWeek,
+                                           kimiWeekly: kimiWeekly, cpu: cpu, memory: memory)
+        case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
                                               thresholdConfig: thresholdConfig)
+        case .systemStats: return systemStatsImage(cpu: cpu, memory: memory)
         }
     }
 
@@ -154,6 +159,7 @@ enum MenuBarTextRenderer {
     private static func cloudPercentImage(fiveHour: Int?, oneWeek: Int?,
                                           openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                                           kimiWeekly: Int? = nil,
+                                          cpu: Int? = nil, memory: Int? = nil,
                                           thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
@@ -184,6 +190,15 @@ enum MenuBarTextRenderer {
                 Text(pctText(kimiWeekly)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(kimiWeekly.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
+            // 本机:CPU/内存(开关开且有采样值时显示;未采样时显示横杠)
+            if cpu != nil || memory != nil {
+                Spacer().frame(width: 6)
+                Text("C").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(cpu)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+                Text("M").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(memory)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+            }
         }
         .frame(height: 20)
         .fixedSize(horizontal: true, vertical: false)
@@ -211,9 +226,10 @@ enum MenuBarTextRenderer {
         return CloudShape()
     }
 
-    /// 默认紧凑:5h/7d 双行 + Kimi 周百分比行(nil 时显示横杠)
+    /// 默认紧凑:5h/7d 双行 + Kimi 周百分比行(nil 时显示横杠)+ 本机 C/M 行
     @MainActor
-    private static func compactImage(fiveHour: Int?, oneWeek: Int?, kimiWeekly: Int? = nil) -> NSImage {
+    private static func compactImage(fiveHour: Int?, oneWeek: Int?, kimiWeekly: Int? = nil,
+                                     cpu: Int? = nil, memory: Int? = nil) -> NSImage {
         let content = VStack(alignment: .trailing, spacing: -1) {
             HStack(spacing: 2) {
                 Text("5h").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
@@ -229,19 +245,35 @@ enum MenuBarTextRenderer {
                     Text(pctText(kimiWeekly)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
                 }
             }
+            if cpu != nil || memory != nil {
+                HStack(spacing: 2) {
+                    Text("C").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
+                    Text(pctText(cpu)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+                    Text("M").font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 16, alignment: .leading)
+                    Text(pctText(memory)).font(.system(size: 10, weight: .medium)).monospacedDigit().frame(width: 30, alignment: .trailing)
+                }
+            }
         }
         .foregroundStyle(.black)
-        .frame(width: 48, height: 20, alignment: .trailing)
+        .fixedSize(horizontal: true, vertical: true)
         return render(content)
     }
 
-    /// 单行:35%·61%(nil 时显示横杠)
+    /// 单行:35%·61%(nil 时显示横杠);尾部追加 C/M 段
     @MainActor
-    private static func singleLineImage(fiveHour: Int?, oneWeek: Int?) -> NSImage {
+    private static func singleLineImage(fiveHour: Int?, oneWeek: Int?,
+                                        cpu: Int? = nil, memory: Int? = nil) -> NSImage {
         let content = HStack(spacing: 3) {
             Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
             Text("·").font(.system(size: 12, weight: .medium))
             Text(pctText(oneWeek)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+            if cpu != nil || memory != nil {
+                Text("·").font(.system(size: 12, weight: .medium))
+                Text("C").font(.system(size: 10, weight: .medium)).monospacedDigit()
+                Text(pctText(cpu)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                Text("M").font(.system(size: 10, weight: .medium)).monospacedDigit()
+                Text(pctText(memory)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+            }
         }
         .foregroundStyle(.black)
         .frame(height: 20)
@@ -280,6 +312,26 @@ enum MenuBarTextRenderer {
             drawArc(ctx: ctx, center: center, radius: innerR, pct: Double(fiveHour)/100, color: ringColor, width: 1.5)
         }
         .frame(width: size, height: size)
+        return render(content)
+    }
+
+    /// 仅本机 CPU/内存:C23% · M58%。
+    /// 两个参数都 nil(开关关闭或采样未就绪)→ 回退云朵图标。
+    @MainActor
+    private static func systemStatsImage(cpu: Int?, memory: Int?) -> NSImage {
+        let content = HStack(spacing: 4) {
+            if cpu == nil && memory == nil {
+                cloudShape.fill(Color.black).frame(width: 14, height: 11)
+            } else {
+                Text("C").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(cpu)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+                Text("M").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(memory)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+            }
+        }
+        .frame(height: 20)
+        .fixedSize(horizontal: true, vertical: false)
         return render(content)
     }
 

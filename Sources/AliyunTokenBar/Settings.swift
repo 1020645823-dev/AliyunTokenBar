@@ -64,6 +64,7 @@ struct SettingsView: View {
                         Text(s.displayName).tag(s)
                     }
                 }
+                Toggle("显示本机 CPU/内存", isOn: $model.systemStatsEnabled)
             }
             Section("刷新") {
                 Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
