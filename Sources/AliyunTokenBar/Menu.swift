@@ -925,7 +925,7 @@ struct SystemProcessesCard: View {
     @State private var confirmingPid: Int32?
     @State private var confirmDeadline: Date = .distantPast
 
-    private var monitor: ProcessListMonitor { ProcessListMonitor.shared }
+    @ObservedObject private var monitor = ProcessListMonitor.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
