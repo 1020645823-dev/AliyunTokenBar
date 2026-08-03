@@ -32,8 +32,8 @@
 ## 色彩与渲染
 
 - **放弃 `isTemplate`**(模板图只取 alpha,现有阈值变色代码实际无效——菜单栏里永远单色)。改为非模板手动双套渲染:
-  - 读 statusItem button 的 `effectiveAppearance` 判明暗:深菜单栏白基底、浅菜单栏黑基底
-  - 对 button appearance 变化做 KVO,明暗切换时触发重渲染(数据 30s 刷新也会重渲染,双保险)
+  - 菜单栏明暗读**系统全局域** `AppleInterfaceStyle`(深色时存在,浅色缺省),`DistributedNotificationCenter` 观察 `AppleInterfaceThemeChangedNotification`,变化时重渲染。
+  - ⚠️ 修正(2026-08-04,d05edbd):原方案「读 statusItem button 的 `effectiveAppearance` + KVO」**不可用**——用户在设置里强制 app 主题(浅色/深色)时 `NSApp.appearance` 会污染按钮外观,与菜单栏真实明暗脱节(实测 appTheme=light + 系统深色 → 黑字隐没)。菜单栏明暗永远=系统外观,与 app 主题正交。
 - **风险变色**:每个数字独立按 `ThresholdConfig.band(for:)` 变色——safe→基底黑/白,warning→橙 `(0.95,0.55,0.10)`,critical→红 `(0.92,0.23,0.21)`(沿用面板现有色值)。图标恒用基底色,只有数字变色
 - 渲染失败回退:保底云朵图标(沿用现有 render() 兜底)
 
