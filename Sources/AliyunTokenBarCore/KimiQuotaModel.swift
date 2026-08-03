@@ -68,6 +68,50 @@ public struct KimiWindow: Equatable {
     }
 }
 
+/// Kimi 网页订阅共享额度。Work/Kimi 与 Code 共用同一账户池,比例都以该池为分母。
+public struct KimiSubscriptionBalance: Equatable {
+    /// 账户共享池总使用比例(0...1)。
+    public let totalUsedRatio: Double
+    /// Code 在共享池中的使用比例(0...1);服务端未返回时为 nil。
+    public let codeUsedRatio: Double?
+    /// 订阅池重置/到期时间(ms epoch)。
+    public let expireTimeMs: Int64?
+
+    public init(totalUsedRatio: Double, codeUsedRatio: Double?, expireTimeMs: Int64?) {
+        self.totalUsedRatio = Self.clamp(totalUsedRatio)
+        self.codeUsedRatio = codeUsedRatio.map(Self.clamp)
+        self.expireTimeMs = expireTimeMs
+    }
+
+    /// 账户共享池总使用百分比。
+    public var totalUsedPercent: Double { roundedPercent(totalUsedRatio) }
+
+    /// Code 占共享池的百分比;没有服务端分项时为 nil。
+    public var codeUsedPercent: Double? {
+        guard let codeUsedRatio else { return nil }
+        return roundedPercent(min(codeUsedRatio, totalUsedRatio))
+    }
+
+    /// Work/Kimi 占共享池的百分比;没有 Code 分项时为 nil。
+    public var workUsedPercent: Double? {
+        guard let codeUsedRatio else { return nil }
+        return roundedPercent(max(0, totalUsedRatio - min(codeUsedRatio, totalUsedRatio)))
+    }
+
+    /// 共享池剩余百分比。
+    public var remainingPercent: Double {
+        roundedPercent(1 - totalUsedRatio)
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        min(max(value, 0), 1)
+    }
+
+    private func roundedPercent(_ ratio: Double) -> Double {
+        (ratio * 100 * 100).rounded() / 100
+    }
+}
+
 /// Kimi Code 套餐用量(5h / 周 / 月度总额 + 加油包)。
 public struct KimiQuota: Equatable {
     /// 5 小时窗口(limits[0],duration=300)
@@ -76,6 +120,8 @@ public struct KimiQuota: Equatable {
     public let weekly: KimiWindow
     /// 月度总额度(totalQuota 字段;API 未返回时为 nil)
     public let monthly: KimiWindow?
+    /// 网页订阅共享池(Work/Kimi + Code);未登录网页控制台时为 nil。
+    public let subscriptionBalance: KimiSubscriptionBalance?
     /// 加油包(未开通/未启用时为 nil)
     public let booster: KimiBooster?
     /// 会员等级(LEVEL_* 枚举,如 "LEVEL_ADVANCED")
@@ -85,10 +131,12 @@ public struct KimiQuota: Equatable {
 
     public init(fiveHour: KimiWindow, weekly: KimiWindow, monthly: KimiWindow?,
                 booster: KimiBooster?, membershipLevel: String?,
-                subscriptionExpireMs: Int64? = nil) {
+                subscriptionExpireMs: Int64? = nil,
+                subscriptionBalance: KimiSubscriptionBalance? = nil) {
         self.fiveHour = fiveHour
         self.weekly = weekly
         self.monthly = monthly
+        self.subscriptionBalance = subscriptionBalance
         self.booster = booster
         self.membershipLevel = membershipLevel
         self.subscriptionExpireMs = subscriptionExpireMs

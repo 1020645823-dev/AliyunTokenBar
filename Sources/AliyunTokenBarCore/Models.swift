@@ -113,6 +113,18 @@ public enum UsageError: Error, Equatable {
     case unknown(String)
 }
 
+public extension AuthState {
+    /// 一次数据刷新后的鉴权状态迁移(纯函数,Verify 有断言;2026-08-03 死循环修复):
+    /// - 成功(error == nil)→ .ok(RPC 能调通即登录有效,重新登录后必须回置);
+    /// - authExpired → 仅 .ok/.unknown 降级为 .expired(不把 .notLoggedIn 误标成"已过期");
+    /// - 其他错误 → 保持(网络故障不等于登录失效)。
+    func afterRefresh(error: UsageError?) -> AuthState {
+        if error == nil { return .ok }
+        if error == .authExpired, self == .ok || self == .unknown { return .expired }
+        return self
+    }
+}
+
 // MARK: - OpenCode Go 用量(rolling/weekly/monthly 三窗口,与阿里云 5h/7d 结构相似)
 
 /// OpenCode Go 单个用量窗口(rolling≈5h / weekly≈7d / monthly)

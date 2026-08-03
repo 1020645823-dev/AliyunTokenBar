@@ -80,6 +80,8 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var systemStatsEnabled: Bool = true {
         didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: "systemStatsEnabled") }
     }
+    /// 重新登录轮询是否在跑(面板显示"等待浏览器登录完成…")。
+    @Published public var isReloginWatching = false
     /// 多窗口通知状态机(纯值,内部维护)。
     public private(set) var notificationTracker = NotificationTracker()
 
@@ -301,6 +303,26 @@ public final class TokenPlanModel: ObservableObject {
         await refresh()
     }
 
+    /// 重新登录:拉起浏览器授权,并轮询 `bl auth status`(每 5s,最多 3 分钟)。
+    /// 浏览器登录完成后自动回置 .ok 并立即刷数据,无需用户手动操作或等定时器。
+    /// 已有轮询在跑时不重复起。
+    public func relogin() {
+        BlAuthManager.relogin()
+        guard !isReloginWatching else { return }
+        isReloginWatching = true
+        Task {
+            for _ in 0..<36 {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if await BlAuthManager.currentAuthState() == .ok {
+                    authState = .ok
+                    await refresh()
+                    break
+                }
+            }
+            isReloginWatching = false
+        }
+    }
+
     /// 拉数据。usage 每次都拉(高频);subscription/addon 仅超过 24h 或首次才拉(低频),
     /// 否则沿用上次缓存。失败时:auth 错误 → 置 .expired;其他 → 保留旧数据 + 记录错误。
     public func refresh() async {
@@ -320,9 +342,10 @@ public final class TokenPlanModel: ObservableObject {
                 lastAuxFetch = Date()
                 lastUpdated = Date()
                 lastError = nil
+                authState = authState.afterRefresh(error: nil)
                 recordAndNotify()
             case .failure(let e):
-                if e == .authExpired { authState = .expired }
+                authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
             }
         } else {
@@ -335,9 +358,10 @@ public final class TokenPlanModel: ObservableObject {
                                        addon: quota?.addon)
                 lastUpdated = Date()
                 lastError = nil
+                authState = authState.afterRefresh(error: nil)
                 recordAndNotify()
             case .failure(let e):
-                if e == .authExpired { authState = .expired }
+                authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
             }
         }
@@ -355,9 +379,10 @@ public final class TokenPlanModel: ObservableObject {
             lastAuxFetch = Date()
             lastUpdated = Date()
             lastError = nil
+            authState = authState.afterRefresh(error: nil)
             recordAndNotify()
         case .failure(let e):
-            if e == .authExpired { authState = .expired }
+            authState = authState.afterRefresh(error: e)
             lastError = errorMessage(e)
         }
     }

@@ -239,18 +239,20 @@ public enum KimiUsageService {
 
     // MARK: - Web 控制台用量(月度总额度)
 
-    /// 合并后的 Web 用量:5h / 周 / 月度总额(totalQuota)+ 订阅到期时间。
+    /// 合并后的 Web 用量:5h / 周 / totalQuota + 订阅共享池 + 订阅到期时间。
     public struct KimiWebQuota: Equatable {
         public let fiveHour: KimiWindow
         public let weekly: KimiWindow
         public let monthly: KimiWindow?
         public let subscriptionExpireMs: Int64?
+        public let subscriptionBalance: KimiSubscriptionBalance?
         public init(fiveHour: KimiWindow, weekly: KimiWindow, monthly: KimiWindow?,
-                    subscriptionExpireMs: Int64?) {
+                    subscriptionExpireMs: Int64?, subscriptionBalance: KimiSubscriptionBalance? = nil) {
             self.fiveHour = fiveHour
             self.weekly = weekly
             self.monthly = monthly
             self.subscriptionExpireMs = subscriptionExpireMs
+            self.subscriptionBalance = subscriptionBalance
         }
     }
 
@@ -294,8 +296,8 @@ public enum KimiUsageService {
             return .failure(.network(error.localizedDescription))
         }
 
-        // 2) GetSubscriptionStats → 订阅到期时间(月度卡片的"重置"时间)
-        var expireMs: Int64?
+        // 2) GetSubscriptionStats → 共享订阅池(Work/Kimi + Code)和重置时间
+        var statsBalance: KimiSubscriptionBalance?
         var statsReq = URLRequest(url: webStatsURL)
         statsReq.httpMethod = "POST"
         statsReq.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
@@ -305,28 +307,31 @@ public enum KimiUsageService {
         statsReq.httpBody = try? JSONSerialization.data(withJSONObject: [:])
         statsReq.timeoutInterval = 30
         if let (data, response) = try? await URLSession.shared.data(for: statsReq),
-           let http = response as? HTTPURLResponse, http.statusCode == 200,
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let balance = root["subscriptionBalance"] as? [String: Any],
-           let expireStr = balance["expireTime"] as? String {
-            expireMs = dateMs(expireStr)
+           let http = response as? HTTPURLResponse, http.statusCode == 200 {
+            statsBalance = parseSubscriptionStats(data)
         }
 
         return .success(KimiWebQuota(fiveHour: parsed.fiveHour, weekly: parsed.weekly,
-                                     monthly: parsed.monthly, subscriptionExpireMs: expireMs))
+                                     monthly: parsed.monthly,
+                                     subscriptionExpireMs: statsBalance?.expireTimeMs,
+                                     subscriptionBalance: statsBalance))
     }
 
-    /// 纯函数:解析 GetUsages 响应(usages[0].detail=周, limits[0].duration=300=5h, totalQuota=月度)。
+    /// 纯函数:解析 GetUsages 响应(usages[scope=FEATURE_CODING].detail=周,
+    /// limits[0].duration=300=5h,totalQuota=兼容汇总字段)。
     public static func parseWebUsages(_ data: Data) -> KimiWebQuota? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let usages = root["usages"] as? [[String: Any]],
-              let first = usages.first else { return nil }
-        let weekly = makeWindow(first["detail"] as? [String: Any])
+              let coding = usages.first(where: {
+                  ($0["scope"] as? String)?.uppercased() == "FEATURE_CODING"
+              }) else { return nil }
+        let weekly = makeWindow(coding["detail"] as? [String: Any])
         var fiveHour = KimiWindow(used: 0, limit: 0, resetTimeMs: nil)
-        if let limits = first["limits"] as? [[String: Any]] {
+        if let limits = coding["limits"] as? [[String: Any]] {
             for limit in limits {
                 if let window = limit["window"] as? [String: Any],
-                   (window["duration"] as? Int) == 300,
+                   intValue(window["duration"]) == 300,
+                   isMinuteUnit(window["timeUnit"]),
                    let detail = limit["detail"] as? [String: Any] {
                     fiveHour = makeWindow(detail)
                     break
@@ -337,7 +342,18 @@ public enum KimiUsageService {
         if let tq = root["totalQuota"] as? [String: Any], !tq.isEmpty {
             monthly = makeWindow(tq)
         }
-        return KimiWebQuota(fiveHour: fiveHour, weekly: weekly, monthly: monthly, subscriptionExpireMs: nil)
+        return KimiWebQuota(fiveHour: fiveHour, weekly: weekly, monthly: monthly,
+                            subscriptionExpireMs: nil)
+    }
+
+    /// 解析 GetSubscriptionStats.subscriptionBalance 的共享订阅池。
+    public static func parseSubscriptionStats(_ data: Data) -> KimiSubscriptionBalance? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = root["subscriptionBalance"] as? [String: Any],
+              let total = ratioValue(raw["amountUsedRatio"]) else { return nil }
+        return KimiSubscriptionBalance(totalUsedRatio: total,
+                                       codeUsedRatio: ratioValue(raw["kimiCodeUsedRatio"]),
+                                       expireTimeMs: dateMs(raw["expireTime"]))
     }
 
     // MARK: - Fetch
@@ -356,7 +372,8 @@ public enum KimiUsageService {
                     monthly: wq.monthly,
                     booster: nil,
                     membershipLevel: nil,
-                    subscriptionExpireMs: wq.subscriptionExpireMs
+                    subscriptionExpireMs: wq.subscriptionExpireMs,
+                    subscriptionBalance: wq.subscriptionBalance
                 ))
             case .failure:
                 // web 失败(网络/过期)→ 回退 coding API,月度缺失
@@ -423,7 +440,8 @@ public enum KimiUsageService {
         if let limits = root["limits"] as? [[String: Any]] {
             for limit in limits {
                 if let window = limit["window"] as? [String: Any],
-                   (window["duration"] as? Int) == 300,
+                   intValue(window["duration"]) == 300,
+                   isMinuteUnit(window["timeUnit"]),
                    let detail = limit["detail"] as? [String: Any] {
                     fiveHour = makeWindow(detail)
                     break
@@ -493,6 +511,25 @@ public enum KimiUsageService {
         if let n = v as? Double { return Int(n) }
         if let n = v as? NSNumber { return n.intValue }
         return nil
+    }
+
+    /// 字符串或数字 → 0...1 比例。
+    private static func ratioValue(_ value: Any?) -> Double? {
+        let raw: Double?
+        if let s = value as? String { raw = Double(s) }
+        else if let n = value as? Double { raw = n }
+        else if let n = value as? Int { raw = Double(n) }
+        else if let n = value as? NSNumber { raw = n.doubleValue }
+        else { raw = nil }
+        guard let raw else { return nil }
+        return min(max(raw, 0), 1)
+    }
+
+    /// 5 小时窗口的时间单位兼容 protobuf 枚举和简化字符串。
+    private static func isMinuteUnit(_ value: Any?) -> Bool {
+        guard let raw = value as? String else { return true }
+        let unit = raw.uppercased()
+        return unit == "TIME_UNIT_MINUTE" || unit == "MINUTE"
     }
 
     /// ISO8601 字符串 → epoch 毫秒

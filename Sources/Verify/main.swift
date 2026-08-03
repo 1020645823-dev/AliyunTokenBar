@@ -108,6 +108,20 @@ check("auth no console field -> .notLoggedIn", BlAuthManager.parseAuthStatus(Dat
 let emptyMaskedJson = #"{"console":{"source":"config","masked":""}}"#
 check("auth empty masked -> .notLoggedIn", BlAuthManager.parseAuthStatus(Data(emptyMaskedJson.utf8)) == .notLoggedIn)
 
+// --- AuthState.afterRefresh 状态机(2026-08-03 死循环修复回归)---
+// RPC 成功 → 恒回置 .ok(重新登录后定时器/手动刷新成功必须解除鉴权提示)
+check("auth next: expired + success -> ok", AuthState.expired.afterRefresh(error: nil) == .ok)
+check("auth next: notLoggedIn + success -> ok", AuthState.notLoggedIn.afterRefresh(error: nil) == .ok)
+check("auth next: unknown + success -> ok", AuthState.unknown.afterRefresh(error: nil) == .ok)
+// authExpired:仅 .ok/.unknown 降级为 .expired(未登录不误标"已过期")
+check("auth next: ok + authExpired -> expired", AuthState.ok.afterRefresh(error: .authExpired) == .expired)
+check("auth next: unknown + authExpired -> expired", AuthState.unknown.afterRefresh(error: .authExpired) == .expired)
+check("auth next: expired stays expired", AuthState.expired.afterRefresh(error: .authExpired) == .expired)
+check("auth next: notLoggedIn not mislabeled", AuthState.notLoggedIn.afterRefresh(error: .authExpired) == .notLoggedIn)
+// 网络故障 ≠ 登录失效:状态保持
+check("auth next: ok + network stays ok", AuthState.ok.afterRefresh(error: .network("x")) == .ok)
+check("auth next: expired + network stays", AuthState.expired.afterRefresh(error: .network("x")) == .expired)
+
 // --- OpenCode Go 用量解析(模拟 SolidJS SSR 注入的 HTML)---
 let ocFixture = """
 <html><script>rollingUsage:$R[38]={status:"ok",resetInSec:12345,usagePercent:22}
@@ -163,12 +177,37 @@ check("kimi monthly pct 30", kq2?.monthly?.pct == 30.0)
 check("kimi monthly used 300000", kq2?.monthly?.used == 300000)
 check("kimi parse garbage -> nil", KimiUsageService.parse(Data("not json".utf8)) == nil)
 
+let kimiStringWindowFixture = #"{"usage":{"limit":"100","used":"10","remaining":"90"},"limits":[{"window":{"duration":"300","timeUnit":"MINUTE"},"detail":{"limit":"100","used":"20","remaining":"80"}}]}"#
+let kqStringWindow = KimiUsageService.parse(Data(kimiStringWindowFixture.utf8))
+check("kimi string duration 5h parses", kqStringWindow?.fiveHour.used == 20)
+
 // KimiWindow.pct 边界
 let kw = KimiWindow(used: 5, limit: 1000, resetTimeMs: nil)
 check("kimi window pct 0.5", kw.pct == 0.5)
 check("kimi window pctInt 1", kw.pctInt == 1)
 check("kimi window remaining 995", kw.remaining == 995)
 check("kimi window zero limit pct 0", KimiWindow(used: 5, limit: 0, resetTimeMs: nil).pct == 0)
+
+// 订阅共享池:Work/Kimi 与 Code 共用同一总额度,不能把两套 limit 相加。
+let shared = KimiSubscriptionBalance(totalUsedRatio: 0.4173,
+                                     codeUsedRatio: 0.2173,
+                                     expireTimeMs: nil)
+check("kimi shared total 41.73%", shared.totalUsedPercent == 41.73)
+check("kimi shared code 21.73%", shared.codeUsedPercent == 21.73)
+check("kimi shared work 20.00%", shared.workUsedPercent == 20.0)
+check("kimi shared remaining 58.27%", shared.remainingPercent == 58.27)
+
+let codeOverTotal = KimiSubscriptionBalance(totalUsedRatio: 0.30,
+                                            codeUsedRatio: 0.80,
+                                            expireTimeMs: nil)
+check("kimi shared code clamps to total", codeOverTotal.codeUsedPercent == 30.0)
+check("kimi shared work clamps to zero", codeOverTotal.workUsedPercent == 0.0)
+
+let noCodeBreakdown = KimiSubscriptionBalance(totalUsedRatio: 0.30,
+                                              codeUsedRatio: nil,
+                                              expireTimeMs: nil)
+check("kimi shared missing code stays nil", noCodeBreakdown.codeUsedPercent == nil)
+check("kimi shared missing code work stays nil", noCodeBreakdown.workUsedPercent == nil)
 
 // 5h 空窗:API 返上一窗口的过去时间戳 → 隐藏倒计时(2026-08-03 活体验证回归)
 let kimiPastMs = Int64((Date().addingTimeInterval(-3600).timeIntervalSince1970) * 1000)
@@ -190,8 +229,46 @@ check("web 5h limit 100", webParsed?.fiveHour.limit == 100)
 check("web monthly 41%", webParsed?.monthly?.pct == 41.0)
 check("web monthly used 41", webParsed?.monthly?.used == 41)
 check("web monthly limit 100", webParsed?.monthly?.limit == 100)
-check("web monthly nil when empty", KimiUsageService.parseWebUsages(Data(#"{"usages":[],"totalQuota":{}}"#.utf8))?.monthly == nil) 
+check("web monthly nil when empty", KimiUsageService.parseWebUsages(Data(#"{"usages":[],"totalQuota":{}}"#.utf8))?.monthly == nil)
 check("web parse garbage -> nil", KimiUsageService.parseWebUsages(Data("bad".utf8)) == nil)
+
+// GetSubscriptionStats:账户共享池总量 + Code 子量,Work 为差值而非第二份额度。
+let kimiStatsFixture = """
+{
+  "ratelimitCode5h":{"ratio":0.10,"enabled":true,"resetTime":"2026-08-03T14:36:22.762591Z"},
+  "ratelimitCode7d":{"ratio":0.20,"enabled":true,"resetTime":"2026-08-04T14:36:22.762591Z"},
+  "subscriptionBalance":{
+    "feature":"FEATURE_OMNI",
+    "type":"SUBSCRIPTION",
+    "amountUsedRatio":0.4173,
+    "kimiCodeUsedRatio":0.2173,
+    "expireTime":"2026-08-20T00:00:00.000Z"
+  }
+}
+"""
+let stats = KimiUsageService.parseSubscriptionStats(Data(kimiStatsFixture.utf8))
+check("kimi stats total ratio", stats?.totalUsedPercent == 41.73)
+check("kimi stats code ratio", stats?.codeUsedPercent == 21.73)
+check("kimi stats work ratio", stats?.workUsedPercent == 20.0)
+check("kimi stats expire parsed", stats?.expireTimeMs != nil)
+
+let statsWithoutCode = #"{"subscriptionBalance":{"amountUsedRatio":"0.3","expireTime":"2026-08-20T00:00:00Z"}}"#
+let noCodeStats = KimiUsageService.parseSubscriptionStats(Data(statsWithoutCode.utf8))
+check("kimi stats missing code accepted", noCodeStats?.totalUsedPercent == 30.0)
+check("kimi stats missing code breakdown", noCodeStats?.codeUsedPercent == nil && noCodeStats?.workUsedPercent == nil)
+
+let kimiWebMultiScopeFixture = #"""
+{
+  "usages":[
+    {"scope":"FEATURE_OMNI","detail":{"limit":"100","used":"99","remaining":"1"}},
+    {"scope":"FEATURE_CODING","detail":{"limit":"100","used":"58","remaining":"42"},"limits":[]}
+  ],
+  "totalQuota":{}
+}
+"""#
+let multiScope = KimiUsageService.parseWebUsages(Data(kimiWebMultiScopeFixture.utf8))
+check("web parser selects coding scope", multiScope?.weekly.used == 58)
+
 
 // KimiQuota.monthlyResetDisplay 用订阅到期时间
 let kq3 = KimiQuota(fiveHour: KimiWindow(used: 0, limit: 100, resetTimeMs: nil),
@@ -200,6 +277,37 @@ let kq3 = KimiQuota(fiveHour: KimiWindow(used: 0, limit: 100, resetTimeMs: nil),
                     booster: nil, membershipLevel: nil,
                     subscriptionExpireMs: 1784678400000)
 check("kimi monthlyReset uses expire", kq3.monthlyResetDisplay == "2026-07-22 08:00:00")
+
+// --- Kimi 共享额度端到端(仅 KIMI_E2E=1;走本机 Keychain web token,不打印凭据)---
+// 与 App 定时刷新同一调用路径(fetchQuota → GetUsages + GetSubscriptionStats)。
+if ProcessInfo.processInfo.environment["KIMI_E2E"] == "1" {
+    check("e2e web token in keychain", KimiUsageService.loadWebToken() != nil)
+    let r = await KimiUsageService.fetchQuota()
+    switch r {
+    case .success(let q):
+        check("e2e fetch success", true)
+        check("e2e 5h parses", q.fiveHour.limit > 0)
+        check("e2e weekly parses", q.weekly.limit > 0)
+        if let b = q.subscriptionBalance {
+            check("e2e shared total in 0...100", (0.0...100.0).contains(b.totalUsedPercent))
+            if let code = b.codeUsedPercent, let work = b.workUsedPercent {
+                check("e2e code <= total", code <= b.totalUsedPercent + 0.01)
+                check("e2e segments sum to total", abs(code + work - b.totalUsedPercent) < 0.01)
+                print("E2E summary: total=\(b.totalUsedPercent)% code=\(code)% work=\(work)% remaining=\(b.remainingPercent)% expire=\(b.expireTimeMs.map(String.init) ?? "nil")")
+            } else {
+                print("E2E summary: total=\(b.totalUsedPercent)% (Code 分项未返回,只显示总量)")
+            }
+        } else {
+            check("e2e shared balance present", false)
+            print("E2E: subscriptionBalance 为 nil(订阅统计未返回或已回退 coding API)")
+        }
+    case .failure(let e):
+        check("e2e fetch success", false)
+        print("E2E error: \(e)")
+    }
+} else {
+    print("SKIP kimi e2e (set KIMI_E2E=1;uses local Keychain web token, no env credentials)")
+}
 
 // --- Kimi Code:live API(仅 KIMI_LIVE=1 时跑)---
 if ProcessInfo.processInfo.environment["KIMI_LIVE"] == "1" {

@@ -85,28 +85,23 @@ struct TokenPlanMenu: View {
     }
 
     var body: some View {
+        // 面板恒可展开:阿里云鉴权问题只影响阿里云 tab 内联提示,不挡其他 Provider
+        // (2026-08-03 用户反馈:token 失效不应整面板不可用,OpenCode/Kimi 仍要能看)。
         VStack(spacing: 12) {
             header
-            if model.authState == .ok || model.authState == .unknown {
-                providerTabs
-                selectedContent
-            }
+            providerTabs
+            selectedContent
             actionButtons
-            if model.authState == .ok { BlVersionRow() }
+            if model.blInstalledVersion != nil { BlVersionRow() }
         }
         .padding(16)
         .frame(width: 340)
         .background(Color.atbPanelBackground)
-        .overlay { if needsAuthOverlay { AuthOverlay() } }
         .task {
             // 数据刷新由 AppDelegate 在启动时触发(不等面板打开)。
             // 这里仅确保通知授权(面板可能是应用启动后很久才打开的场景)。
             NotificationManager.shared.requestAuthorization()
         }
-    }
-
-    private var needsAuthOverlay: Bool {
-        model.authState == .blNotInstalled || model.authState == .notLoggedIn || model.authState == .expired
     }
 
     private var header: some View {
@@ -162,16 +157,20 @@ struct TokenPlanMenu: View {
         }
     }
 
-    /// 阿里云内容:5h/7d 用量卡 + 趋势估算 + 套餐信息。
+    /// 阿里云内容:鉴权异常时内联提示卡(重新登录入口);正常时 5h/7d 用量卡 + 趋势估算 + 套餐信息。
     private var aliyunContent: some View {
         VStack(spacing: 12) {
-            usageSection
-            if model.sparklineEnabled {
-                LimitEstimateLabel()
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.horizontal, 2)
+            if model.authState == .blNotInstalled || model.authState == .notLoggedIn || model.authState == .expired {
+                AliyunAuthCard()
+            } else {
+                usageSection
+                if model.sparklineEnabled {
+                    LimitEstimateLabel()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 2)
+                }
+                if let sub = model.quota?.subscription { subscriptionRow(sub) }
             }
-            if let sub = model.quota?.subscription { subscriptionRow(sub) }
         }
     }
 
@@ -437,27 +436,52 @@ struct UsageCard: View {
     }
 }
 
-// MARK: - 鉴权遮罩
+// MARK: - 阿里云鉴权内联提示卡
 
-struct AuthOverlay: View {
+/// 阿里云 tab 内的鉴权异常提示卡(未装 bl / 未登录 / token 失效)。
+/// 内联而非全屏遮罩:其他 Provider 标签与面板按钮始终可用
+/// (2026-08-03 用户反馈修复:全屏遮罩导致 token 失效时整面板不可用)。
+struct AliyunAuthCard: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var copied = false
     var body: some View {
-        ZStack {
-            Color.atbPanelBackground.opacity(0.94)
-            VStack(spacing: 14) {
-                Image(systemName: iconName).font(.system(size: 40)).foregroundStyle(.orange)
-                Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(.atbTextPrimary)
+        VStack(spacing: 12) {
+            VStack(spacing: 8) {
+                Image(systemName: iconName).font(.system(size: 28)).foregroundStyle(.orange)
+                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
                 if model.authState == .blNotInstalled {
                     blInstallGuide
                 } else {
-                    Text(hint).font(.system(size: 12)).foregroundStyle(.atbTextSecondary).multilineTextAlignment(.center)
-                    Button("重新登录") { BlAuthManager.relogin() }
-                        .buttonStyle(.plain).foregroundStyle(.white)
-                        .padding(.horizontal, 20).padding(.vertical, 8)
-                        .background(Color.atbBlue).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Text(hint).font(.system(size: 11)).foregroundStyle(.atbTextSecondary).multilineTextAlignment(.center)
+                    reloginButton
                 }
-            }.padding(24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(14)
+            .background(Color.atbCardBackground)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    /// 重新登录按钮:点击后拉起浏览器并轮询,登录完成自动恢复数据(无需手动操作)。
+    private var reloginButton: some View {
+        VStack(spacing: 6) {
+            Button {
+                model.relogin()
+            } label: {
+                HStack(spacing: 6) {
+                    if model.isReloginWatching { LoadingRing().frame(width: 12, height: 12) }
+                    Text("重新登录")
+                }
+            }
+            .buttonStyle(.plain).foregroundStyle(.white)
+            .padding(.horizontal, 20).padding(.vertical, 8)
+            .background(Color.atbBlue).clipShape(RoundedRectangle(cornerRadius: 8))
+            if model.isReloginWatching {
+                Text("已打开浏览器,登录完成后自动刷新…")
+                    .font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+            }
         }
     }
 
@@ -662,14 +686,10 @@ struct KimiCodeCard: View {
                           color: .indigo, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
                           showSparkline: model.sparklineEnabled,
                           sparklineProvider: "kimi", sparklineWindow: "weekly")
-                if let m = q.monthly {
-                    UsageCard(title: "订阅总额度",
-                              percentage: m.pct, resetText: q.monthlyResetDisplay,
-                              color: .orange, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
-                              showSparkline: model.sparklineEnabled,
-                              sparklineProvider: "kimi", sparklineWindow: "monthly")
+                if let balance = q.subscriptionBalance {
+                    KimiSubscriptionCard(balance: balance)
                 } else if model.kimiWebLoggedIn {
-                    UsageCard(title: "订阅总额度", percentage: nil, resetText: nil,
+                    UsageCard(title: "总使用量", percentage: nil, resetText: nil,
                               color: .orange, isLoading: false, thresholdConfig: model.thresholdConfig,
                               dataUnavailable: true)
                 }
@@ -743,6 +763,97 @@ struct KimiCodeCard: View {
         default:
             let trimmed = level.replacingOccurrences(of: "LEVEL_", with: "", options: .caseInsensitive)
             return trimmed.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
+        }
+    }
+}
+
+/// Kimi 共享订阅池:Work/Kimi 与 Code 分段显示,总量只使用共享池分母。
+struct KimiSubscriptionCard: View {
+    let balance: KimiSubscriptionBalance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("总使用量")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.atbTextPrimary)
+                Spacer()
+                Text(String(format: "%.2f%%", balance.totalUsedPercent))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.atbTextPrimary)
+            }
+
+            GeometryReader { proxy in
+                HStack(spacing: 0) {
+                    if let work = balance.workUsedPercent,
+                       let code = balance.codeUsedPercent {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.88))
+                            .frame(width: proxy.size.width * CGFloat(work / 100))
+                        Rectangle()
+                            .fill(Color.atbBlue)
+                            .frame(width: proxy.size.width * CGFloat(code / 100))
+                    } else {
+                        Rectangle()
+                            .fill(Color.atbBlue)
+                            .frame(width: proxy.size.width * CGFloat(balance.totalUsedPercent / 100))
+                    }
+                    Rectangle()
+                        .fill(Color.black.opacity(0.08))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(height: 8)
+
+            HStack(spacing: 12) {
+                if let work = balance.workUsedPercent,
+                   let code = balance.codeUsedPercent {
+                    KimiSubscriptionLegend(color: .black, title: "Kimi/Work", percent: work)
+                    KimiSubscriptionLegend(color: .atbBlue, title: "Code", percent: code)
+                } else {
+                    Text("Work/Code 分项暂不可用")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.atbTextTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let ms = balance.expireTimeMs {
+                Text("重置时间 \(Self.dateText(ms))")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.atbTextTertiary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbCardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private static func dateText(_ ms: Int64) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
+    }
+}
+
+struct KimiSubscriptionLegend: View {
+    let color: Color
+    let title: String
+    let percent: Double
+
+    var body: some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text("\(title) \(String(format: "%.2f%%", percent))")
+                .font(.system(size: 10))
+                .foregroundStyle(.atbTextSecondary)
+                .monospacedDigit()
         }
     }
 }
