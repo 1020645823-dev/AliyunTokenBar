@@ -560,5 +560,41 @@ check("mem zero pageSize -> nil",
 check("smoke sampleCPUTicks", SystemMetricsMonitor.sampleCPUTicks() != nil)
 check("smoke sampleMemoryPercent", SystemMetricsMonitor.sampleMemoryPercent() != nil)
 
+// --- ProcessListMonitor:纯函数 ---
+func snap(_ pid: Int32, _ name: String, cpu: Double?, mem: UInt64) -> ProcessSnapshot {
+    ProcessSnapshot(pid: pid, name: name, appName: name, appPath: nil,
+                    cpuPercent: cpu, memoryBytes: mem, isRoot: false)
+}
+let plist = [snap(1, "a", cpu: 10, mem: 500), snap(2, "b", cpu: 90, mem: 100),
+             snap(3, "c", cpu: nil, mem: 900), snap(4, "d", cpu: 50, mem: 700)]
+check("topByCPU desc + nil last", ProcessListMonitor.topByCPU(plist).map(\.pid) == [2, 4, 1, 3])
+check("topByCPU truncates", ProcessListMonitor.topByCPU(plist, limit: 2).map(\.pid) == [2, 4])
+check("topByCPU empty safe", ProcessListMonitor.topByCPU([]).isEmpty)
+check("topByMemory desc", ProcessListMonitor.topByMemory(plist).map(\.pid) == [3, 4, 1, 2])
+
+check("bytesToHuman zero", ProcessListMonitor.bytesToHuman(0) == "0 B")
+check("bytesToHuman 900", ProcessListMonitor.bytesToHuman(900) == "900 B")
+check("bytesToHuman 1024", ProcessListMonitor.bytesToHuman(1024) == "1.0 KB")
+check("bytesToHuman MB", ProcessListMonitor.bytesToHuman(350 * 1024 * 1024) == "350.0 MB")
+check("bytesToHuman GB", ProcessListMonitor.bytesToHuman(UInt64(1.2 * 1024 * 1024 * 1024)) == "1.2 GB")
+
+check("appBundlePath chrome",
+      ProcessListMonitor.appBundlePath(fromExecutablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+      == "/Applications/Google Chrome.app")
+check("appBundlePath nested",
+      ProcessListMonitor.appBundlePath(fromExecutablePath: "/Users/x/Library/Application Support/Foo.app/Contents/MacOS/helper")
+      == "/Users/x/Library/Application Support/Foo.app")
+check("appBundlePath non-app nil",
+      ProcessListMonitor.appBundlePath(fromExecutablePath: "/usr/sbin/mDNSResponder") == nil)
+check("appBundlePath weird safe", ProcessListMonitor.appBundlePath(fromExecutablePath: "no-slash") == nil)
+
+// CPU%:elapsed<=0 → nil
+check("cpuPercent zero elapsed nil",
+      ProcessListMonitor.cpuPercent(previousTicks: 100, currentTicks: 200, elapsedSeconds: 0) == nil)
+// 冒烟:全量采样非空且含本进程
+let smokeAll = ProcessListMonitor.sampleAll(previousTicks: [:]).list
+check("smoke sampleAll non-empty", !smokeAll.isEmpty)
+check("smoke sampleAll contains self", smokeAll.contains { $0.pid == getpid() })
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
