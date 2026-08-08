@@ -104,7 +104,6 @@ struct TokenPlanMenu: View {
             .frame(maxWidth: .infinity)
         }
         .frame(width: 340)
-        .background(Color.atbPanelBackground)
         .task {
             // 数据刷新由 AppDelegate 在启动时触发(不等面板打开)。
             // 这里仅确保通知授权(面板可能是应用启动后很久才打开的场景)。
@@ -686,7 +685,6 @@ struct OpenCodeCard: View {
         }
         .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbPanelBackground)
     }
 }
 
@@ -772,7 +770,6 @@ struct KimiCodeCard: View {
         }
         .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbPanelBackground)
     }
 
     /// 登录网页控制台引导行(未登录时显示,用于获取订阅总额度)。
@@ -973,7 +970,6 @@ struct SystemProcessesCard: View {
         }
         .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbPanelBackground)
         .onAppear { monitor.start() }
         .onDisappear {
             monitor.stop()
