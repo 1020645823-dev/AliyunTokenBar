@@ -33,7 +33,7 @@ private final class SettingsWindow {
         if panel == nil {
             let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 480),
                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            p.title = "CodingTokenBar 设置"
+            p.title = "设置"
             p.isFloatingPanel = true
             p.minSize = NSSize(width: 560, height: 460)
             p.center()

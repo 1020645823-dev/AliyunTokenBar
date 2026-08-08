@@ -104,6 +104,7 @@ struct TokenPlanMenu: View {
             .frame(maxWidth: .infinity)
         }
         .frame(width: 340)
+        .background(.regularMaterial)
         .task {
             // 数据刷新由 AppDelegate 在启动时触发(不等面板打开)。
             // 这里仅确保通知授权(面板可能是应用启动后很久才打开的场景)。
@@ -417,7 +418,7 @@ struct UsageCard: View {
                 let w = proxy.size.width
                 ZStack(alignment: .leading) {
                     // 底轨
-                    Capsule().frame(height: 6).foregroundStyle(Color.atbSeparator)
+                    Capsule().frame(height: 6).foregroundStyle(Color.primary.opacity(0.10))
                     // 填充
                     if !dataUnavailable, let pct = percentage {
                         Capsule()
@@ -428,20 +429,20 @@ struct UsageCard: View {
                     ForEach([50, 90], id: \.self) { tick in
                         Rectangle()
                             .frame(width: 1, height: 10)
-                            .foregroundStyle(Color.atbSeparator.opacity(1.5))
+                            .foregroundStyle(Color.primary.opacity(0.25))
                             .offset(x: w * CGFloat(tick) / 100 - 0.5)
                     }
                 }
             }.frame(height: 10)
             // 刻度标签
             HStack(spacing: 0) {
-                Text("0%").font(.system(size: 8)).foregroundStyle(.atbTextTertiary)
+                Text("0%").font(.system(size: 8)).foregroundStyle(.atbTextSecondary)
                 Spacer()
-                Text("50%").font(.system(size: 8)).foregroundStyle(.atbTextTertiary)
+                Text("50%").font(.system(size: 8)).foregroundStyle(.atbTextSecondary)
                 Spacer()
-                Text("90%").font(.system(size: 8)).foregroundStyle(.atbTextTertiary)
+                Text("90%").font(.system(size: 8)).foregroundStyle(.atbTextSecondary)
                 Spacer()
-                Text("100%").font(.system(size: 8)).foregroundStyle(.atbTextTertiary)
+                Text("100%").font(.system(size: 8)).foregroundStyle(.atbTextSecondary)
             }
         }
     }
@@ -1140,7 +1141,7 @@ private struct ProcessRow: View {
         let ratio = maxValue > 0 ? min(value / maxValue, 1) : 0
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().frame(height: 3).foregroundStyle(Color.atbSeparator)
+                Capsule().frame(height: 3).foregroundStyle(Color.primary.opacity(0.10))
                 Capsule().frame(width: proxy.size.width * CGFloat(ratio), height: 3)
                     .foregroundStyle(Color.atbBlue.opacity(0.7))
             }
