@@ -31,10 +31,11 @@ private final class SettingsWindow {
     private var panel: NSPanel?
     func show() {
         if panel == nil {
-            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
-                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 480),
+                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             p.title = "CodingTokenBar 设置"
             p.isFloatingPanel = true
+            p.minSize = NSSize(width: 560, height: 460)
             p.center()
             panel = p
         }
@@ -44,21 +45,103 @@ private final class SettingsWindow {
     }
 }
 
+// MARK: - 设置页分组
+
+/// 设置页:通用 / 外观 / 通知 / 服务(系统设置式侧边栏导航)。
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case general, appearance, notifications, services
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: return "通用"
+        case .appearance: return "外观"
+        case .notifications: return "通知"
+        case .services: return "服务"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .appearance: return "paintpalette"
+        case .notifications: return "bell"
+        case .services: return "cloud"
+        }
+    }
+}
+
+// MARK: - 设置主页(侧边栏 + 详情)
+
 struct SettingsView: View {
     @StateObject private var model = TokenPlanModel.shared
+    @State private var selection: SettingsPage? = .general
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: $selection) {
+                ForEach(SettingsPage.allCases) { page in
+                    Label(page.title, systemImage: page.icon).tag(page)
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 160, ideal: 160, max: 160)
+        } detail: {
+            detailView(selection ?? .general)
+        }
+        .frame(minWidth: 620, minHeight: 460)
+        .onChange(of: model.notificationsEnabled) { on in
+            // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过
+            if on { NotificationManager.shared.requestAuthorization() }
+        }
+    }
+
+    @ViewBuilder
+    private func detailView(_ page: SettingsPage) -> some View {
+        switch page {
+        case .general: GeneralSettingsPage()
+        case .appearance: AppearanceSettingsPage()
+        case .notifications: NotificationSettingsPage()
+        case .services: ServicesSettingsPage()
+        }
+    }
+}
+
+// MARK: - 通用
+
+private struct GeneralSettingsPage: View {
+    @StateObject private var model = TokenPlanModel.shared
     @StateObject private var launch = LaunchAtLoginManager.shared
-    @StateObject private var theme = ThemeManager.shared
-    @StateObject private var menuBarStyle = MenuBarStyleManager.shared
-    @State private var showOpenCodeLogin = false
-    @State private var showKimiLogin = false
     var body: some View {
         Form {
-            Section("外观") {
+            Section("启动") {
+                Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
+            }
+            Section("刷新") {
+                Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
+                    Text("5 分钟").tag(5); Text("10 分钟").tag(10)
+                    Text("30 分钟").tag(30); Text("60 分钟").tag(60)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - 外观
+
+private struct AppearanceSettingsPage: View {
+    @StateObject private var model = TokenPlanModel.shared
+    @StateObject private var theme = ThemeManager.shared
+    @StateObject private var menuBarStyle = MenuBarStyleManager.shared
+    var body: some View {
+        Form {
+            Section("主题") {
                 Picker("主题", selection: $theme.theme) {
                     ForEach(AppTheme.allCases) { t in
                         Label(t.displayName, systemImage: t.iconName).tag(t)
                     }
                 }
+            }
+            Section("菜单栏") {
                 Picker("菜单栏样式", selection: $menuBarStyle.scheme) {
                     ForEach(MenuBarDisplayScheme.allCases) { s in
                         Text(s.displayName).tag(s)
@@ -66,11 +149,20 @@ struct SettingsView: View {
                 }
                 Toggle("显示本机 CPU/内存", isOn: $model.systemStatsEnabled)
             }
-            Section("刷新") {
-                Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
-                    Text("5 分钟").tag(5); Text("10 分钟").tag(10); Text("30 分钟").tag(30); Text("60 分钟").tag(60)
-                }
+            Section("面板") {
+                Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
             }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - 通知
+
+private struct NotificationSettingsPage: View {
+    @StateObject private var model = TokenPlanModel.shared
+    var body: some View {
+        Form {
             Section("用量告警") {
                 Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
                 if model.notificationsEnabled {
@@ -90,74 +182,15 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("面板趋势") {
-                Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
-            }
-            Section("OpenCode Go") {
-                if model.openCodeConfigured {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("已登录 (workspace: \(model.openCodeWorkspaceID.prefix(12))...)").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                    Button("登出") {
-                        model.clearOpenCode()
-                    }.buttonStyle(.plain).foregroundStyle(.red).font(.system(size: 12))
-                } else {
-                    Button("登录 OpenCode") { showOpenCodeLogin = true }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(Color.purple.opacity(0.8))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    Text("点击登录,在弹出窗口完成 OpenCode 授权。cookie 会过期,届时可重新登录。")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-            }
-            Section("Kimi Code") {
-                if model.kimiConfigured {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("已连接(复用本机 KimiCodeBar / Kimi CLI 凭证)").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                    if model.kimiWebLoggedIn {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            Text("已登录网页控制台(订阅总额度可用)").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        Button("登出网页控制台") {
-                            model.clearKimi()
-                        }.buttonStyle(.plain).foregroundStyle(.red).font(.system(size: 12))
-                    } else {
-                        Button("登录 Kimi 网页控制台") { showKimiLogin = true }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16).padding(.vertical, 8)
-                            .background(Color.teal.opacity(0.8))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        Text("登录后可查看订阅总额度(月度用量)。点击登录,在弹出窗口完成 Kimi 账号授权。")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                    Button("立即刷新") { Task { await model.refreshKimi() } }
-                        .buttonStyle(.plain).foregroundStyle(.atbBlue).font(.system(size: 12))
-                } else {
-                    Text("未检测到本机 Kimi 登录凭证。请先安装并登录 Kimi Code CLI 或 KimiCodeBar。")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
-            Section("通用") {
-                Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
-            }
         }
-        .padding(16)
-        .sheet(isPresented: $showOpenCodeLogin) {
-            OpenCodeLoginView()
-        }
-        .sheet(isPresented: $showKimiLogin) {
-            KimiLoginView()
-        }
-        .onChange(of: model.notificationsEnabled) { on in
-            // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过
-            if on { NotificationManager.shared.requestAuthorization() }
-        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - 服务(Task 4 填卡片,先占位编译通过)
+
+private struct ServicesSettingsPage: View {
+    var body: some View {
+        Text("服务")
     }
 }
