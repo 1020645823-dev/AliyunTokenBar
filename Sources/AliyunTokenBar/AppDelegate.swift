@@ -84,13 +84,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuBarAppearance.shared.isDark = (global?["AppleInterfaceStyle"] as? String) == "Dark"
     }
 
-    private func setupPopover() {
+    func setupPopover() {
         let p = NSPopover()
         p.contentSize = NSSize(width: 340, height: 560)
         p.behavior = .transient
         p.animates = true
         p.contentViewController = NSHostingController(rootView: TokenPlanMenu())
         popover = p
+        // 弹层外观跟随 app 主题:强制浅/深时与设置窗/登录窗一致;
+        // 跟随系统时 NSApp.appearance=nil → popover 保持默认(跟随系统)。
+        // (NSPopover 默认只跟系统外观,不跟 NSApp.appearance——
+        //  强制浅色 + 系统深色时弹层会黑、窗口白,主题割裂。)
+        NSApp.publisher(for: \.appearance, options: [.initial, .new])
+            .sink { [weak self] appearance in
+                self?.popover?.appearance = appearance
+            }
+            .store(in: &cancellables)
     }
 
     /// 订阅模型:renderedIcon 更新时同步到状态项按钮(含 tooltip)。
