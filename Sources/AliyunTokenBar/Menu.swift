@@ -91,14 +91,18 @@ struct TokenPlanMenu: View {
     var body: some View {
         // 面板恒可展开:阿里云鉴权问题只影响阿里云 tab 内联提示,不挡其他 Provider
         // (2026-08-03 用户反馈:token 失效不应整面板不可用,OpenCode/Kimi 仍要能看)。
-        VStack(spacing: 12) {
-            header
-            providerTabs
-            selectedContent
-            actionButtons
-            if model.blInstalledVersion != nil { BlVersionRow() }
+        // ScrollView 包裹:高 tab(Kimi 订阅+加油包 / System 10 进程)不再被裁切。
+        ScrollView {
+            VStack(spacing: DesignTokens.spacingM) {
+                header
+                providerTabs
+                selectedContent
+                actionButtons
+                if model.blInstalledVersion != nil { BlVersionRow() }
+            }
+            .padding(DesignTokens.spacingL)
+            .frame(maxWidth: .infinity)
         }
-        .padding(16)
         .frame(width: 340)
         .background(Color.atbPanelBackground)
         .task {
@@ -123,22 +127,24 @@ struct TokenPlanMenu: View {
 
     /// 分段式标签栏:三个 Provider 平铺,选中项高亮。
     private var providerTabs: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: DesignTokens.spacingXS) {
             ForEach(availableTabs) { tab in
                 tabButton(tab)
             }
         }
-        .padding(3)
+        .padding(DesignTokens.spacingXS - 1)
         .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
     }
 
     private func tabButton(_ tab: ProviderTab) -> some View {
         let isSelected = effectiveTab == tab
         return Button {
-            selectedTab = tab
+            withAnimation(.easeInOut(duration: 0.15)) {
+                selectedTab = tab
+            }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: DesignTokens.spacingXS) {
                 Image(systemName: tab.icon).font(.system(size: 10))
                 Text(tab.title).font(.system(size: 11, weight: .medium))
             }
@@ -146,7 +152,7 @@ struct TokenPlanMenu: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 5)
             .background(isSelected ? Color.atbBlue : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
         }
         .buttonStyle(.plain)
     }
@@ -181,7 +187,7 @@ struct TokenPlanMenu: View {
 
     private var usageSection: some View {
         // 上下结构(与 OpenCode 三窗口同向),小空间内信息密度更高
-        VStack(spacing: 12) {
+        VStack(spacing: DesignTokens.spacingM) {
             aliyunStatusRow
             if let q = model.quota {
                 UsageCard(title: "5小时限额",
@@ -194,10 +200,10 @@ struct TokenPlanMenu: View {
                           showSparkline: model.sparklineEnabled, sparklineWindow: "7d")
             } else if model.isLoading {
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(14)
+                    .padding(DesignTokens.spacingL)
                     .background(Color.atbCardBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
             } else if model.lastError != nil {
                 // 网络/服务故障:卡片显示横杠(—),表示数值不可用
                 UsageCard(title: "5小时限额", percentage: nil, resetText: nil,
@@ -209,10 +215,10 @@ struct TokenPlanMenu: View {
             } else {
                 Text("加载中…").foregroundStyle(.atbTextSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                    .padding(DesignTokens.spacingL)
                     .background(Color.atbCardBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
             }
         }
     }
@@ -248,7 +254,7 @@ struct TokenPlanMenu: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             ActionButton(title: "刷新", icon: "arrow.clockwise") {
                 Task {
                     await model.refreshFull()
@@ -263,21 +269,22 @@ struct TokenPlanMenu: View {
     }
 
     private func subscriptionRow(_ sub: SubscriptionDetail) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             Text("\(sub.specDisplay) 套餐").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
             tagPill(sub.statusDisplay, color: .green)
             Spacer()
             Text("剩余 \(sub.remainingDays) 天").font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS + 2)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 
     private func tagPill(_ text: String, color: Color) -> some View {
         Text(text).font(.system(size: 9, weight: .medium)).foregroundStyle(color)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(color.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 4))
+            .background(color.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 2))
     }
 }
 
@@ -322,7 +329,7 @@ struct UsageCard: View {
 
     /// 紧凑卡:对齐官方控制台布局——标题+重置时间 / 百分比已用 / 带刻度进度条。
     private var compactBody: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS) {
             // 上层:标题 + 重置时间
             HStack {
                 Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.atbTextPrimary)
@@ -336,7 +343,7 @@ struct UsageCard: View {
                 }
             }
             // 中层:百分比数值 + "已用" 标签
-            HStack(spacing: 4) {
+            HStack(spacing: DesignTokens.spacingXS) {
                 if isLoading {
                     LoadingRing().frame(width: 14, height: 14)
                 } else if dataUnavailable {
@@ -357,16 +364,16 @@ struct UsageCard: View {
                 UsageSparkline(provider: sparklineProvider, window: sparklineWindow, color: color, height: 16)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS + 2)
         .frame(maxWidth: .infinity)
         .background(Color.atbCardBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 
     /// 全尺寸卡:大数字 + 带刻度进度条 + 重置时间 + sparkline。
     private var fullBody: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS + 2) {
             Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
             // 百分比数值
             ZStack(alignment: .leading) {
@@ -377,7 +384,7 @@ struct UsageCard: View {
                         .monospacedDigit()
                         .foregroundStyle(.atbTextTertiary)
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.spacingXS) {
                         Text(pctDisplayText)
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .monospacedDigit()
@@ -398,10 +405,10 @@ struct UsageCard: View {
                 UsageSparkline(provider: sparklineProvider, window: sparklineWindow, color: color)
             }
         }
-        .padding(14).frame(maxWidth: .infinity)
+        .padding(DesignTokens.spacingL).frame(maxWidth: .infinity)
         .background(Color.atbCardBackground)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 
     /// 带刻度标记的进度条:对齐官方 0% / 50% / 90% / 100% 四档刻度线。
@@ -411,7 +418,7 @@ struct UsageCard: View {
                 let w = proxy.size.width
                 ZStack(alignment: .leading) {
                     // 底轨
-                    Capsule().frame(height: 6).foregroundStyle(Color.black.opacity(0.08))
+                    Capsule().frame(height: 6).foregroundStyle(Color.atbSeparator)
                     // 填充
                     if !dataUnavailable, let pct = percentage {
                         Capsule()
@@ -422,7 +429,7 @@ struct UsageCard: View {
                     ForEach([50, 90], id: \.self) { tick in
                         Rectangle()
                             .frame(width: 1, height: 10)
-                            .foregroundStyle(Color.black.opacity(0.20))
+                            .foregroundStyle(Color.atbSeparator.opacity(1.5))
                             .offset(x: w * CGFloat(tick) / 100 - 0.5)
                     }
                 }
@@ -451,38 +458,65 @@ struct AliyunAuthCard: View {
     @State private var copied = false
     var body: some View {
         VStack(spacing: 12) {
-            VStack(spacing: 8) {
+            VStack(spacing: DesignTokens.spacingS) {
                 Image(systemName: iconName).font(.system(size: 28)).foregroundStyle(.orange)
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
                 if model.authState == .blNotInstalled {
                     blInstallGuide
                 } else {
                     Text(hint).font(.system(size: 11)).foregroundStyle(.atbTextSecondary).multilineTextAlignment(.center)
-                    reloginButton
+                    if model.aliyunAKSKConfiguring {
+                        HStack(spacing: DesignTokens.spacingS - 2) {
+                            ProgressView().controlSize(.small)
+                            Text("正在自动恢复登录状态…")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.atbTextSecondary)
+                        }
+                    } else {
+                        reloginButton
+                    }
+                    if let failedAt = model.aliyunAutoRecoveryFailedAt,
+                       AliyunAuthRecovery.inCooldown(
+                           failedAt: failedAt, now: Date(),
+                           cooldownMinutes: max(model.refreshIntervalMinutes * 2, 10)) {
+                        Text("自动恢复已暂停，稍后将重试。如需立即恢复请点击「使用 AK/SK 配置」。")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.atbTextTertiary)
+                            .multilineTextAlignment(.center)
+                    }
+                    if !model.aliyunAKSKConfigured && !model.aliyunAKSKConfiguring {
+                        Button {
+                            AliyunAKSKWindowManager.shared.show()
+                        } label: {
+                            Label("使用 AK/SK 配置（推荐，自动刷新）", systemImage: "key.fill")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(ATBTextButtonStyle())
+                        .padding(.top, DesignTokens.spacingXS)
+                        .help("配置一次后自动续期阿里云登录状态")
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(14)
+            .padding(DesignTokens.spacingL)
             .background(Color.atbCardBackground)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+            .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
         }
     }
 
     /// 重新登录按钮:点击后拉起浏览器并轮询,登录完成自动恢复数据(无需手动操作)。
     private var reloginButton: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: DesignTokens.spacingS - 2) {
             Button {
                 model.relogin()
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: DesignTokens.spacingS - 2) {
                     if model.isReloginWatching { LoadingRing().frame(width: 12, height: 12) }
                     Text("重新登录")
                 }
             }
-            .buttonStyle(.plain).foregroundStyle(.white)
-            .padding(.horizontal, 20).padding(.vertical, 8)
-            .background(Color.atbBlue).clipShape(RoundedRectangle(cornerRadius: 8))
+            .buttonStyle(ATBPrimaryButtonStyle())
             if model.isReloginWatching {
                 Text("已打开浏览器,登录完成后自动刷新…")
                     .font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
@@ -492,18 +526,18 @@ struct AliyunAuthCard: View {
 
     /// 未装 bl 时的安装引导:安装命令(可复制)+ Node.js 要求链接
     private var blInstallGuide: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: DesignTokens.spacingS + 2) {
             Text("CodingTokenBar 依赖百炼 CLI (bl) 获取套餐用量,但未检测到 bl。")
                 .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
                 .multilineTextAlignment(.center)
             // 安装命令框
-            HStack(spacing: 8) {
+            HStack(spacing: DesignTokens.spacingS) {
                 Text("npm install -g bailian-cli")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.atbTextPrimary)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Color.atbTextPrimary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS - 2)
+                    .background(Color.atbSeparator)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
                     .textSelection(.enabled)
                 Button {
                     NSPasteboard.general.clearContents()
@@ -516,9 +550,9 @@ struct AliyunAuthCard: View {
                 }.buttonStyle(.plain)
             }
             // Node.js 要求 + 官方文档链接
-            VStack(spacing: 4) {
+            VStack(spacing: DesignTokens.spacingXS) {
                 Text("需要 Node.js 18+").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
-                HStack(spacing: 12) {
+                HStack(spacing: DesignTokens.spacingL - DesignTokens.spacingXS) {
                     Link("Node.js 下载", destination: URL(string: "https://nodejs.org/")!)
                         .font(.system(size: 11)).foregroundStyle(.atbBlue)
                     Link("百炼 CLI 文档", destination: URL(string: "https://bailian.console.aliyun.com/cli/install.md")!)
@@ -553,7 +587,7 @@ struct BlVersionRow: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var updating = false
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: DesignTokens.spacingS - 2) {
             Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
             if let v = model.blInstalledVersion {
                 Text("bl \(v)").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
@@ -576,9 +610,10 @@ struct BlVersionRow: View {
                 }
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        .padding(.horizontal, DesignTokens.spacingL - DesignTokens.spacingXS).padding(.vertical, DesignTokens.spacingS)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 }
 
@@ -590,9 +625,9 @@ struct BlVersionRow: View {
 struct OpenCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
             // 品牌头部行:紫色闪电 + 刷新(OpenCode 专属)
-            HStack(spacing: 8) {
+            HStack(spacing: DesignTokens.spacingS) {
                 Image(systemName: "bolt.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.purple)
                 Text("OpenCode Go").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
                 Spacer()
@@ -634,22 +669,22 @@ struct OpenCodeCard: View {
                     // 非网络错误(cookie 过期等):保留文本提示
                     Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
+                        .padding(DesignTokens.spacingL)
                         .background(Color.atbCardBackground)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
                 }
             } else {
                 // 加载态:与阿里云一致的加载环
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(14)
+                    .padding(DesignTokens.spacingL)
                     .frame(maxWidth: .infinity)
                     .background(Color.atbCardBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
             }
         }
-        .padding(14)
+        .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.atbPanelBackground)
     }
@@ -664,15 +699,15 @@ struct KimiCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var showKimiLogin = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
             // 品牌头部行:青色闪电 + 刷新(Kimi 专属)
-            HStack(spacing: 8) {
+            HStack(spacing: DesignTokens.spacingS) {
                 Image(systemName: "sparkles").font(.system(size: 13, weight: .bold)).foregroundStyle(.teal)
                 Text("Kimi Code").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
                 if let level = model.kimiQuota?.membershipLevel {
                     Text(levelDisplay(level)).font(.system(size: 9, weight: .medium)).foregroundStyle(.teal)
                         .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Color.teal.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 4))
+                        .background(Color.teal.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 2))
                 }
                 Spacer()
                 Button { Task { await model.refreshKimi() } } label: {
@@ -720,38 +755,39 @@ struct KimiCodeCard: View {
                 } else {
                     Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
+                        .padding(DesignTokens.spacingL)
                         .background(Color.atbCardBackground)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
                 }
             } else {
                 // 加载态:与阿里云一致的加载环
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(14)
+                    .padding(DesignTokens.spacingL)
                     .frame(maxWidth: .infinity)
                     .background(Color.atbCardBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.08)))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
             }
         }
-        .padding(14)
+        .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.atbPanelBackground)
     }
 
     /// 登录网页控制台引导行(未登录时显示,用于获取订阅总额度)。
     private var kimiWebLoginHint: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             Image(systemName: "lock.open").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
             Text("登录 Kimi 网页控制台查看订阅总额度").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
             Spacer()
             Button("登录") { showKimiLogin = true }
-                .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(.teal)
+                .buttonStyle(ATBTextButtonStyle(color: .teal)).font(.system(size: 11, weight: .medium))
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
         .sheet(isPresented: $showKimiLogin) { KimiLoginView() }
     }
 
@@ -777,7 +813,7 @@ struct KimiSubscriptionCard: View {
     let balance: KimiSubscriptionBalance
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS + 1) {
             HStack {
                 Text("总使用量")
                     .font(.system(size: 12, weight: .medium))
@@ -794,7 +830,7 @@ struct KimiSubscriptionCard: View {
                     if let work = balance.workUsedPercent,
                        let code = balance.codeUsedPercent {
                         Rectangle()
-                            .fill(Color.black.opacity(0.88))
+                            .fill(Color.primary)
                             .frame(width: proxy.size.width * CGFloat(work / 100))
                         Rectangle()
                             .fill(Color.atbBlue)
@@ -805,7 +841,7 @@ struct KimiSubscriptionCard: View {
                             .frame(width: proxy.size.width * CGFloat(balance.totalUsedPercent / 100))
                     }
                     Rectangle()
-                        .fill(Color.black.opacity(0.08))
+                        .fill(Color.primary.opacity(0.10))
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 3))
             }
@@ -814,7 +850,7 @@ struct KimiSubscriptionCard: View {
             HStack(spacing: 12) {
                 if let work = balance.workUsedPercent,
                    let code = balance.codeUsedPercent {
-                    KimiSubscriptionLegend(color: .black, title: "Kimi/Work", percent: work)
+                    KimiSubscriptionLegend(color: .primary, title: "Kimi/Work", percent: work)
                     KimiSubscriptionLegend(color: .atbBlue, title: "Code", percent: code)
                 } else {
                     Text("Work/Code 分项暂不可用")
@@ -830,12 +866,12 @@ struct KimiSubscriptionCard: View {
                     .foregroundStyle(.atbTextTertiary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DesignTokens.spacingM)
+        .padding(.vertical, DesignTokens.spacingS + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.atbCardBackground)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 
     private static func dateText(_ ms: Int64) -> String {
@@ -867,7 +903,7 @@ struct KimiSubscriptionLegend: View {
 struct KimiBoosterRow: View {
     let booster: KimiBooster
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             Image(systemName: "wallet.pass.fill").font(.system(size: 12)).foregroundStyle(.orange)
             Text("加油包余额").font(.system(size: 11, weight: .medium)).foregroundStyle(.atbTextPrimary)
             Text(String(format: "¥%.2f", booster.balanceYuan))
@@ -877,9 +913,10 @@ struct KimiBoosterRow: View {
             Text(String(format: "本月消费 ¥%.2f", booster.monthlyUsedYuan))
                 .font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.atbCardBackground))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 }
 
@@ -889,13 +926,14 @@ struct ActionButton: View {
     let title: String; let icon: String; let action: () -> Void
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
+            VStack(spacing: DesignTokens.spacingXS) {
                 Image(systemName: icon).font(.system(size: 16))
                 Text(title).font(.system(size: 11))
-            }.frame(maxWidth: .infinity).padding(.vertical, 8).foregroundStyle(.atbTextSecondary)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.atbCardBackground))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08)))
-        }.buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, DesignTokens.spacingS)
+        }
+        .buttonStyle(ATBSecondaryButtonStyle())
     }
 }
 
@@ -928,12 +966,12 @@ struct SystemProcessesCard: View {
     @ObservedObject private var monitor = ProcessListMonitor.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
             header
             subTabPicker
             processList
         }
-        .padding(14)
+        .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.atbPanelBackground)
         .onAppear { monitor.start() }
@@ -944,7 +982,7 @@ struct SystemProcessesCard: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             Image(systemName: "cpu").font(.system(size: 13, weight: .bold)).foregroundStyle(.green)
             Text("本机进程").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
             Spacer()
@@ -955,10 +993,10 @@ struct SystemProcessesCard: View {
     }
 
     private var subTabPicker: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: DesignTokens.spacingXS) {
             ForEach(SubTab.allCases) { t in
                 Button {
-                    subTab = t
+                    withAnimation(.easeInOut(duration: 0.15)) { subTab = t }
                 } label: {
                     Text(t.title)
                         .font(.system(size: 11, weight: .medium))
@@ -966,14 +1004,14 @@ struct SystemProcessesCard: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
                         .background(subTab == t ? Color.atbBlue : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(3)
+        .padding(DesignTokens.spacingXS - 1)
         .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
     }
 
     /// 当前子页签的 Top 10 列表。
@@ -992,13 +1030,13 @@ struct SystemProcessesCard: View {
             case .memory: return Double(list.map(\.memoryBytes).max() ?? 1)
             }
         }()
-        return VStack(spacing: 6) {
+        return VStack(spacing: DesignTokens.spacingS - 2) {
             if list.isEmpty {
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(14)
+                    .padding(DesignTokens.spacingL)
                     .background(Color.atbCardBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
             } else {
                 ForEach(list) { p in
                     ProcessRow(snapshot: p, subTab: subTab, maxValue: maxValue,
@@ -1035,7 +1073,7 @@ private struct ProcessRow: View {
     let onKill: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.spacingS) {
             procIcon
             VStack(alignment: .leading, spacing: 1) {
                 Text(snapshot.appName)
@@ -1047,9 +1085,9 @@ private struct ProcessRow: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: DesignTokens.spacingXS)
             VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 4) {
+                HStack(spacing: DesignTokens.spacingXS) {
                     Text(valueText)
                         .font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
                         .foregroundStyle(.atbTextPrimary)
@@ -1057,18 +1095,18 @@ private struct ProcessRow: View {
                         Text("系统")
                             .font(.system(size: 8, weight: .medium)).foregroundStyle(.atbTextTertiary)
                             .padding(.horizontal, 3).padding(.vertical, 1)
-                            .background(Color.atbTextTertiary.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                            .background(Color.atbSeparator)
+                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 3))
                     }
                 }
                 miniBar
             }
             killButton
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, 7)
         .background(Color.atbCardBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.08)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 
     /// app 图标(.app 进程)或齿轮占位。
@@ -1106,7 +1144,7 @@ private struct ProcessRow: View {
         let ratio = maxValue > 0 ? min(value / maxValue, 1) : 0
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().frame(height: 3).foregroundStyle(Color.black.opacity(0.08))
+                Capsule().frame(height: 3).foregroundStyle(Color.atbSeparator)
                 Capsule().frame(width: proxy.size.width * CGFloat(ratio), height: 3)
                     .foregroundStyle(Color.atbBlue.opacity(0.7))
             }
@@ -1119,10 +1157,10 @@ private struct ProcessRow: View {
         Button(action: onKill) {
             if isConfirming {
                 Text("确认?")
-                    .font(.system(size: 10, weight: .bold)).foregroundStyle(Color(red: 0.92, green: 0.23, blue: 0.21))
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(Color(red: 0.92, green: 0.23, blue: 0.21).opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .font(.system(size: 10, weight: .bold)).foregroundStyle(.atbCritical)
+                    .padding(.horizontal, DesignTokens.spacingS - 2).padding(.vertical, 3)
+                    .background(Color.atbCritical.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 1))
             } else {
                 Image(systemName: "xmark.circle")
                     .font(.system(size: 13))

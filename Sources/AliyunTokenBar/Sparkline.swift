@@ -22,7 +22,7 @@ struct UsageSparkline: View {
         if values.count < 2 {
             // 数据不足:显示一条淡线占位,避免视觉空白
             Rectangle()
-                .fill(Color.black.opacity(0.08))
+                .fill(Color.primary.opacity(0.08))
                 .frame(height: height)
                 .overlay(alignment: .leading) {
                     Text("趋势积累中…").font(.system(size: 9)).foregroundStyle(.atbTextTertiary).padding(.leading, 4)
