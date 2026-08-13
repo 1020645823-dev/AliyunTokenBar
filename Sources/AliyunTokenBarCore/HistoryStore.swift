@@ -47,24 +47,60 @@ public struct SystemHistoryClock: HistoryClock {
 public protocol HistoryStorageBackend {
     func read() -> [UsageSnapshot]
     func write(_ snapshots: [UsageSnapshot])
+    /// 读-改-写互斥段(跨进程)。默认 no-op;文件后端用 flock 实现。
+    /// append 的「读全量 → 追加 → 写全量」必须整体持锁,否则双实例交错写会丢快照。
+    func withExclusiveLock<T>(_ body: () throws -> T) rethrows -> T
 }
+
+public extension HistoryStorageBackend {
+    func withExclusiveLock<T>(_ body: () throws -> T) rethrows -> T {
+        try body()
+    }
+}
+
 public final class FileHistoryBackend: HistoryStorageBackend {
     private let url: URL
     public init(url: URL) { self.url = url }
+
     public func read() -> [UsageSnapshot] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601   // 与 write 的编码策略匹配
         return (try? dec.decode([UsageSnapshot].self, from: data)) ?? []
     }
+
     public func write(_ snapshots: [UsageSnapshot]) {
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            AppLog.error("history 目录创建失败: \(error.localizedDescription)", category: .history)
+            return
+        }
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.sortedKeys]   // 稳定输出,便于 diff
         guard let data = try? enc.encode(snapshots) else { return }
-        try? data.write(to: url, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            AppLog.error("history 写入失败: \(error.localizedDescription)", category: .history)
+        }
+    }
+
+    /// flock 互斥:单实例保护之外的跨进程双保险(dev 裸二进制无 bundle id 也可双开)。
+    public func withExclusiveLock<T>(_ body: () throws -> T) rethrows -> T {
+        let fd = open(url.path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else {
+            // 打不开文件(极端环境):退化为无锁执行,读改写仍走 atomic
+            return try body()
+        }
+        flock(fd, LOCK_EX)
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+        return try body()
     }
 }
 public final class InMemoryHistoryBackend: HistoryStorageBackend {
@@ -101,15 +137,18 @@ public final class HistoryStore {
     }
 
     /// 追加一条快照,并执行淘汰(超期 + 超量)。
+    /// 读-改-写全程持互斥锁(文件后端为 flock),双实例/并发下不丢快照。
     public func append(_ snapshot: UsageSnapshot) {
-        var all = backend.read()
-        all.append(snapshot)
-        let cutoff = clock.now().addingTimeInterval(-Double(maxAgeDays) * 86_400)
-        all.removeAll { $0.timestamp < cutoff }
-        if all.count > maxPerSeries {
-            all.removeFirst(all.count - maxPerSeries)
+        backend.withExclusiveLock {
+            var all = backend.read()
+            all.append(snapshot)
+            let cutoff = clock.now().addingTimeInterval(-Double(maxAgeDays) * 86_400)
+            all.removeAll { $0.timestamp < cutoff }
+            if all.count > maxPerSeries {
+                all.removeFirst(all.count - maxPerSeries)
+            }
+            backend.write(all)
         }
-        backend.write(all)
     }
 
     /// 读取最近 max 条(按时间升序),供 sparkline。

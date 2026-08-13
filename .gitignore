@@ -1,5 +1,7 @@
 .build/
 .swiftpm/
+.claude/
+.zcode/
 Packages/
 *.xcodeproj
 DerivedData/

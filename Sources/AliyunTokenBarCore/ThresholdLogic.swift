@@ -80,11 +80,18 @@ public struct WatchKey: Hashable, Equatable {
 
 /// 多窗口通知状态集合:key → band 状态。
 /// `TokenPlanModel` 持有一个实例,每次刷新后喂入各窗口百分比。
+///
+/// 首刷静默种子(P0-D3):App 启动后第一轮评估只记录各窗口当前 band,
+/// **不弹任何通知**——否则空态"首见即弹"会让 3 Provider × 8 窗口一次
+/// 弹满 8 条通知(通知风暴,直接摧毁用户信任)。种子后的正常迟滞语义不变。
 public struct NotificationTracker: Equatable {
     public private(set) var states: [WatchKey: NotificationState] = [:]
+    /// 是否已完成首轮种子(私有:Equatable 合成时随 states 一起比对)
+    private var primed = false
     public init() {}
 
     /// 更新一个窗口,返回应触发的 band(如有)。nil = 不打扰。
+    /// 未完成种子时只记录不返回触发(静默)。
     @discardableResult
     public mutating func update(
         key: WatchKey, percentage pct: Int, config: ThresholdConfig
@@ -92,10 +99,11 @@ public struct NotificationTracker: Equatable {
         var st = states[key] ?? NotificationState()
         let fired = st.update(percentage: pct, config: config)
         states[key] = st
-        return fired
+        return primed ? fired : nil
     }
 
     /// 一次性评估多个窗口,返回应通知的 (key, band) 列表(顺序与输入一致)。
+    /// 首轮为静默种子(返回空),其后按迟滞语义正常触发。
     public mutating func evaluate(
         _ entries: [(key: WatchKey, pct: Int)], config: ThresholdConfig
     ) -> [(WatchKey, UsageBand)] {
@@ -105,11 +113,15 @@ public struct NotificationTracker: Equatable {
                 out.append((e.key, band))
             }
         }
+        primed = true
         return out
     }
 
-    /// 重置(切账号/登出时清空,避免下次登录沿用旧 band)。
-    public mutating func reset() { states.removeAll() }
+    /// 重置(切账号/登出时清空,避免下次登录沿用旧 band)。重置后重新进入静默种子期。
+    public mutating func reset() {
+        states.removeAll()
+        primed = false
+    }
 
     /// 清除某 Provider 的所有窗口记忆(登出时用)。
     public mutating func clear(provider: String) {

@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var themeChangeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 单实例保护(P0-D2):双开会并发写 history.json + 双状态项 + 通知双发。
+        // swift run 裸二进制无 bundle id,自动跳过;history 写入另有 flock 双保险。
+        enforceSingleInstance()
         // 禁用自动终止(双保险:NSStatusItem 本身已规避 MenuBarExtra 的回收路径)
         ProcessInfo.processInfo.disableAutomaticTermination("menubar-extra")
         setupStatusItem()
@@ -45,6 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .combineLatest(SystemMetricsMonitor.shared.$memoryPercent)
             .sink { _ in TokenPlanModel.shared.prerenderIcon() }
             .store(in: &cancellables)
+    }
+
+    /// 检测已有实例:存在则激活它并退出自己(幂等,首启无副作用)。
+    private func enforceSingleInstance() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        let mine = ProcessInfo.processInfo.processIdentifier
+        guard running.contains(where: { $0.processIdentifier != mine }) else { return }
+        if let other = running.first(where: { $0.processIdentifier != mine }) {
+            other.activate(options: [.activateAllWindows])
+        }
+        NSApp.terminate(nil)
     }
 
     private func setupStatusItem() {
@@ -144,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 多次未检测到状态项时回退:改为 .regular 显示 Dock 图标 + 通知引导。
     private func handleVisibilityFallback() {
+        AppLog.warning("菜单栏状态项持续不可见,回退 Dock 图标 + 通知引导", category: .general)
         NSApp.setActivationPolicy(.regular)
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
