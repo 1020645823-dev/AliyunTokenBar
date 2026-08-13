@@ -390,18 +390,46 @@ check("notify safe->warning fires again", ns.update(percentage: 81, config: tc) 
 var tracker = NotificationTracker()
 let k5h = WatchKey(provider: "aliyun", window: "5h")
 let k7d = WatchKey(provider: "aliyun", window: "7d")
-// 先 seed 两个窗口在 safe 区(首次都会触发,这是预期——首见告知)
-_ = tracker.evaluate([(k5h, 30), (k7d, 30)], config: tc)
-// 第二轮:5h 跨入 warning 触发,7d 仍在 safe 不触发
+// 首刷静默种子(P0-D3):第一轮 evaluate 只记录 band 不弹通知(防 8 条风暴)
+let seedResult = tracker.evaluate([(k5h, 30), (k7d, 30)], config: tc)
+check("tracker first eval silent seeds", seedResult.isEmpty)
+check("tracker seeded states recorded", tracker.states[k5h] != nil && tracker.states[k7d] != nil)
+// 种子后第二轮:5h 跨入 warning 触发,7d 仍在 safe 不触发
 let fired1 = tracker.evaluate([(k5h, 85), (k7d, 50)], config: tc)
 check("tracker fires only crossing window", fired1.count == 1 && fired1[0].0 == k5h && fired1[0].1 == .warning)
 // 第三轮:5h 同级不触发,7d 跨入 critical 触发
 let fired2 = tracker.evaluate([(k5h, 88), (k7d, 92)], config: tc)
 check("tracker second eval: only 7d", fired2.count == 1 && fired2[0].0 == k7d && fired2[0].1 == .critical)
+// 首刷即使已在 critical 也不弹(静默),下一轮维持 critical 仍不弹(迟滞)
+var tracker2 = NotificationTracker()
+check("tracker first-seen critical silent", tracker2.evaluate([(k5h, 95)], config: tc).isEmpty)
+check("tracker critical->critical no fire", tracker2.evaluate([(k5h, 97)], config: tc).isEmpty)
+// reset 后重新进入静默种子期
+tracker2.reset()
+check("tracker reset re-primes silent", tracker2.evaluate([(k5h, 95)], config: tc).isEmpty)
 // clear(provider:) 只清该 Provider
 tracker.clear(provider: "aliyun")
 check("tracker clear aliyun empties aliyun", tracker.states[k5h] == nil && tracker.states[k7d] == nil)
 check("tracker clear keeps others", tracker.states.isEmpty)
+
+// --- ProcessRunner(P0-D1):echo/超时/失败语义 ---
+func runEcho() -> ProcessRunner.Result {
+    ProcessRunner.run(executable: URL(fileURLWithPath: "/bin/sh"),
+                      arguments: ["-c", "echo hello; echo oops 1>&2"],
+                      timeout: 5)
+}
+let echoR = runEcho()
+check("pr echo exit 0", echoR.exitCode == 0 && !echoR.timedOut)
+check("pr echo stdout", echoR.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "hello")
+check("pr echo stderr", echoR.stderr.trimmingCharacters(in: .whitespacesAndNewlines) == "oops")
+check("pr echo combined", echoR.combinedOutput.contains("hello") && echoR.combinedOutput.contains("oops"))
+let slowR = ProcessRunner.run(executable: URL(fileURLWithPath: "/bin/sh"),
+                              arguments: ["-c", "sleep 5"], timeout: 0.5)
+check("pr slow times out", slowR.timedOut && slowR.exitCode == -1)
+let badR = ProcessRunner.run(executable: URL(fileURLWithPath: "/nonexistent/xyz"),
+                             arguments: [], timeout: 2)
+check("pr launch failure nonzero", badR.exitCode == -1 && !badR.stderr.isEmpty)
+
 
 // --- HistoryStore(内存后端 + 固定时钟)---
 // 用 class 让时钟可变:HistoryStore 持引用,测试推进时间后 store.now() 同步更新。
@@ -505,6 +533,95 @@ cs.write("secret123", account: "opencode")
 check("credstore read", cs.read(account: "opencode") == "secret123")
 cs.delete(account: "opencode")
 check("credstore delete", cs.read(account: "opencode") == nil)
+
+// AK/SK Codable roundtrip + empty input rejection
+let credential = AliyunOpenAPICredential(accessKeyID: " LTAI-test ", accessKeySecret: " secret-test ")
+check("aliyun credential trims", credential?.accessKeyID == "LTAI-test" && credential?.accessKeySecret == "secret-test")
+check("aliyun credential rejects empty", AliyunOpenAPICredential(accessKeyID: " ", accessKeySecret: "x") == nil)
+if let credential,
+   let encoded = try? JSONEncoder().encode(credential),
+   let decoded = try? JSONDecoder().decode(AliyunOpenAPICredential.self, from: encoded) {
+    check("aliyun credential Codable roundtrip", decoded == credential)
+}
+let configWithAKSK = #"{"token-plan":{"access_key_id":"LTAI-test","access_key_secret":"secret-test"}}"#
+let configWithoutAKSK = #"{"token-plan":{"access_key_id":"LTAI-test"}}"#
+let directConfig = #"{"access_key_id":"LTAI-test","access_key_secret":"secret-test"}"#
+let routingFixture = #"{"console_region":"cn-beijing","console_site":"domestic","console_switch_agent":10079304}"#
+check("bl config AK/SK fixture", BlAuthManager.parseOpenAPIConfig(Data(configWithAKSK.utf8)))
+check("bl direct config fixture", BlAuthManager.parseOpenAPIConfig(Data(directConfig.utf8)))
+check("bl config incomplete rejected", !BlAuthManager.parseOpenAPIConfig(Data(configWithoutAKSK.utf8)))
+check("bl routing fixture", BlAuthManager.parseConsoleRouting(Data(routingFixture.utf8))?.switchAgent == 10079304)
+
+// auth error classification must remain reachable from non-zero bl output
+let expiredText = Data("Console session is not logged in or has expired.".utf8)
+check("classify text auth expired", BlUsageService.classifyError(expiredText) == .authExpired)
+check("classify NotLogined auth expired", BlUsageService.classifyError(Data("NotLogined".utf8)) == .authExpired)
+check("classify ordinary error as network", BlUsageService.classifyError(Data("connection reset".utf8)) == .network("connection reset"))
+
+// ACS3 request contract: fixed inputs produce signed Authorization without logging secret
+if let credential {
+    let request = AliyunOpenAPIService.makeTokenRequest(credential: credential,
+                                                         timestamp: "2026-08-08T00:00:00Z",
+                                                         nonce: "verify-nonce")
+    let auth = request.value(forHTTPHeaderField: "Authorization") ?? ""
+    check("ACS3 endpoint", request.url?.absoluteString == "https://modelstudio.cn-beijing.aliyuncs.com/modelstudio/cli/generateAccessToken")
+    check("ACS3 method", request.httpMethod == "POST")
+    check("ACS3 auth scheme", auth.hasPrefix("ACS3-HMAC-SHA256 Credential=LTAI-test"))
+    check("ACS3 auth omits secret", !auth.contains("secret-test"))
+    // 确定性:同 timestamp+nonce 重复构造,签名完全一致(纯函数,无随机)
+    let request2 = AliyunOpenAPIService.makeTokenRequest(credential: credential,
+                                                         timestamp: "2026-08-08T00:00:00Z",
+                                                         nonce: "verify-nonce")
+    check("ACS3 deterministic signature",
+          request.value(forHTTPHeaderField: "Authorization") == request2.value(forHTTPHeaderField: "Authorization"))
+    // SignedHeaders 必须按字典序排列(ACS3 规范),signature 为 64 位 hex
+    let signed = request.value(forHTTPHeaderField: "Authorization")?
+        .split(separator: ",").dropFirst()
+        .first(where: { $0.hasPrefix("SignedHeaders=") })
+        .map { $0.split(separator: "=").last.map(String.init) ?? "" } ?? ""
+    let sig = request.value(forHTTPHeaderField: "Authorization")?
+        .split(separator: ",")
+        .first(where: { $0.hasPrefix("Signature=") })
+        .map { $0.split(separator: "=").last.map(String.init) ?? "" } ?? ""
+    check("ACS3 signedHeaders sorted", signed == signed.split(separator: ";").sorted().joined(separator: ";"))
+    check("ACS3 signature 64hex", sig.count == 64 && sig.allSatisfy { $0.isHexDigit })
+    // 空 body 的 sha256 必须为 SHA256("") 常量
+    check("ACS3 empty body hash",
+          request.value(forHTTPHeaderField: "x-acs-content-sha256")
+            == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    // 不同 nonce → 不同签名(防固定签名)
+    let request3 = AliyunOpenAPIService.makeTokenRequest(credential: credential,
+                                                         timestamp: "2026-08-08T00:00:00Z",
+                                                         nonce: "verify-nonce-2")
+    check("ACS3 nonce changes signature",
+          request.value(forHTTPHeaderField: "Authorization") != request3.value(forHTTPHeaderField: "Authorization"))
+    // token 解析:嵌套 cliAccessToken / 平铺 access_token / accessToken / 垃圾
+    check("ACS3 token nested cliAccessToken",
+          AliyunOpenAPIService.parseAccessToken(Data(#"{"data":{"cliAccessToken":"tok-1"}}"#.utf8)) == "tok-1")
+    check("ACS3 token flat access_token",
+          AliyunOpenAPIService.parseAccessToken(Data(#"{"access_token":"tok-2"}"#.utf8)) == "tok-2")
+    check("ACS3 token flat accessToken",
+          AliyunOpenAPIService.parseAccessToken(Data(#"{"accessToken":"tok-3"}"#.utf8)) == "tok-3")
+    check("ACS3 token empty string rejected",
+          AliyunOpenAPIService.parseAccessToken(Data(#"{"cliAccessToken":""}"#.utf8)) == nil)
+    check("ACS3 token garbage nil",
+          AliyunOpenAPIService.parseAccessToken(Data("not json".utf8)) == nil)
+}
+
+// 自动恢复冷却纯函数(测 AliyunAuthRecovery,不引用 TokenPlanModel——
+// 后者含 @Published,在 Verify 的 async 顶层触发 Combine metadata 崩溃)
+let failBase = Date(timeIntervalSince1970: 1_700_000_000)
+check("cooldown nil failedAt -> not cooling",
+      !AliyunAuthRecovery.inCooldown(failedAt: nil, now: failBase, cooldownMinutes: 10))
+check("cooldown within window -> cooling",
+      AliyunAuthRecovery.inCooldown(failedAt: failBase, now: failBase.addingTimeInterval(9 * 60), cooldownMinutes: 10))
+check("cooldown at boundary -> not cooling",
+      !AliyunAuthRecovery.inCooldown(failedAt: failBase, now: failBase.addingTimeInterval(10 * 60), cooldownMinutes: 10))
+check("cooldown past window -> not cooling",
+      !AliyunAuthRecovery.inCooldown(failedAt: failBase, now: failBase.addingTimeInterval(30 * 60), cooldownMinutes: 10))
+// cooldownMinutes 钳制到最小 1，避免 0 导致秒级冷却失效
+check("cooldown zero minutes clamps to 1min",
+      AliyunAuthRecovery.inCooldown(failedAt: failBase, now: failBase.addingTimeInterval(30), cooldownMinutes: 0))
 
 // 迁移:UserDefaults 明文 → CredentialStore
 let testDefaults = UserDefaults(suiteName: "atb-migration-test-\(Int.random(in: 0..<1_000_000))")!

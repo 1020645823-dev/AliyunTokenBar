@@ -40,10 +40,14 @@ public final class KeychainCredentialStore: CredentialStore {
         guard let data = value.data(using: .utf8) else { return }
         var query = baseQuery(account: account)
         query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(query as CFDictionary, nil)
+        let attrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
         if status == errSecDuplicateItem {
             // 已存在 → 更新
-            let attrs: [String: Any] = [kSecValueData as String: data]
             SecItemUpdate(baseQuery(account: account) as CFDictionary, attrs as CFDictionary)
         }
     }

@@ -2,28 +2,40 @@ import SwiftUI
 import AppKit
 import AliyunTokenBarCore
 
-// MARK: - 配色 token(复刻 KimiCodeBar 动态色)
-
-private func dynamicColor(light: NSColor, dark: NSColor) -> Color {
-    Color(NSColor(name: nil, dynamicProvider: { appearance in
-        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        return isDark ? dark : light
-    }))
-}
+// MARK: - 配色 token(macOS 语义色,自动跟随系统明暗)
 
 extension ShapeStyle where Self == Color {
-    // 固定白色系(不随明暗变化):用户明确要求白色背景。
-    // 菜单栏面板的 appearance 判定不可靠,dynamicColor 曾导致浅灰字看不清,
-    // 改为固定色保证对比度稳定(WCAG 目标:正文 ≥4.5:1)。
-    static var atbPanelBackground: Color { Color(white: 1.0) }            // 纯白
-    static var atbCardBackground: Color { Color(white: 0.955) }           // 微灰,与面板区分
-    static var atbBlue: Color { Color(red: 0.16, green: 0.42, blue: 0.87) }  // 深蓝(白底更清晰)
-    /// 主文字:深黑(对比度 ~19:1)
-    static var atbTextPrimary: Color { Color(white: 0.10) }
-    /// 次级文字:中深灰(对比度 ~8:1)
-    static var atbTextSecondary: Color { Color(white: 0.30) }
-    /// 三级文字:中灰(对比度 ~4.6:1,达标)
-    static var atbTextTertiary: Color { Color(white: 0.45) }
+    /// 面板背景:系统窗口色(浅色=纯白,暗色=系统深灰)。
+    static var atbPanelBackground: Color { Color(NSColor.windowBackgroundColor) }
+    /// 卡片背景:比面板略深一级(系统控件底色)。
+    static var atbCardBackground: Color { Color(NSColor.controlBackgroundColor) }
+    /// 品牌蓝(固定,不随明暗变;白底/深底都清晰)。
+    static var atbBlue: Color { Color(red: 0.16, green: 0.42, blue: 0.87) }
+    /// 主文字:系统 label 色(浅色 ~19:1,暗色 ~14:1)。
+    static var atbTextPrimary: Color { Color(NSColor.labelColor) }
+    /// 次级文字:系统二级 label(~8:1 双模)。
+    static var atbTextSecondary: Color { Color(NSColor.secondaryLabelColor) }
+    /// 三级文字:系统三级 label(~4.6:1 双模,达标)。
+    static var atbTextTertiary: Color { Color(NSColor.tertiaryLabelColor) }
+    /// 分隔线/描边:系统分隔色(自动适配明暗)。
+    static var atbSeparator: Color { Color(NSColor.separatorColor) }
+    static var atbCritical: Color { Color(red: 0.92, green: 0.23, blue: 0.21) }
+    static var atbSuccess: Color { Color(red: 0.16, green: 0.58, blue: 0.32) }
+}
+
+// MARK: - 设计 token(间距/圆角/描边统一)
+
+enum DesignTokens {
+    /// 间距阶梯(4pt 基准)
+    static let spacingXS: CGFloat = 4
+    static let spacingS: CGFloat = 8
+    static let spacingM: CGFloat = 12
+    static let spacingL: CGFloat = 16
+    static let spacingXL: CGFloat = 24
+    /// 圆角阶梯
+    static let radiusS: CGFloat = 6   // tag、小按钮
+    static let radiusM: CGFloat = 10  // 用量卡、主按钮
+    static let radiusL: CGFloat = 14  // 容器卡
 }
 
 // MARK: - 阈值色(与 Provider 品牌色正交)
@@ -425,9 +437,7 @@ struct AliyunTokenBarApp: App {
     var body: some Scene {
         // 注意:不再用 MenuBarExtra——macOS 26 会因系统隐藏状态项而回收进程。
         // 状态项由 AppDelegate 手动管理(NSStatusItem + NSPopover)。
-        // 设置窗口走自定义 NSPanel(SettingsWindowManager),故此处无 Settings scene。
-        Settings {
-            SettingsView()
-        }
+        // 设置窗口走自定义 NSPanel(SettingsWindowManager),不再挂 SwiftUI Settings scene(避免重复入口)。
+        Settings { EmptyView() }
     }
 }

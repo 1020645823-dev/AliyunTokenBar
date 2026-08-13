@@ -97,6 +97,20 @@ public struct TokenPlanQuota: Equatable {
     }
 }
 
+/// 阿里云 OpenAPI 长期凭据。只允许进入 Keychain,不进入 bl argv 或日志。
+public struct AliyunOpenAPICredential: Codable, Equatable {
+    public let accessKeyID: String
+    public let accessKeySecret: String
+
+    public init?(accessKeyID: String, accessKeySecret: String) {
+        let id = accessKeyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = accessKeySecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !secret.isEmpty else { return nil }
+        self.accessKeyID = id
+        self.accessKeySecret = secret
+    }
+}
+
 public enum AuthState: Equatable {
     case unknown
     case ok

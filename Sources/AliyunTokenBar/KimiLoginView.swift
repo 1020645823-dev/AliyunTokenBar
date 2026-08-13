@@ -14,13 +14,14 @@ struct KimiLoginView: View {
     var body: some View {
         VStack(spacing: 0) {
             // 顶栏
-            HStack {
+            HStack(spacing: DesignTokens.spacingS) {
                 Image(systemName: "sparkles").foregroundStyle(.teal)
                 Text("登录 Kimi 网页控制台").font(.system(size: 14, weight: .semibold))
                 Spacer()
-                Button("取消") { dismiss() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                Button("取消") { dismiss() }
+                    .buttonStyle(ATBTextButtonStyle(color: .atbTextSecondary))
             }
-            .padding(12)
+            .padding(DesignTokens.spacingM)
 
             // WebView
             KimiWebView(
@@ -32,14 +33,14 @@ struct KimiLoginView: View {
 
             // 状态
             if loading {
-                HStack(spacing: 8) {
+                HStack(spacing: DesignTokens.spacingS) {
                     LoadingRing().frame(width: 14, height: 14)
                     Text(message.isEmpty ? "正在获取用量配置..." : message)
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
                 }
-                .padding(10)
+                .padding(DesignTokens.spacingM - 2)
             } else if !message.isEmpty {
-                Text(message).font(.system(size: 12)).foregroundStyle(.secondary).padding(10)
+                Text(message).font(.system(size: 12)).foregroundStyle(.atbTextSecondary).padding(DesignTokens.spacingM - 2)
             }
         }
         .background(Color.atbPanelBackground)

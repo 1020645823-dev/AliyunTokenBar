@@ -50,56 +50,53 @@ public final class BlUsageService {
     }
 
     /// 从 bl 的输出判断是否 token 过期(返回 .authExpired)或其他错误。
-    public static func classifyError(_ data: Data, httpOk: Bool) -> UsageError {
-        if let s = String(data: data, encoding: .utf8),
-           s.contains("not logged in") || s.contains("has expired") {
+    public static func classifyError(_ data: Data) -> UsageError {
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let lower = text.lowercased()
+        if lower.contains("not logged in") || lower.contains("has expired") ||
+            lower.contains("notlogined") || lower.contains("session is not logged") {
             return .authExpired
         }
-        return .network(String(data: data, encoding: .utf8) ?? "unknown error")
+        return .network(text.isEmpty ? "unknown error" : text)
+    }
+
+    /// 兼容 Verify/旧调用方的签名。
+    public static func classifyError(_ data: Data, httpOk: Bool) -> UsageError {
+        classifyError(data)
     }
 
     // MARK: - Execution (shell out to bl)
 
-    /// 调一个 RPC,返回 stdout 的 Data。失败时抛 UsageError(authExpired/network/unknown)。
-    public static func callRPC(_ api: String) async throws -> Data {
+    /// 调一个 RPC,返回 stdout 的 Data。environment 只用于临时 token profile。
+    /// 经 ProcessRunner 执行:30s 超时(挂死降级为单次失败,不再永久锁死刷新)。
+    public static func callRPC(_ api: String, environment: [String: String]? = nil) async throws -> Data {
         guard let blPath = BlExecutable.resolve() else {
             throw UsageError.unknown("未找到 bl CLI(检查 PATH 或安装位置)")
         }
-        var env = BlExecutable.enrichedEnvironment()
+        var env = environment ?? BlExecutable.enrichedEnvironment()
         env["NO_COLOR"] = "1"
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: blPath)
-        proc.arguments = ["console", "call",
-                          "--api", api, "--data", "{}", "--output", "json"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        proc.environment = env
-
-        do {
-            try proc.run()
-        } catch {
-            throw UsageError.unknown("bl 启动失败: \(error.localizedDescription)")
+        let result = await ProcessRunner.runAsync(
+            executable: URL(fileURLWithPath: blPath),
+            arguments: ["console", "call",
+                        "--api", api, "--data", "{}", "--output", "json"],
+            environment: env,
+            timeout: 30
+        )
+        if result.timedOut {
+            AppLog.error("bl console call 超时(30s): \(api)", category: .bl)
+            throw UsageError.unknown("bl 调用超时,请稍后重试")
         }
-
-        let outData = try pipe.fileHandleForReading.readToEnd() ?? Data()
-        proc.waitUntilExit()
-
-        let text = String(data: outData, encoding: .utf8) ?? ""
-        if text.contains("not logged in") || text.contains("has expired") {
-            throw UsageError.authExpired
+        guard result.exitCode == 0 else {
+            throw classifyError(Data(result.combinedOutput.utf8))
         }
-        if proc.terminationStatus != 0 {
-            throw UsageError.network(text.isEmpty ? "bl exit \(proc.terminationStatus)" : text)
-        }
-        return outData
+        return Data(result.stdout.utf8)
     }
 
     /// 一次拉取完整套餐数据(3 个 RPC 并发)。usage 是必须项,sub/addon 缺失则 nil。
-    public static func fetchQuota() async -> Result<TokenPlanQuota, UsageError> {
-        async let usageRes = (try? await callRPC(usageAPI)).flatMap { try? parseUsage($0) }
-        async let subRes = (try? await callRPC(subscriptionAPI)).flatMap { try? parseSubscription($0) }
-        async let addonRes = (try? await callRPC(addonAPI)).flatMap { try? parseAddon($0) }
+    public static func fetchQuota(environment: [String: String]? = nil) async -> Result<TokenPlanQuota, UsageError> {
+        async let usageRes = (try? await callRPC(usageAPI, environment: environment)).flatMap { try? parseUsage($0) }
+        async let subRes = (try? await callRPC(subscriptionAPI, environment: environment)).flatMap { try? parseSubscription($0) }
+        async let addonRes = (try? await callRPC(addonAPI, environment: environment)).flatMap { try? parseAddon($0) }
 
         let usage = await usageRes
         let sub = await subRes
@@ -107,7 +104,7 @@ public final class BlUsageService {
 
         guard let usage else {
             // usage 失败:重新触发以捕获精确错误类型
-            do { _ = try await callRPC(usageAPI) }
+            do { _ = try await callRPC(usageAPI, environment: environment) }
             catch let e as UsageError { return .failure(e) }
             catch { return .failure(.unknown(error.localizedDescription)) }
             // 重试成功但首次并发失败:usage 仍不可用,返回明确错误而非误报 parse 失败
@@ -118,9 +115,9 @@ public final class BlUsageService {
 
     /// 只拉 usage(1 个 RPC)。辅助数据(subscription/addon)变化慢,由调用方按低频单独拉,
     /// 避免每轮刷新都 spawn 3 个 node 进程。失败时语义同 fetchQuota。
-    public static func fetchUsageOnly() async -> Result<UsageWindows, UsageError> {
+    public static func fetchUsageOnly(environment: [String: String]? = nil) async -> Result<UsageWindows, UsageError> {
         do {
-            let data = try await callRPC(usageAPI)
+            let data = try await callRPC(usageAPI, environment: environment)
             if let w = try? parseUsage(data) { return .success(w) }
             return .failure(.parse)
         } catch let e as UsageError {
@@ -132,9 +129,9 @@ public final class BlUsageService {
 
     /// 只拉辅助数据(subscription + addon,2 个 RPC 并发)。
     /// 这两项一天内基本不变(套餐状态/加购包余额),适合 24h 低频拉取。
-    public static func fetchAuxOnly() async -> (subscription: SubscriptionDetail?, addon: AddonSummary?) {
-        async let subRes = (try? await callRPC(subscriptionAPI)).flatMap { try? parseSubscription($0) }
-        async let addonRes = (try? await callRPC(addonAPI)).flatMap { try? parseAddon($0) }
+    public static func fetchAuxOnly(environment: [String: String]? = nil) async -> (subscription: SubscriptionDetail?, addon: AddonSummary?) {
+        async let subRes = (try? await callRPC(subscriptionAPI, environment: environment)).flatMap { try? parseSubscription($0) }
+        async let addonRes = (try? await callRPC(addonAPI, environment: environment)).flatMap { try? parseAddon($0) }
         return (await subRes, await addonRes)
     }
 

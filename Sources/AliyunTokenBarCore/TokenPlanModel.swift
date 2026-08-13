@@ -82,6 +82,19 @@ public final class TokenPlanModel: ObservableObject {
     }
     /// 重新登录轮询是否在跑(面板显示"等待浏览器登录完成…")。
     @Published public var isReloginWatching = false
+    /// Keychain 中是否已保存阿里云 OpenAPI AK/SK。
+    @Published public var aliyunAKSKConfigured = false
+    /// 正在通过 AK/SK 自动配置 bl（面板显示 loading）。
+    @Published public var aliyunAKSKConfiguring = false
+    /// 当前进程使用的短期 bl 配置；释放时自动删除临时目录。
+    private var aliyunEphemeralConfig: BlEphemeralConfig?
+    /// 上次自动恢复失败时间；nil = 从未失败或已成功重置。
+    @Published public var aliyunAutoRecoveryFailedAt: Date?
+
+    /// 冷却窗口：刷新间隔的 2 倍，确保至少跳过一个 timer tick（最小 10 分钟）。
+    private var autoRecoveryCooldownMinutes: Int {
+        max(refreshIntervalMinutes * 2, 10)
+    }
     /// 多窗口通知状态机(纯值,内部维护)。
     public private(set) var notificationTracker = NotificationTracker()
 
@@ -97,6 +110,9 @@ public final class TokenPlanModel: ObservableObject {
 
     /// CredentialStore 里 OpenCode cookie 的 account 名。
     public static let openCodeCookieAccount = "opencode-auth-cookie"
+
+    /// CredentialStore 里阿里云 OpenAPI AK/SK 的 account 名（JSON: {"accessKeyId":"...","accessKeySecret":"..."}）。
+    public static let aliyunAKSKAccount = "aliyun-ak-sk"
 
     /// 菜单栏图标预渲染缓存(数据更新时生成,label 只读)。
     @Published public var renderedIcon: NSImage?
@@ -159,6 +175,9 @@ public final class TokenPlanModel: ObservableObject {
         Task { await checkBlVersion() }
         Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
         Task { await refreshKimi() }
+        if loadAliyunAKSK() != nil {
+            aliyunAKSKConfigured = true
+        }
     }
 
     /// 自愈:若已有 cookie 但缺 workspace(如旧版登录失败遗留,或 discover 逻辑修复后首次启动),
@@ -180,6 +199,7 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let q):
             openCodeQuota = q
             openCodeError = nil
+            AppLog.debug("OpenCode 用量刷新成功 rolling=\(q.rolling.pct)% weekly=\(q.weekly.pct)%", category: .opencode)
             recordAndNotify()
         case .failure(let e):
             switch e {
@@ -203,6 +223,7 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let q):
             kimiQuota = q
             kimiError = nil
+            AppLog.debug("Kimi 用量刷新成功 5h=\(q.fiveHour.pct)% weekly=\(q.weekly.pct)%", category: .kimi)
             recordAndNotify()
         case .failure(let e):
             switch e {
@@ -221,6 +242,109 @@ public final class TokenPlanModel: ObservableObject {
         kimiError = nil
         KimiUsageService.clearWebToken()
         notificationTracker.clear(provider: "kimi")
+    }
+
+    // MARK: - 阿里云 OpenAPI AK/SK（console token 自动刷新）
+
+    /// 保存 AK/SK 到 Keychain。
+    @discardableResult
+    public func saveAliyunAKSK(accessKeyID: String, accessKeySecret: String) -> Bool {
+        guard let credential = AliyunOpenAPICredential(accessKeyID: accessKeyID,
+                                                       accessKeySecret: accessKeySecret) else {
+            return false
+        }
+        guard let payload = try? JSONEncoder().encode(credential),
+              let str = String(data: payload, encoding: .utf8) else { return false }
+        credentialStore.write(str, account: Self.aliyunAKSKAccount)
+        aliyunAKSKConfigured = true
+        return true
+    }
+
+    /// 从 Keychain 读取 AK/SK。
+    public func loadAliyunAKSK() -> AliyunOpenAPICredential? {
+        guard let raw = credentialStore.read(account: Self.aliyunAKSKAccount),
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(AliyunOpenAPICredential.self, from: data)
+    }
+
+    /// 删除 Keychain 中的 AK/SK。临时 profile 由其生命周期自动清理。
+    public func clearAliyunAKSK() {
+        credentialStore.delete(account: Self.aliyunAKSKAccount)
+        aliyunEphemeralConfig = nil
+        aliyunAutoRecoveryFailedAt = nil
+        aliyunAKSKConfigured = false
+        aliyunAKSKConfiguring = false
+    }
+
+    /// 当前进程使用的 bl 环境；没有短期配置时使用用户默认环境。
+    private var aliyunEnvironment: [String: String]? {
+        aliyunEphemeralConfig?.environment
+    }
+
+    /// 交换短期 token、验证 usage RPC 并在成功后保存 AK/SK。
+    /// 自动恢复和手动配置共用此入口，避免同时写入临时配置。
+    public func configureAliyun(accessKeyID: String, accessKeySecret: String) async -> Result<Void, BlAuthError> {
+        guard !aliyunAKSKConfiguring else {
+            return .failure(.verification("已有配置操作正在进行"))
+        }
+        guard let credential = AliyunOpenAPICredential(accessKeyID: accessKeyID,
+                                                       accessKeySecret: accessKeySecret) else {
+            return .failure(.invalidResponse)
+        }
+        aliyunAKSKConfiguring = true
+        defer { aliyunAKSKConfiguring = false }
+        do {
+            let ephemeral = try await BlAuthManager.makeEphemeralConfig(credential: credential)
+            let data = try await BlUsageService.callRPC(BlUsageService.usageAPI,
+                                                        environment: ephemeral.environment)
+            let usage = try BlUsageService.parseUsage(data)
+            aliyunEphemeralConfig = ephemeral
+            aliyunAutoRecoveryFailedAt = nil   // 手动/自动配置成功 → 冷却清零
+            guard saveAliyunAKSK(accessKeyID: credential.accessKeyID,
+                                  accessKeySecret: credential.accessKeySecret) else {
+                return .failure(.verification("凭据保存失败"))
+            }
+            quota = TokenPlanQuota(usage: usage,
+                                   subscription: quota?.subscription,
+                                   addon: quota?.addon)
+            lastUpdated = Date()
+            lastError = nil
+            authState = .ok
+            recordAndNotify()
+            return .success(())
+        } catch let error as BlAuthError {
+            return .failure(error)
+        } catch let error as UsageError {
+            return .failure(.verification(String(describing: error)))
+        } catch {
+            return .failure(.verification(error.localizedDescription))
+        }
+    }
+
+    /// 交换短期 token 后用临时 profile 验证 usage RPC；失败则回退浏览器登录。
+    /// 失败后进入冷却窗口（刷新间隔 ×2，最小 10 分钟），避免每个 timer tick 重复
+    /// 弹出浏览器标签。手动配置成功后冷却清零。
+    public func autoConfigureAliyunIfNeeded() async {
+        guard authState == .expired || authState == .notLoggedIn else { return }
+        guard !aliyunAKSKConfiguring else { return }
+        guard let credential = loadAliyunAKSK() else { return }
+        guard !AliyunAuthRecovery.inCooldown(
+            failedAt: aliyunAutoRecoveryFailedAt,
+            now: Date(),
+            cooldownMinutes: autoRecoveryCooldownMinutes
+        ) else { return }
+        let result = await configureAliyun(accessKeyID: credential.accessKeyID,
+                                           accessKeySecret: credential.accessKeySecret)
+        switch result {
+        case .success:
+            AppLog.info("阿里云 AK/SK 自动恢复成功", category: .aliyun)
+        case .failure(let e):
+            AppLog.warning("阿里云 AK/SK 自动恢复失败: \(String(describing: e)),进入冷却并回退浏览器登录", category: .aliyun)
+            aliyunAutoRecoveryFailedAt = Date()
+            aliyunEphemeralConfig = nil
+            lastError = "自动恢复失败,请重新登录"
+            relogin()
+        }
     }
 
     // MARK: - 历史记录 + 通知评估(P0-P1)
@@ -284,7 +408,7 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 查 bl 已装版本 + 最新版本(后台,不阻塞主流程)
     public func checkBlVersion() async {
-        blInstalledVersion = BlAuthManager.installedVersion()
+        blInstalledVersion = await BlAuthManager.installedVersion()
         blLatestVersion = await BlAuthManager.latestVersion()
     }
 
@@ -301,11 +425,15 @@ public final class TokenPlanModel: ObservableObject {
             }
     }
 
-    /// 先查环境,环境 OK 再拉数据
+    /// 先查环境；默认 bl session 无效时，若已有 AK/SK 则走一次短期 token 恢复。
     public func checkAuthAndRefresh() async {
         authState = await BlAuthManager.currentAuthState()
-        guard authState == .ok else { return }
-        await refresh()
+        if authState == .ok {
+            await refresh()
+        } else if loadAliyunAKSK() != nil {
+            aliyunAKSKConfigured = true
+            await autoConfigureAliyunIfNeeded()
+        }
     }
 
     /// 重新登录:拉起浏览器授权,并轮询 `bl auth status`(每 5s,最多 3 分钟)。
@@ -333,6 +461,7 @@ public final class TokenPlanModel: ObservableObject {
     public func refresh() async {
         guard !isLoading else { return }
         isLoading = true
+        let start = Date()
         defer { isLoading = false }
 
         // 是否需要刷新辅助数据(首次 或 超过 24h)
@@ -340,7 +469,7 @@ public final class TokenPlanModel: ObservableObject {
 
         if needAux {
             // 全量拉(3 RPC)。usage 失败则以 usage-only 重试仍走全量错误路径。
-            let result = await BlUsageService.fetchQuota()
+            let result = await BlUsageService.fetchQuota(environment: aliyunEnvironment)
             switch result {
             case .success(let q):
                 quota = q
@@ -348,14 +477,17 @@ public final class TokenPlanModel: ObservableObject {
                 lastUpdated = Date()
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
+                AppLog.info("阿里云全量刷新成功 5h=\(q.usage.fiveHour.percentageInt)% 7d=\(q.usage.oneWeek.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 recordAndNotify()
             case .failure(let e):
                 authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
+                AppLog.warning("阿里云全量刷新失败: \(String(describing: e))", category: .aliyun)
+                if e == .authExpired { Task { await autoConfigureAliyunIfNeeded() } }
             }
         } else {
             // 只拉 usage(1 RPC),辅助数据沿用缓存
-            let result = await BlUsageService.fetchUsageOnly()
+            let result = await BlUsageService.fetchUsageOnly(environment: aliyunEnvironment)
             switch result {
             case .success(let usage):
                 quota = TokenPlanQuota(usage: usage,
@@ -364,10 +496,13 @@ public final class TokenPlanModel: ObservableObject {
                 lastUpdated = Date()
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
+                AppLog.debug("阿里云 usage 刷新成功 5h=\(usage.fiveHour.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 recordAndNotify()
             case .failure(let e):
                 authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
+                AppLog.warning("阿里云 usage 刷新失败: \(String(describing: e))", category: .aliyun)
+                if e == .authExpired { Task { await autoConfigureAliyunIfNeeded() } }
             }
         }
     }
@@ -377,7 +512,7 @@ public final class TokenPlanModel: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        let result = await BlUsageService.fetchQuota()
+        let result = await BlUsageService.fetchQuota(environment: aliyunEnvironment)
         switch result {
         case .success(let q):
             quota = q
