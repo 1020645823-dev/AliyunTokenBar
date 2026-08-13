@@ -64,9 +64,30 @@ public final class FileHistoryBackend: HistoryStorageBackend {
 
     public func read() -> [UsageSnapshot] {
         guard let data = try? Data(contentsOf: url) else { return [] }
+        return Self.decode(data)
+    }
+
+    /// 兼容解码(P1-D9):JSONL v1(首行 schemaVersion 注释,一行一条快照)优先;
+    /// 旧版 JSON 数组(v0)透明读取,下一次 write 自动迁移为 v1。
+    public static func decode(_ data: Data) -> [UsageSnapshot] {
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
         let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601   // 与 write 的编码策略匹配
-        return (try? dec.decode([UsageSnapshot].self, from: data)) ?? []
+        dec.dateDecodingStrategy = .iso8601
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("[") {
+            // v0:JSON 数组
+            return (try? dec.decode([UsageSnapshot].self, from: data)) ?? []
+        }
+        // v1:JSONL,容忍个别损坏行(单行坏不影响整体)
+        var out: [UsageSnapshot] = []
+        for line in text.split(separator: "\n") {
+            let lineStr = String(line).trimmingCharacters(in: .whitespaces)
+            guard !lineStr.isEmpty, !lineStr.hasPrefix("//") else { continue }
+            if let snap = try? dec.decode(UsageSnapshot.self, from: Data(lineStr.utf8)) {
+                out.append(snap)
+            }
+        }
+        return out
     }
 
     public func write(_ snapshots: [UsageSnapshot]) {
@@ -77,12 +98,18 @@ public final class FileHistoryBackend: HistoryStorageBackend {
             AppLog.error("history 目录创建失败: \(error.localizedDescription)", category: .history)
             return
         }
+        // v1 JSONL:首行版本注释,后续每行一条快照——自描述、可增量迁移、单行损坏不影响整体
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
-        enc.outputFormatting = [.sortedKeys]   // 稳定输出,便于 diff
-        guard let data = try? enc.encode(snapshots) else { return }
+        var lines = ["// CodingTokenBar history v1 (JSONL: one snapshot per line)"]
+        for s in snapshots {
+            if let d = try? enc.encode(s), let line = String(data: d, encoding: .utf8) {
+                lines.append(line)
+            }
+        }
+        let out = lines.joined(separator: "\n") + "\n"
         do {
-            try data.write(to: url, options: .atomic)
+            try out.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             AppLog.error("history 写入失败: \(error.localizedDescription)", category: .history)
         }

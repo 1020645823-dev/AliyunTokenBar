@@ -85,12 +85,12 @@ final class ThemeManager: ObservableObject {
     static let shared = ThemeManager()
     @Published var theme: AppTheme {
         didSet {
-            UserDefaults.standard.set(theme.rawValue, forKey: "appTheme")
+            UserDefaults.standard.set(theme.rawValue, forKey: UserDefaultsKeys.appTheme)
             NSApplication.shared.appearance = theme.nsAppearance
         }
     }
     private init() {
-        let raw = UserDefaults.standard.string(forKey: "appTheme") ?? ""
+        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.appTheme) ?? ""
         theme = AppTheme(rawValue: raw) ?? .system
     }
 }
@@ -120,10 +120,10 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
 final class MenuBarStyleManager: ObservableObject {
     static let shared = MenuBarStyleManager()
     @Published var scheme: MenuBarDisplayScheme {
-        didSet { UserDefaults.standard.set(scheme.rawValue, forKey: "menuBarScheme") }
+        didSet { UserDefaults.standard.set(scheme.rawValue, forKey: UserDefaultsKeys.menuBarScheme) }
     }
     private init() {
-        let raw = UserDefaults.standard.string(forKey: "menuBarScheme") ?? ""
+        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.menuBarScheme) ?? ""
         scheme = MenuBarDisplayScheme(rawValue: raw) ?? .compact
     }
 }

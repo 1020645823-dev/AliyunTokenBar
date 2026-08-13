@@ -240,8 +240,8 @@ GitHub Releases API 比对版本 → 菜单栏/设置页提示 + 一键跳转下
 **D8. CI 升级(P1,0.3 天)**
 macos-14/15 矩阵 + 最新 Xcode + PR/push 全跑 + `swift-format lint` + job timeout + release job(打包上传 artifact)。
 
-**D9. History JSONL 化(P2,0.5 天)**
-逐行追加(append-only)+ 每日一次 compact;首行 schemaVersion 元信息,兼容读取旧格式。
+**D9. History JSONL 化(P1,0.5 天)** ✅ 已实施
+写入 v1 JSONL(首行 schemaVersion 注释 + 一行一条快照,单行损坏不影响整体);v0 旧 JSON 数组透明读取、下次写入自动迁移;flock 互斥(D2)保证并发安全。
 
 **D10. 常量集中(P1,0.2 天)**
 `UserDefaultsKeys` / `KeychainAccounts` 枚举;同步更新 CLAUDE.md 键清单(补 `systemStatsEnabled`),消灭文档漂移。

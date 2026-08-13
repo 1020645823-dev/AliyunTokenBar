@@ -39,7 +39,7 @@ public final class TokenPlanModel: ObservableObject {
     }
     /// OpenCode workspace ID(wrk_xxx,非敏感,仍用 UserDefaults)
     @Published public var openCodeWorkspaceID: String {
-        didSet { UserDefaults.standard.set(openCodeWorkspaceID, forKey: "openCodeWorkspaceID") }
+        didSet { UserDefaults.standard.set(openCodeWorkspaceID, forKey: UserDefaultsKeys.openCodeWorkspaceID) }
     }
     @Published public var openCodeError: String?
 
@@ -59,27 +59,27 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
-        didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: "refreshIntervalMinutes"); resetTimer() }
+        didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: UserDefaultsKeys.refreshIntervalMinutes); resetTimer() }
     }
 
     // MARK: - 阈值 / 通知 / 历史(P0-P1)
 
     /// 告警阈值(默认 warning 80 / critical 90),用户可在设置改。
     @Published public var thresholdConfig: ThresholdConfig = ThresholdConfig() {
-        didSet { UserDefaults.standard.set(thresholdConfig.warning, forKey: "thresholdWarning")
-                 UserDefaults.standard.set(thresholdConfig.critical, forKey: "thresholdCritical") }
+        didSet { UserDefaults.standard.set(thresholdConfig.warning, forKey: UserDefaultsKeys.thresholdWarning)
+                 UserDefaults.standard.set(thresholdConfig.critical, forKey: UserDefaultsKeys.thresholdCritical) }
     }
     /// 是否启用接近上限通知(默认开)。用户可在设置关。
     @Published public var notificationsEnabled: Bool = true {
-        didSet { UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled") }
+        didSet { UserDefaults.standard.set(notificationsEnabled, forKey: UserDefaultsKeys.notificationsEnabled) }
     }
     /// 面板 sparkline 是否显示(默认开)。
     @Published public var sparklineEnabled: Bool = true {
-        didSet { UserDefaults.standard.set(sparklineEnabled, forKey: "sparklineEnabled") }
+        didSet { UserDefaults.standard.set(sparklineEnabled, forKey: UserDefaultsKeys.sparklineEnabled) }
     }
     /// 菜单栏是否显示本机 CPU/内存(默认开)。
     @Published public var systemStatsEnabled: Bool = true {
-        didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: "systemStatsEnabled") }
+        didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: UserDefaultsKeys.systemStatsEnabled) }
     }
     /// 重新登录轮询是否在跑(面板显示"等待浏览器登录完成…")。
     @Published public var isReloginWatching = false
@@ -124,11 +124,11 @@ public final class TokenPlanModel: ObservableObject {
     /// 凭据存储(默认 Keychain;测试可注入内存实现)。
     public let credentialStore: CredentialStore
 
-    /// CredentialStore 里 OpenCode cookie 的 account 名。
-    public static let openCodeCookieAccount = "opencode-auth-cookie"
+    /// CredentialStore 里 OpenCode cookie 的 account 名(兼容旧引用,实际值见 KeychainAccounts)。
+    public static let openCodeCookieAccount = KeychainAccounts.openCodeCookie
 
     /// CredentialStore 里阿里云 OpenAPI AK/SK 的 account 名（JSON: {"accessKeyId":"...","accessKeySecret":"..."}）。
-    public static let aliyunAKSKAccount = "aliyun-ak-sk"
+    public static let aliyunAKSKAccount = KeychainAccounts.aliyunAKSK
 
     /// 菜单栏图标预渲染缓存(数据更新时生成,label 只读)。
     @Published public var renderedIcon: NSImage?
@@ -151,25 +151,25 @@ public final class TokenPlanModel: ObservableObject {
 
     private init() {
         let defaults = UserDefaults.standard
-        refreshIntervalMinutes = defaults.object(forKey: "refreshIntervalMinutes") as? Int ?? 10
+        refreshIntervalMinutes = defaults.object(forKey: UserDefaultsKeys.refreshIntervalMinutes) as? Int ?? 10
 
         // 阈值/通知/sparkline 配置
-        let w = defaults.object(forKey: "thresholdWarning") as? Int ?? 80
-        let c = defaults.object(forKey: "thresholdCritical") as? Int ?? 90
+        let w = defaults.object(forKey: UserDefaultsKeys.thresholdWarning) as? Int ?? 80
+        let c = defaults.object(forKey: UserDefaultsKeys.thresholdCritical) as? Int ?? 90
         thresholdConfig = ThresholdConfig(warning: w, critical: c)
-        if defaults.object(forKey: "notificationsEnabled") != nil {
-            notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
+        if defaults.object(forKey: UserDefaultsKeys.notificationsEnabled) != nil {
+            notificationsEnabled = defaults.bool(forKey: UserDefaultsKeys.notificationsEnabled)
         }
-        if defaults.object(forKey: "sparklineEnabled") != nil {
-            sparklineEnabled = defaults.bool(forKey: "sparklineEnabled")
+        if defaults.object(forKey: UserDefaultsKeys.sparklineEnabled) != nil {
+            sparklineEnabled = defaults.bool(forKey: UserDefaultsKeys.sparklineEnabled)
         }
-        if defaults.object(forKey: "systemStatsEnabled") != nil {
-            systemStatsEnabled = defaults.bool(forKey: "systemStatsEnabled")
+        if defaults.object(forKey: UserDefaultsKeys.systemStatsEnabled) != nil {
+            systemStatsEnabled = defaults.bool(forKey: UserDefaultsKeys.systemStatsEnabled)
         }
 
-        credentialStore = KeychainCredentialStore(service: "com.aliyuntokenbar")
+        credentialStore = KeychainCredentialStore(service: KeychainAccounts.service)
         openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
-        openCodeWorkspaceID = defaults.string(forKey: "openCodeWorkspaceID") ?? ""
+        openCodeWorkspaceID = defaults.string(forKey: UserDefaultsKeys.openCodeWorkspaceID) ?? ""
 
         historyStore = HistoryStore(backend: FileHistoryBackend(url: HistoryStore.defaultURL()))
     }
@@ -517,7 +517,7 @@ public final class TokenPlanModel: ObservableObject {
     private func checkSubscriptionExpiry() {
         guard let sub = quota?.subscription,
               (0...7).contains(sub.remainingDays) else { return }
-        let key = "subscriptionExpiryWarnedDay"
+        let key = UserDefaultsKeys.subscriptionExpiryWarnedDay
         let defaults = UserDefaults.standard
         let today = Calendar.current.startOfDay(for: Date())
         if let warned = defaults.object(forKey: key) as? Date, warned == today { return }

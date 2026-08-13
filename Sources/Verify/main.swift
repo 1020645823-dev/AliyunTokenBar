@@ -525,6 +525,21 @@ let fb = FileHistoryBackend(url: tmpURL)
 let sampleSnap = UsageSnapshot(timestamp: Date(timeIntervalSince1970: 1_700_000_000), aliyunFiveHour: 11, aliyunOneWeek: 22, opencodeRolling: 33, opencodeWeekly: 44, opencodeMonthly: 55)
 fb.write([sampleSnap])
 check("file backend roundtrip", fb.read() == [sampleSnap])
+// v0 旧格式(JSON 数组)透明迁移读取
+let encV0 = JSONEncoder()
+encV0.dateEncodingStrategy = .iso8601
+if let v0Data = try? encV0.encode([sampleSnap]) {
+    check("history v0 array decodes", FileHistoryBackend.decode(v0Data) == [sampleSnap])
+}
+// v1 JSONL 容忍损坏行(单行坏不影响整体)
+let encLine = JSONEncoder()
+encLine.dateEncodingStrategy = .iso8601
+let goodLine = (try? encLine.encode(sampleSnap)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+let v1WithBad = "// CodingTokenBar history v1 (JSONL: one snapshot per line)\nnot-json-garbage\n\(goodLine)\n"
+check("history v1 skips bad line",
+      FileHistoryBackend.decode(Data(v1WithBad.utf8)) == [sampleSnap])
+check("history v1 empty header",
+      FileHistoryBackend.decode(Data("// header only\n".utf8)).isEmpty)
 try? FileManager.default.removeItem(at: tmpURL)
 
 // --- 菜单栏状态项可见性去抖 ---

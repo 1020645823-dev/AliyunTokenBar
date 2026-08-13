@@ -20,7 +20,7 @@ public enum KimiUsageService {
     static let webUsagesURL = URL(string: "https://www.kimi.com/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages")!
     static let webStatsURL = URL(string: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats")!
     /// Keychain 中 web JWT 的 account 名(存 JSON 字符串)
-    public static let webTokenAccount = "kimi-web-token"
+    public static let webTokenAccount = KeychainAccounts.kimiWebToken
 
     /// KimiCodeBar 凭证路径(优先,其自动刷新 access_token)
     static let kimiCodeBarCredentialsURL = FileManager.default.homeDirectoryForCurrentUser
@@ -204,7 +204,7 @@ public enum KimiUsageService {
 
     /// 从 Keychain 读 web JWT(JSON 字符串)。
     public static func loadWebToken() -> KimiWebToken? {
-        guard let store = KeychainCredentialStore(service: "com.aliyuntokenbar").read(account: webTokenAccount),
+        guard let store = KeychainCredentialStore(service: KeychainAccounts.service).read(account: webTokenAccount),
               let data = store.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = root["accessToken"] as? String, !access.isEmpty,
@@ -221,13 +221,13 @@ public enum KimiUsageService {
             "expiresAt": token.expiresAt,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: dict) {
-            KeychainCredentialStore(service: "com.aliyuntokenbar").write(String(data: data, encoding: .utf8) ?? "", account: webTokenAccount)
+            KeychainCredentialStore(service: KeychainAccounts.service).write(String(data: data, encoding: .utf8) ?? "", account: webTokenAccount)
         }
     }
 
     /// 清除 web JWT(登出)。
     public static func clearWebToken() {
-        KeychainCredentialStore(service: "com.aliyuntokenbar").delete(account: webTokenAccount)
+        KeychainCredentialStore(service: KeychainAccounts.service).delete(account: webTokenAccount)
     }
 
     /// 用 web refresh_token 换新 JWT(access_token 15 分钟过期,refresh_token 90 天)。
