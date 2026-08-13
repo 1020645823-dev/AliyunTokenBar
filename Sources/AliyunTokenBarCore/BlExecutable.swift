@@ -40,14 +40,13 @@ public enum BlExecutable {
     }
 
     private static func findInPath() -> String? {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["which", "bl"]
-        let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
-        do { try proc.run(); proc.waitUntilExit() } catch { return nil }
-        guard proc.terminationStatus == 0 else { return nil }
-        let out = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-        let s = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let result = ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["which", "bl"],
+            timeout: 5
+        )
+        guard !result.timedOut, result.exitCode == 0 else { return nil }
+        let s = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return s.isEmpty ? nil : s
     }
 

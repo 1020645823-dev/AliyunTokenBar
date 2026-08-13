@@ -64,6 +64,7 @@ final class NotificationManager: NSObject, ObservableObject {
             content: content,
             trigger: nil   // 立即发出
         )
+        AppLog.info("发出用量告警 \(key.provider).\(key.window) band=\(band.rawValue)", category: .general)
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
