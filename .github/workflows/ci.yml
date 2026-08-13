@@ -28,6 +28,10 @@ jobs:
         run: swift run Verify
         timeout-minutes: 5
 
+      - name: Run swift test (XCTest)
+        run: swift test
+        timeout-minutes: 10
+
       - name: Format check (informational)
         run: swift-format lint -r Sources || echo "::warning::swift-format 有格式问题(不影响构建)"
         continue-on-error: true

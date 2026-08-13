@@ -25,5 +25,12 @@ let package = Package(
             dependencies: ["AliyunTokenBarCore"],
             path: "Sources/Verify"
         ),
+        // P2-A2:CI 双轨。开发机无完整 Xcode 时 XCTest 不可用,本地仍用 swift run Verify;
+        // CI(macos-14/15 完整 Xcode)运行 swift test 获得覆盖率与失败聚合。
+        .testTarget(
+            name: "AliyunTokenBarCoreTests",
+            dependencies: ["AliyunTokenBarCore"],
+            path: "Tests/AliyunTokenBarCoreTests"
+        ),
     ]
 )
