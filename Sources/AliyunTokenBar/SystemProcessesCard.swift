@@ -42,30 +42,46 @@ struct SystemProcessesCard: View {
             Spacer()
             Button { monitor.refreshNow() } label: {
                 Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
-            }.buttonStyle(.plain)
+            }
+            .buttonStyle(.plain)
+            .help("立即重新采样")
+            .accessibilityLabel("立即重新采样")
         }
     }
 
     private var subTabPicker: some View {
         HStack(spacing: DesignTokens.spacingXS) {
             ForEach(SubTab.allCases) { t in
-                Button {
+                SubTabButton(title: t.title, isSelected: subTab == t) {
                     withAnimation(.easeInOut(duration: 0.15)) { subTab = t }
-                } label: {
-                    Text(t.title)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(subTab == t ? .white : .atbTextSecondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background(subTab == t ? Color.atbBlue : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(DesignTokens.spacingXS - 1)
         .background(Color.atbCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+    }
+
+    /// 子标签按钮:选中蓝底白字,未选中 hover 轻微高亮(与主面板标签一致的交互)。
+    private struct SubTabButton: View {
+        let title: String
+        let isSelected: Bool
+        let action: () -> Void
+        @State private var hovering = false
+        var body: some View {
+            Button(action: action) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isSelected ? .white : (hovering ? .atbTextPrimary : .atbTextSecondary))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+                    .background(isSelected ? Color.atbBlue : (hovering ? Color.atbTextPrimary.opacity(0.07) : Color.clear))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+        }
     }
 
     /// 当前子页签的 Top 10 列表。

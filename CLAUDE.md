@@ -1,7 +1,7 @@
 # AliyunTokenBar — Agent Instructions
 
 macOS 菜单栏 App(SwiftUI + Swift Package Manager,无 Xcode 项目文件)。
-实时显示阿里云百炼 Token Plan + OpenCode Go 双套餐用量。
+实时显示阿里云百炼 Token Plan + OpenCode Go + Kimi Code 三套餐用量 + 本机 CPU/内存/进程指标。
 
 ## 命令
 
@@ -40,8 +40,8 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 | 通道 | 模块 | 说明 |
 |------|------|------|
 | 凭据存储 | `CredentialStore.swift` | Keychain 读写 OpenCode auth cookie(account: `opencode-auth-cookie`) |
-| 配置持久化 | `TokenPlanModel.swift` | UserDefaults 键(常量收口于 `AppConstants.swift` 的 `UserDefaultsKeys`): `refreshIntervalMinutes`, `thresholdWarning`, `thresholdCritical`, `sparklineEnabled`, `notificationsEnabled`, `appTheme`, `menuBarScheme`, `openCodeWorkspaceID`, `systemStatsEnabled`, `subscriptionExpiryWarnedDay` |
-| 历史文件 | `HistoryStore.swift` | 写入 `~/.aliyun-token-bar/history.json`(用量快照时序 JSON) |
+| 配置持久化 | `TokenPlanModel.swift` | UserDefaults 键(常量收口于 `AppConstants.swift` 的 `UserDefaultsKeys`): `refreshIntervalMinutes`, `thresholdWarning`, `thresholdCritical`, `sparklineEnabled`, `notificationsEnabled`, `appTheme`, `menuBarScheme`, `openCodeWorkspaceID`, `systemStatsEnabled`, `subscriptionExpiryWarnedDay`, `dailyDigestEnabled` |
+| 历史文件 | `HistoryStore.swift` | 写入 `~/Library/Application Support/AliyunTokenBar/history.json`(v1 JSONL:首行 schemaVersion 注释 + 每行一条快照;旧 JSON 数组透明读取) |
 | 子进程 | `BlExecutable.swift` | 生成 `bl` CLI 子进程(需 PATH 包含 `/opt/homebrew/bin`) |
 | macOS 通知 | `NotificationManager.swift` | UNUserNotificationCenter 推送用量告警 |
 

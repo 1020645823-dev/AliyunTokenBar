@@ -24,7 +24,10 @@ struct KimiCodeCard: View {
                 Spacer()
                 Button { Task { await model.refreshKimi() } } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
-                }.buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .help("刷新 Kimi 用量")
+                .accessibilityLabel("刷新 Kimi 用量")
             }
             if let q = model.kimiQuota {
                 // 三窗口各一张卡片,视觉 token 与阿里云 5h/7d 完全一致

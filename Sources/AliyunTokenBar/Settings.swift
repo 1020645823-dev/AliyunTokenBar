@@ -31,11 +31,11 @@ private final class SettingsWindow {
     private var panel: NSPanel?
     func show() {
         if panel == nil {
-            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 480),
+            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             p.title = "设置"
             p.isFloatingPanel = true
-            p.minSize = NSSize(width: 560, height: 460)
+            p.minSize = NSSize(width: 620, height: 500)
             p.center()
             panel = p
         }
@@ -89,7 +89,7 @@ struct SettingsView: View {
         } detail: {
             detailView(selection ?? .general)
         }
-        .frame(minWidth: 620, minHeight: 460)
+        .frame(minWidth: 620, minHeight: 500)
         .onChange(of: model.notificationsEnabled) { on in
             // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过
             if on { NotificationManager.shared.requestAuthorization() }
@@ -113,6 +113,7 @@ struct SettingsView: View {
 private struct GeneralSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
     @StateObject private var launch = LaunchAtLoginManager.shared
+    @State private var checkingUpdate = false
     var body: some View {
         Form {
             Section("启动") {
@@ -122,6 +123,31 @@ private struct GeneralSettingsPage: View {
                 Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
                     Text("5 分钟").tag(5); Text("10 分钟").tag(10)
                     Text("30 分钟").tag(30); Text("60 分钟").tag(60)
+                }
+            }
+            Section("关于") {
+                LabeledContent("版本", value: SelfUpdater.currentVersion())
+                HStack {
+                    if let update = model.appUpdate {
+                        Label("新版本 \(update.version) 可用", systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 12)).foregroundStyle(.orange)
+                        Spacer()
+                        Button("前往下载") { model.openUpdatePage() }
+                            .buttonStyle(ATBTextButtonStyle())
+                    } else {
+                        Text(checkingUpdate ? "正在检查…" : "已是最新版本")
+                            .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+                        Spacer()
+                        Button("检查更新") {
+                            checkingUpdate = true
+                            Task {
+                                await model.checkAppUpdate()
+                                checkingUpdate = false
+                            }
+                        }
+                        .buttonStyle(ATBTextButtonStyle())
+                        .disabled(checkingUpdate)
+                    }
                 }
             }
         }
@@ -164,8 +190,26 @@ private struct AppearanceSettingsPage: View {
 
 private struct NotificationSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
+    @StateObject private var notifier = NotificationManager.shared
     var body: some View {
         Form {
+            Section("系统授权") {
+                HStack {
+                    Image(systemName: notifier.authorized ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(notifier.authorized ? .green : .orange)
+                    Text(notifier.authorized ? "通知权限已授予" : "通知权限未授予")
+                        .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+                    Spacer()
+                    if !notifier.authorized {
+                        Button("打开系统设置") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .buttonStyle(ATBTextButtonStyle())
+                    }
+                }
+            }
             Section("用量告警") {
                 Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
                 Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)

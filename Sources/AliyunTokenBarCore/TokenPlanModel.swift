@@ -110,6 +110,8 @@ public final class TokenPlanModel: ObservableObject {
     private var wakeObserver: NSObjectProtocol?
     private var networkMonitor: NWPathMonitor?
     private var networkSatisfied = true
+    /// 是否离线(UI 展示"离线"提示;UI/UX 打磨)
+    @Published public var isOffline = false
     private var resetBoundaryTask: Task<Void, Never>?
     private var consecutiveFailures = 0
     private var currentIntervalMinutes = 0
@@ -229,6 +231,7 @@ public final class TokenPlanModel: ObservableObject {
                 guard let self else { return }
                 guard satisfied != self.networkSatisfied else { return }
                 self.networkSatisfied = satisfied
+                self.isOffline = !satisfied
                 if satisfied {
                     AppLog.info("网络恢复,立即刷新", category: .general)
                     self.consecutiveFailures = 0

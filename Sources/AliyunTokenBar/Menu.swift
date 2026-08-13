@@ -115,11 +115,28 @@ struct TokenPlanMenu: View {
     private var header: some View {
         HStack(spacing: 12) {
             AliyunCloudLogo(size: 28)
-            Text("CodingTokenBar").font(.system(size: 18, weight: .bold)).foregroundStyle(.atbTextPrimary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("CodingTokenBar").font(.system(size: 18, weight: .bold)).foregroundStyle(.atbTextPrimary)
+                if let update = model.appUpdate {
+                    Button { model.openUpdatePage() } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.down.circle.fill").font(.system(size: 8))
+                            Text("新版本 \(update.version) 可用")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("发现新版本 \(update.version),点击前往下载")
+                }
+            }
             Spacer()
             Button { NSWorkspace.shared.open(consoleURL) } label: {
                 Image(systemName: "arrow.up.right.square").foregroundStyle(.atbTextTertiary)
-            }.buttonStyle(.plain)
+            }
+            .buttonStyle(.plain)
+            .help("打开百炼控制台")
+            .accessibilityLabel("打开百炼控制台")
         }
     }
 
@@ -151,10 +168,12 @@ struct TokenPlanMenu: View {
             .foregroundStyle(isSelected ? .white : .atbTextSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 5)
-            .background(isSelected ? Color.atbBlue : Color.clear)
+            .background(TabBackground(isSelected: isSelected))
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlainTabButtonStyle(isSelected: isSelected))
+        .accessibilityLabel("\(tab.title)标签页")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// 当前标签页内容。
@@ -223,7 +242,12 @@ struct TokenPlanMenu: View {
     /// 避免面板静默展示过期值(2026-08-03 事故:旧值连显 7 小时无任何提示)。
     private var aliyunStatusRow: some View {
         HStack(alignment: .top, spacing: 6) {
-            if let err = model.lastError {
+            if model.isOffline {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+                Text("离线:网络恢复后自动刷新")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+            } else if let err = model.lastError {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9)).foregroundStyle(.orange)
                 Text("刷新失败:\(err)(显示 \(Self.statusTimeText(model.lastUpdated)) 的旧数据)")
@@ -247,6 +271,35 @@ struct TokenPlanMenu: View {
     private static func statusTimeText(_ date: Date?) -> String {
         guard let date else { return "--" }
         return statusTimeFormatter.string(from: date)
+    }
+
+    /// 标签按钮背景:选中品牌蓝;未选中 hover 时轻微高亮(UI/UX 打磨)。
+    private struct TabBackground: View {
+        let isSelected: Bool
+        @State private var hovering = false
+        var body: some View {
+            Group {
+                if isSelected {
+                    Color.atbBlue
+                } else {
+                    (hovering ? Color.atbTextPrimary.opacity(0.07) : Color.clear)
+                }
+            }
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+        }
+    }
+
+    /// 标签按钮样式:未选中 hover 文字加深。
+    private struct PlainTabButtonStyle: ButtonStyle {
+        let isSelected: Bool
+        @State private var hovering = false
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .opacity(configuration.isPressed ? 0.8 : (hovering && !isSelected ? 0.85 : 1.0))
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.12), value: hovering)
+        }
     }
 
     private var actionButtons: some View {
