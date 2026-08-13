@@ -28,4 +28,6 @@ public enum KeychainAccounts {
     public static let openCodeCookie = "opencode-auth-cookie"
     public static let aliyunAKSK = "aliyun-ak-sk"
     public static let kimiWebToken = "kimi-web-token"
+    /// DeepSeek 开放平台 API Key(sk-...)
+    public static let deepSeekAPIKey = "deepseek-api-key"
 }

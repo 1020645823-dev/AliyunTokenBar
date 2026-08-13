@@ -1,7 +1,7 @@
 # AliyunTokenBar — Agent Instructions
 
 macOS 菜单栏 App(SwiftUI + Swift Package Manager,无 Xcode 项目文件)。
-实时显示阿里云百炼 Token Plan + OpenCode Go + Kimi Code 三套餐用量 + 本机 CPU/内存/进程指标。
+实时显示阿里云百炼 Token Plan + OpenCode Go + Kimi Code + DeepSeek API(总余额/当日费用)四套餐用量 + 本机 CPU/内存/进程指标。
 
 ## 命令
 
@@ -30,8 +30,11 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 - `parseSubscription()` ↔ `subscriptionFixture`
 - `parseAddon()` ↔ `addonFixture`
 - `classifyError()` ↔ `expiredFixture`
+- `DeepSeekUsageService.parseBalance()` ↔ `dsFixture`(官方 /user/balance 样例)
+- `DeepSeekDailyLedger` 纯函数 ↔ `ds ledger` 系列断言(余额差快照法)
+- `DeepSeekMoneyFormat` ↔ `ds money` 系列断言(紧凑格式 ≤7 字符契约)
 
-**修改 `BlUsageService.swift` 的 JSON 键名/结构时,必须同步更新 `Verify/main.swift` 中对应 fixture 的字段,然后运行 `swift run Verify` 确认通过。**
+**修改以上服务的 JSON 键名/结构或金额格式契约时,必须同步更新 `Verify/main.swift` 中对应 fixture/断言,然后运行 `swift run Verify` 确认通过。**
 
 ## 副作用边界
 
@@ -39,7 +42,8 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 
 | 通道 | 模块 | 说明 |
 |------|------|------|
-| 凭据存储 | `CredentialStore.swift` | Keychain 读写 OpenCode auth cookie(account: `opencode-auth-cookie`) |
+| 凭据存储 | `CredentialStore.swift` | Keychain 读写 OpenCode auth cookie(account: `opencode-auth-cookie`)、阿里云 AK/SK(`aliyun-ak-sk`)、Kimi web JWT(`kimi-web-token`)、DeepSeek API Key(`deepseek-api-key`) |
+| 当日费用账本 | `DeepSeekDailyLedger.swift` | 写入 `~/Library/Application Support/AliyunTokenBar/deepseek-daily.json`(v1 JSON:32 天余额快照,当日费用=基线余额−当前余额) |
 | 配置持久化 | `TokenPlanModel.swift` | UserDefaults 键(常量收口于 `AppConstants.swift` 的 `UserDefaultsKeys`): `refreshIntervalMinutes`, `thresholdWarning`, `thresholdCritical`, `sparklineEnabled`, `notificationsEnabled`, `appTheme`, `menuBarScheme`, `openCodeWorkspaceID`, `systemStatsEnabled`, `subscriptionExpiryWarnedDay`, `dailyDigestEnabled` |
 | 历史文件 | `HistoryStore.swift` | 写入 `~/Library/Application Support/AliyunTokenBar/history.json`(v1 JSONL:首行 schemaVersion 注释 + 每行一条快照;旧 JSON 数组透明读取) |
 | 子进程 | `BlExecutable.swift` | 生成 `bl` CLI 子进程(需 PATH 包含 `/opt/homebrew/bin`) |
@@ -49,6 +53,7 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 
 - **阿里云无公开用量 API**:套餐用量经 `bl console call` 私有 RPC 获取
 - **OpenCode Go 无公开用量 API**:经 auth cookie 抓 SSR 页面正则提取
+- **DeepSeek 官方只有余额接口**(`GET /user/balance`,Bearer API Key):当日费用无官方接口,由 `DeepSeekDailyLedger` 余额差快照法计算(0点基线;充值重设基线;应用启动晚于0点时标记"估算")
 - **控制台 token 几天过期**:App 检测过期后引导用户重登
 - **GUI App PATH 问题**:`.app` 只继承 `/usr/bin:/bin`,bl/node 在 `/opt/homebrew/bin`;`BlExecutable` 解析绝对路径 + 补 PATH
 - **macOS 26 兼容**:MenuBarExtra 在 macOS 26.5.2 可能被自动终止,NSStatusItem 可存活但图标渲染有问题(待解决)

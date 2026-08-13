@@ -16,6 +16,7 @@ public enum AppLog {
         case aliyun
         case opencode
         case kimi
+        case deepseek
         case keychain
         case history
         case process

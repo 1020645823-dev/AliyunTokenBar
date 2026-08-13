@@ -15,15 +15,16 @@ public struct MenuBarTableValue: Equatable {
     }
 }
 
-/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→▣。
+/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→🧠→▣。
 public enum MenuBarColumnKind: String, CaseIterable, Equatable {
-    case aliyun, kimi, openCode, system
+    case aliyun, kimi, openCode, deepSeek, system
 
     public var symbolName: String {
         switch self {
         case .aliyun: return "cloud.fill"
         case .kimi: return "sparkles"
         case .openCode: return "bolt.fill"
+        case .deepSeek: return "brain.head.profile"
         case .system: return "desktopcomputer"
         }
     }
@@ -32,6 +33,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .aliyun: return "阿里云"
         case .kimi: return "Kimi"
         case .openCode: return "OpenCode"
+        case .deepSeek: return "DeepSeek"
         case .system: return "本机"
         }
     }
@@ -40,6 +42,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         switch self {
         case .aliyun, .kimi: return "5小时"
         case .openCode: return "滚动"
+        case .deepSeek: return "今日"
         case .system: return "CPU"
         }
     }
@@ -48,6 +51,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         switch self {
         case .aliyun: return "7天"
         case .kimi, .openCode: return "周"
+        case .deepSeek: return "余额"
         case .system: return "内存"
         }
     }
@@ -70,13 +74,20 @@ public enum MenuBarTable {
         MenuBarTableValue(text: pct.map { "\($0)%" } ?? "—", pct: pct)
     }
 
-    /// 计算可见列(输出顺序恒为 ☁→✨→⚡→▣,与配置无关)。
-    /// 阿里云恒显示;Kimi/OpenCode 已配置且(有数据或出错)时显示,出错→横杠;
+    /// 金额 → 展示文本(DeepSeek 列专用):nil → 横杠;紧凑格式 ≤7 字符。
+    /// pct 恒为 nil(金额不做阈值变色)。
+    static func moneyValue(_ v: Double?) -> MenuBarTableValue {
+        MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compact($0) } ?? "—", pct: nil)
+    }
+
+    /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→▣,与配置无关)。
+    /// 阿里云恒显示;Kimi/OpenCode/DeepSeek 已配置且(有数据或出错)时显示,出错→横杠;
     /// 本机开关开时显示,采样未就绪→横杠。
     public static func columns(
         aliyunFiveHour: Int?, aliyunOneWeek: Int?,
         kimiConfigured: Bool, kimiHasError: Bool, kimiFiveHour: Int?, kimiWeekly: Int?,
         openCodeConfigured: Bool, openCodeHasError: Bool, openCodeRolling: Int?, openCodeWeekly: Int?,
+        deepSeekConfigured: Bool, deepSeekHasError: Bool, deepSeekTodayCost: Double?, deepSeekBalance: Double?,
         systemEnabled: Bool, cpu: Int?, memory: Int?
     ) -> [MenuBarTableColumn] {
         var cols: [MenuBarTableColumn] = [
@@ -90,6 +101,10 @@ public enum MenuBarTable {
         if openCodeConfigured && (openCodeHasError || openCodeRolling != nil || openCodeWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .openCode,
                                            primary: value(openCodeRolling), secondary: value(openCodeWeekly)))
+        }
+        if deepSeekConfigured && (deepSeekHasError || deepSeekTodayCost != nil || deepSeekBalance != nil) {
+            cols.append(MenuBarTableColumn(kind: .deepSeek,
+                                           primary: moneyValue(deepSeekTodayCost), secondary: moneyValue(deepSeekBalance)))
         }
         if systemEnabled {
             cols.append(MenuBarTableColumn(kind: .system,
@@ -119,6 +134,8 @@ extension TokenPlanModel {
             kimiFiveHour: kimiQuota?.fiveHour.pctInt, kimiWeekly: kimiQuota?.weekly.pctInt,
             openCodeConfigured: openCodeConfigured, openCodeHasError: openCodeError != nil,
             openCodeRolling: openCodeQuota?.rolling.pct, openCodeWeekly: openCodeQuota?.weekly.pct,
+            deepSeekConfigured: deepSeekConfigured, deepSeekHasError: deepSeekError != nil,
+            deepSeekTodayCost: deepSeekTodayCost?.cost, deepSeekBalance: deepSeekBalance?.totalBalance,
             systemEnabled: systemStatsEnabled,
             cpu: monitor.cpuPercent, memory: monitor.memoryPercent)
     }

@@ -1,7 +1,7 @@
 # CodingTokenBar(原名 AliyunTokenBar)
 
 macOS 菜单栏 App,实时显示**多家 AI Coding 套餐**的用量仪表盘:
-**阿里云百炼 Token Plan**(5 小时 / 7 天限额 + 套餐/加购包)+ **OpenCode Go**(滚动 / 每周 / 每月)+ **Kimi Code**(5 小时 / 每周 / 月度 + 共享订阅池 + 加油包)+ **本机指标**(CPU/内存/进程 Top10)。
+**阿里云百炼 Token Plan**(5 小时 / 7 天限额 + 套餐/加购包)+ **OpenCode Go**(滚动 / 每周 / 每月)+ **Kimi Code**(5 小时 / 每周 / 月度 + 共享订阅池 + 加油包)+ **DeepSeek API**(总余额 + 当日使用费用)+ **本机指标**(CPU/内存/进程 Top10)。
 仿 [KimiCodeBar](https://github.com/xifandev/KimiCodeBar),并补齐告警、趋势、自愈、历史分析等仪表盘能力。
 
 ![macOS](https://img.shields.io/badge/macOS-13%2B-333333?logo=apple&logoColor=white)
@@ -9,7 +9,7 @@ macOS 菜单栏 App,实时显示**多家 AI Coding 套餐**的用量仪表盘:
 
 ## 它做什么
 
-- **菜单栏常驻**:5 种样式(云朵百分比 / 迷你表格 / 单行 / 进度环 / 本机指标),阈值变色(橙=提示、红=严重),悬停 tooltip
+- **菜单栏常驻**:5 种样式(云朵百分比 / 迷你表格 / 单行 / 进度环 / 本机指标),阈值变色(橙=提示、红=严重),悬停 tooltip;迷你表格含 DeepSeek 余额/当日费用列
 - **接近上限通知**:跨越阈值(默认 80%/90%)弹 macOS 原生通知(迟滞防抖动,首刷静默防风暴);每日 20:00 用量摘要(可开关);套餐到期(≤7 天)提醒
 - **用量趋势与预测**:面板 sparkline + 每窗口「约 X 小时后达上限」估算;**历史页**提供多窗口趋势、近 7 天每日峰值汇总、CSV 导出
 - **鉴权自愈**:阿里云 AK/SK 自动续期(ACS3 签名交换短期 token,失败冷却 + 防骚扰回退);控制台过期一键浏览器重登 + 自动完成;OpenCode workspace 自动发现(可手动填写);Kimi token 自动刷新并回写
@@ -25,8 +25,9 @@ macOS 菜单栏 App,实时显示**多家 AI Coding 套餐**的用量仪表盘:
    - ⚠️ 控制台 token **几天会过期**,过期时 App 自动恢复(AK/SK)或引导重登
 3. **OpenCode Go**(可选):设置 → 服务 →「登录 OpenCode」
 4. **Kimi Code**(可选):本机已登录 KimiCodeBar / Kimi CLI 自动接入;网页控制台登录可解锁月度总额度
+5. **DeepSeek API**(可选):面板 DeepSeek 标签页或 设置 → 服务 填入开放平台 API Key(`sk-...`,仅存系统钥匙串),即可显示总余额与当日使用费用
 
-> 阿里云/OpenCode 无公开用量 API:分别经 `bl console call` 私有 RPC 与 auth cookie + SSR 正则提取(社区逆向方案)。
+> 阿里云/OpenCode 无公开用量 API:分别经 `bl console call` 私有 RPC 与 auth cookie + SSR 正则提取(社区逆向方案)。DeepSeek 官方仅有余额接口,当日费用按**余额差快照法**累计(0点基线,充值自动重设基线,启动晚于 0 点时标记估算)。
 
 ## 开发
 
@@ -44,6 +45,8 @@ Sources/
 ├── AliyunTokenBarCore/   # 纯逻辑层:模型/解析(Codable)/鉴权/阈值/历史(JSONL)/凭据/进程执行/自愈调度
 │   ├── BlUsageService.swift       # bl console call + 四层嵌套 Codable 解析
 │   ├── KimiUsageService.swift     # Kimi coding/web 双通道 + Codable 解析
+│   ├── DeepSeekUsageService.swift # DeepSeek /user/balance 余额 + Keychain API Key
+│   ├── DeepSeekDailyLedger.swift  # 当日费用账本(余额差快照,32 天持久化)
 │   ├── OpenCodeUsageService.swift # SSR 正则提取(键序无关加固)
 │   ├── TokenPlanModel.swift       # 全局状态:刷新调度/通知评估/自愈/摘要
 │   ├── ProcessRunner.swift        # 子进程统一执行(30s 超时 + SIGKILL)
@@ -60,7 +63,7 @@ packaging/                # build-package.sh / Info.plist / entitlements / 图�
 ## 打包成 .app + .dmg
 
 ```bash
-VERSION=1.0.28 ./packaging/build-package.sh
+VERSION=1.0.30 ./packaging/build-package.sh
 # 产出:dist/CodingTokenBar.app 和 dist/CodingTokenBar-<version>-mac.dmg
 ```
 
@@ -71,6 +74,7 @@ CI(tag 推送)自动打包上传 artifact。
 
 - 阿里云无公开用量 API;套餐用量经控制台私有 RPC(`bl console call` 打 3 个 `zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/*` 接口)
 - OpenCode Go 无公开用量 API;经 `auth` cookie 抓 SSR 页面正则提取(社区逆向方案)
+- DeepSeek 官方只有余额接口(`GET /user/balance`);当日费用无官方接口,由余额差快照法本地累计
 - 控制台 token 几天过期;不能只用 Token Plan 的 `sk-sp-` API Key 代替(实测查不了用量);AK/SK OpenAPI 凭据可自动续期
 - 数据契约见 `Sources/AliyunTokenBarCore/BlUsageService.swift`,变更需同步 `Sources/Verify/main.swift` 的 fixture 并跑 `swift run Verify`
 

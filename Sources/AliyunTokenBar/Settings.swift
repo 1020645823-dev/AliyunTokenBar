@@ -214,7 +214,7 @@ private struct NotificationSettingsPage: View {
                 Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
                 Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)
                 if model.dailyDigestEnabled {
-                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi 用量发送一条通知。")
+                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi / DeepSeek 用量发送一条通知。")
                         .font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
                 }
                 if model.notificationsEnabled {
@@ -247,6 +247,8 @@ private struct ServicesSettingsPage: View {
     @State private var showKimiLogin = false
     @State private var manualWorkspaceID = ""
     @State private var manualWorkspaceError: String?
+    @State private var deepSeekDraftKey = ""
+    @State private var deepSeekSaveError: String?
 
     var body: some View {
         ScrollView {
@@ -254,6 +256,7 @@ private struct ServicesSettingsPage: View {
                 aliyunCard
                 kimiCard
                 openCodeCard
+                deepSeekCard
             }
             .padding(DesignTokens.spacingL)
         }
@@ -356,6 +359,47 @@ private struct ServicesSettingsPage: View {
         manualWorkspaceError = nil
         model.openCodeWorkspaceID = ws
         Task { await model.refreshOpenCode() }
+    }
+
+    // MARK: DeepSeek
+
+    private var deepSeekCard: some View {
+        cardContainer(icon: "brain.head.profile", iconColor: .atbBlue, title: "DeepSeek API") {
+            if model.deepSeekConfigured {
+                statusRow("已配置 (sk-…(model.deepSeekAPIKey.suffix(4)))")
+                HStack(spacing: DesignTokens.spacingM) {
+                    Button("立即刷新") { Task { await model.refreshDeepSeek() } }
+                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+                    Button("移除 API Key") { model.clearDeepSeek() }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+            } else {
+                HStack(spacing: DesignTokens.spacingS) {
+                    SecureField("sk-...", text: $deepSeekDraftKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Button("保存并查询") { saveDeepSeekKey() }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .font(.system(size: 11, weight: .medium))
+                }
+                if let deepSeekSaveError {
+                    Text(deepSeekSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                }
+                caption("在 platform.deepseek.com → API Keys 创建。Key 只存系统钥匙串;官方接口仅提供余额,当日费用按余额差累计(0 点起)。")
+            }
+        }
+    }
+
+    private func saveDeepSeekKey() {
+        let k = deepSeekDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else {
+            deepSeekSaveError = "请输入 API Key"
+            return
+        }
+        deepSeekSaveError = nil
+        model.deepSeekAPIKey = k
+        deepSeekDraftKey = ""
+        Task { await model.refreshDeepSeek() }
     }
 
     // MARK: 卡片零件

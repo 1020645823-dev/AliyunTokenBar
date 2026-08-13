@@ -14,11 +14,16 @@ public struct UsageSnapshot: Codable, Equatable {
     public let kimiFiveHour: Int?
     public let kimiWeekly: Int?
     public let kimiMonthly: Int?
+    /// DeepSeek 总余额(元;未配置/未拉取为 nil)
+    public let deepSeekBalance: Double?
+    /// DeepSeek 当日费用(元;0点→快照时刻累计)
+    public let deepSeekTodayCost: Double?
 
     public init(timestamp: Date,
                 aliyunFiveHour: Int?, aliyunOneWeek: Int?,
                 opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?,
-                kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil, kimiMonthly: Int? = nil) {
+                kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil, kimiMonthly: Int? = nil,
+                deepSeekBalance: Double? = nil, deepSeekTodayCost: Double? = nil) {
         self.timestamp = timestamp
         self.aliyunFiveHour = aliyunFiveHour
         self.aliyunOneWeek = aliyunOneWeek
@@ -28,6 +33,8 @@ public struct UsageSnapshot: Codable, Equatable {
         self.kimiFiveHour = kimiFiveHour
         self.kimiWeekly = kimiWeekly
         self.kimiMonthly = kimiMonthly
+        self.deepSeekBalance = deepSeekBalance
+        self.deepSeekTodayCost = deepSeekTodayCost
     }
 }
 
@@ -240,16 +247,18 @@ public final class HistoryStore {
 
     /// 快照序列 → CSV(P2-B5)。首行表头,ISO8601 时间戳,空值留空。
     public static func csv(_ snapshots: [UsageSnapshot]) -> String {
-        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly"
+        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost"
         let fmt = ISO8601DateFormatter()
         var rows: [String] = [header]
         for s in snapshots {
             func cell(_ v: Int?) -> String { v.map(String.init) ?? "" }
+            func moneyCell(_ v: Double?) -> String { v.map { String(format: "%.2f", $0) } ?? "" }
             rows.append([
                 fmt.string(from: s.timestamp),
                 cell(s.aliyunFiveHour), cell(s.aliyunOneWeek),
                 cell(s.opencodeRolling), cell(s.opencodeWeekly), cell(s.opencodeMonthly),
                 cell(s.kimiFiveHour), cell(s.kimiWeekly), cell(s.kimiMonthly),
+                moneyCell(s.deepSeekBalance), moneyCell(s.deepSeekTodayCost),
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n")

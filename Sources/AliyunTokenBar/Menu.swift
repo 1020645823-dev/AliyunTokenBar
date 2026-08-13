@@ -44,11 +44,12 @@ struct AliyunCloudLogo: View {
 
 // MARK: - 主面板
 
-/// 面板 Provider 标签页(节省空间:三个 Provider 上下堆叠会超出屏幕)。
+/// 面板 Provider 标签页(节省空间:多个 Provider 上下堆叠会超出屏幕)。
 enum ProviderTab: String, CaseIterable, Identifiable {
     case aliyun
     case opencode
     case kimi
+    case deepSeek
     case system
     var id: String { rawValue }
     var title: String {
@@ -56,6 +57,7 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .aliyun: return "阿里云"
         case .opencode: return "OpenCode"
         case .kimi: return "Kimi"
+        case .deepSeek: return "DeepSeek"
         case .system: return "本机"
         }
     }
@@ -64,6 +66,7 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .aliyun: return "cloud.fill"
         case .opencode: return "bolt.fill"
         case .kimi: return "sparkles"
+        case .deepSeek: return "brain.head.profile"
         case .system: return "cpu"
         }
     }
@@ -74,11 +77,13 @@ struct TokenPlanMenu: View {
     @State private var selectedTab: ProviderTab = .aliyun
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
-    /// 当前可用的标签页(阿里云恒有;OpenCode/Kimi 配置了才显示)。
+    /// 当前可用的标签页(阿里云/DeepSeek 恒有——未配置时卡片内有引导;
+    /// OpenCode/Kimi 配置了才显示)。
     private var availableTabs: [ProviderTab] {
         var tabs: [ProviderTab] = [.aliyun]
         if model.openCodeConfigured { tabs.append(.opencode) }
         if model.kimiConfigured { tabs.append(.kimi) }
+        tabs.append(.deepSeek)
         tabs.append(.system)
         return tabs
     }
@@ -142,7 +147,7 @@ struct TokenPlanMenu: View {
 
     // MARK: 标签页切换
 
-    /// 分段式标签栏:三个 Provider 平铺,选中项高亮。
+    /// 分段式标签栏:Provider 平铺,选中项高亮。
     private var providerTabs: some View {
         HStack(spacing: DesignTokens.spacingXS) {
             ForEach(availableTabs) { tab in
@@ -183,6 +188,7 @@ struct TokenPlanMenu: View {
         case .aliyun: aliyunContent
         case .opencode: OpenCodeCard()
         case .kimi: KimiCodeCard()
+        case .deepSeek: DeepSeekCard()
         case .system: SystemProcessesCard()
         }
     }
@@ -309,6 +315,7 @@ struct TokenPlanMenu: View {
                     await model.refreshFull()
                     await model.refreshOpenCode()
                     await model.refreshKimi()
+                    await model.refreshDeepSeek()
                 }
             }
             ActionButton(title: "控制台", icon: "globe") { NSWorkspace.shared.open(consoleURL) }

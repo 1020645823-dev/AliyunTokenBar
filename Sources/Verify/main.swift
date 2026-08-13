@@ -540,11 +540,17 @@ check("history estimate generalized opencode monthly ~180min",
 check("history estimate wrong window nil",
       HistoryStore.estimateMinutesToLimit(snapshots: ocSnaps, provider: "opencode", window: "weekly") == nil)
 
-// P2-B5:CSV 输出(表头 + 行数 + 空值留空)
+// P2-B5:CSV 输出(表头 + 行数 + 空值留空 + DeepSeek 金额列)
 let csvOut = HistoryStore.csv(ocSnaps)
-check("csv header", csvOut.hasPrefix("timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly"))
+check("csv header", csvOut.hasPrefix("timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost"))
 check("csv row count", csvOut.split(separator: "\n").count == 3)
-check("csv empty cells", csvOut.split(separator: "\n")[1].components(separatedBy: ",").count == 9)
+check("csv empty cells", csvOut.split(separator: "\n")[1].components(separatedBy: ",").count == 11)
+let dsCsvSnaps = [UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: nil,
+                                opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
+                                deepSeekBalance: 110.0, deepSeekTodayCost: 1.5)]
+let dsCsv = HistoryStore.csv(dsCsvSnaps)
+check("csv deepseek 金额单元格",
+      dsCsv.split(separator: "\n")[1].components(separatedBy: ",").suffix(2) == ["110.00", "1.50"])
 
 // FileHistoryBackend 往返(Codable)
 let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("atb-test-\(Int.random(in: 0..<1_000_000)).json")
@@ -552,6 +558,17 @@ let fb = FileHistoryBackend(url: tmpURL)
 let sampleSnap = UsageSnapshot(timestamp: Date(timeIntervalSince1970: 1_700_000_000), aliyunFiveHour: 11, aliyunOneWeek: 22, opencodeRolling: 33, opencodeWeekly: 44, opencodeMonthly: 55)
 fb.write([sampleSnap])
 check("file backend roundtrip", fb.read() == [sampleSnap])
+// 带 DeepSeek 字段的快照往返(新字段参与持久化)
+let sampleSnapDs = UsageSnapshot(timestamp: Date(timeIntervalSince1970: 1_700_000_000), aliyunFiveHour: 11, aliyunOneWeek: 22, opencodeRolling: 33, opencodeWeekly: 44, opencodeMonthly: 55, deepSeekBalance: 110.0, deepSeekTodayCost: 1.5)
+fb.write([sampleSnapDs])
+check("file backend roundtrip with deepseek", fb.read() == [sampleSnapDs])
+// 旧格式快照(无 DeepSeek 字段)解码后新字段为 nil → 向后兼容
+let encOld = JSONEncoder()
+encOld.dateEncodingStrategy = .iso8601
+if let oldData = try? encOld.encode(sampleSnap) {
+    let oldDecoded = FileHistoryBackend.decode(oldData).first
+    check("v0 decode deepseek nil", oldDecoded?.deepSeekBalance == nil && oldDecoded?.deepSeekTodayCost == nil)
+}
 // v0 旧格式(JSON 数组)透明迁移读取
 let encV0 = JSONEncoder()
 encV0.dateEncodingStrategy = .iso8601
@@ -792,40 +809,146 @@ let smokeAll = ProcessListMonitor.sampleAll(previousTicks: [:]).list
 check("smoke sampleAll non-empty", !smokeAll.isEmpty)
 check("smoke sampleAll contains self", smokeAll.contains { $0.pid == getpid() })
 
+// --- DeepSeek API:余额解析 + 错误分类 ---
+let dsFixture = Data(#"{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00","granted_balance":"10.00","topped_up_balance":"100.00"}]}"#.utf8)
+check("ds parseBalance 官方样例",
+      DeepSeekUsageService.parseBalance(dsFixture)
+      == DeepSeekUsageService.DeepSeekBalance(isAvailable: true, currency: "CNY",
+                                              totalBalance: 110.0, grantedBalance: 10.0, toppedUpBalance: 100.0))
+// 金额为数字(非字符串)也宽容;is_available=false 仍解析
+let dsNumeric = Data(#"{"is_available":false,"balance_infos":[{"currency":"USD","total_balance":5.5,"granted_balance":1,"topped_up_balance":4.5}]}"#.utf8)
+check("ds parseBalance 数字金额 + is_available=false",
+      DeepSeekUsageService.parseBalance(dsNumeric)
+      == DeepSeekUsageService.DeepSeekBalance(isAvailable: false, currency: "USD",
+                                              totalBalance: 5.5, grantedBalance: 1.0, toppedUpBalance: 4.5))
+// 多币种优先 CNY
+let dsMulti = Data(#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"5.00","granted_balance":"0","topped_up_balance":"5.00"},{"currency":"CNY","total_balance":"220.00","granted_balance":"20.00","topped_up_balance":"200.00"}]}"#.utf8)
+check("ds parseBalance 多币种优先CNY",
+      DeepSeekUsageService.parseBalance(dsMulti)?.currency == "CNY"
+      && DeepSeekUsageService.parseBalance(dsMulti)?.totalBalance == 220.0)
+// 空数组 / 损坏 JSON → nil
+check("ds parseBalance 空数组 nil",
+      DeepSeekUsageService.parseBalance(Data(#"{"is_available":true,"balance_infos":[]}"#.utf8)) == nil)
+check("ds parseBalance 损坏 nil", DeepSeekUsageService.parseBalance(Data("not json".utf8)) == nil)
+// 错误分类
+check("ds classify 200 nil", DeepSeekUsageService.classifyBalanceError(statusCode: 200) == nil)
+check("ds classify 401 authExpired", DeepSeekUsageService.classifyBalanceError(statusCode: 401) == .authExpired)
+check("ds classify 403 authExpired", DeepSeekUsageService.classifyBalanceError(statusCode: 403) == .authExpired)
+check("ds classify 500 network", DeepSeekUsageService.classifyBalanceError(statusCode: 500) == .network("HTTP 500"))
+
+// --- DeepSeek 金额格式化 ---
+check("ds money full 110", DeepSeekMoneyFormat.full(110) == "¥110.00")
+check("ds money full 0", DeepSeekMoneyFormat.full(0) == "¥0.00")
+check("ds money compact <100", DeepSeekMoneyFormat.compact(1.5) == "¥1.50")
+check("ds money compact 0", DeepSeekMoneyFormat.compact(0) == "¥0.00")
+check("ds money compact 100-1万", DeepSeekMoneyFormat.compact(110) == "¥110")
+check("ds money compact 1万-1亿", DeepSeekMoneyFormat.compact(12345.6) == "¥1.2万")
+check("ds money compact ≥1亿", DeepSeekMoneyFormat.compact(123_000_000) == "¥1.2亿")
+check("ds money compact 负钳0", DeepSeekMoneyFormat.compact(-5) == "¥0.00")
+// 契约:任何金额 ≤7 字符(渲染层值域宽依据)
+check("ds money compact ≤7字符",
+      [0.001, 9.99, 99.99, 9999.9, 12345.6, 123_000_000, 9_999_999_999]
+          .allSatisfy { DeepSeekMoneyFormat.compact($0).count <= 7 })
+
+// --- DeepSeek 当日费用账本(固定 GMT+8,纯函数)---
+var dsCal = Calendar(identifier: .gregorian)
+dsCal.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+func dsDate(_ h: Int, _ m: Int = 0, day: Int = 13) -> Date {
+    var comps = DateComponents()
+    comps.year = 2026; comps.month = 8; comps.day = day; comps.hour = h; comps.minute = m
+    comps.timeZone = TimeZone(secondsFromGMT: 8 * 3600)
+    return dsCal.date(from: comps)!
+}
+check("ds ledger dateKey", DeepSeekDailyLedger.dateKey(dsDate(8), calendar: dsCal) == "2026-08-13")
+// 首拉:建今日 entry,cost 0,estimated false(基线=今日首拉)
+var dsEntries: [DeepSeekDailyEntry] = []
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 110.0, at: dsDate(8), calendar: dsCal)
+var dsCost = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 110.0, at: dsDate(9), calendar: dsCal)
+check("ds ledger 首拉 cost 0", dsCost.cost == 0 && dsCost.estimated == false)
+// 同天消费 2.5 → cost 2.5
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 107.5, at: dsDate(10), calendar: dsCal)
+dsCost = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 107.5, at: dsDate(11), calendar: dsCal)
+check("ds ledger 当日费用 2.5", dsCost.cost == 2.5 && dsCost.estimated == false)
+// 充值:余额涨到 200 → 基线重设,cost 归零
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 200.0, at: dsDate(12), calendar: dsCal)
+dsCost = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 200.0, at: dsDate(13), calendar: dsCal)
+check("ds ledger 充值重设基线", dsCost.cost == 0 && dsEntries.last?.firstBalance == 200.0)
+// 充值后再消费 1 → cost 1
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 199.0, at: dsDate(14), calendar: dsCal)
+dsCost = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 199.0, at: dsDate(15), calendar: dsCal)
+check("ds ledger 充值后重新累计 1", dsCost.cost == 1.0)
+// 微涨不超 0.001 → 浮点抖动不算充值
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 199.0005, at: dsDate(16), calendar: dsCal)
+check("ds ledger 微涨不算充值", dsEntries.last?.firstBalance == 200.0)
+// 次日:今天还没拉到快照 → 用昨日余额估算(199.0005 − 197.2 = 1.8005)
+let dsCostNextDay = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 197.2,
+                                                    at: dsDate(8, day: 14), calendar: dsCal)
+check("ds ledger 次日估算", abs(dsCostNextDay.cost - 1.8005) < 0.0001 && dsCostNextDay.estimated == true)
+// 次日首拉:新 entry,基线 = 首拉余额,费用从此刻精确累计
+dsEntries = DeepSeekDailyLedger.record(entries: dsEntries, balance: 197.2, at: dsDate(8, day: 14), calendar: dsCal)
+check("ds ledger 次日新 entry", dsEntries.count == 2 && dsEntries.last?.date == "2026-08-14")
+let dsCostDay2 = DeepSeekDailyLedger.computeCost(entries: dsEntries, currentBalance: 196.7,
+                                                 at: dsDate(12, day: 14), calendar: dsCal)
+check("ds ledger 次日精确累计 0.5", abs(dsCostDay2.cost - 0.5) < 0.0001 && dsCostDay2.estimated == false)
+// 无历史:cost 0 + estimated true(首拉即基线)
+check("ds ledger 无历史", DeepSeekDailyLedger.computeCost(entries: [], currentBalance: 5,
+                                                          at: dsDate(9), calendar: dsCal)
+      == DeepSeekDailyCost(cost: 0, estimated: true, baselineAt: nil))
+// 淘汰:超过 32 天只留最近 32 条
+var manyEntries: [DeepSeekDailyEntry] = []
+for d in 1...40 {
+    manyEntries = DeepSeekDailyLedger.record(entries: manyEntries, balance: 100,
+                                             at: dsDate(8, day: d), calendar: dsCal)
+}
+check("ds ledger 淘汰至32天", manyEntries.count == 32 && manyEntries.first?.date == "2026-08-09")
+
 // --- MenuBarTable:迷你表格列模型 ---
 func mtCols(
     a5: Int? = 40, a7: Int? = 18,
     kConf: Bool = true, kErr: Bool = false, k5: Int? = 0, kW: Int? = 58,
     oConf: Bool = true, oErr: Bool = false, oR: Int? = 3, oW: Int? = 2,
+    dConf: Bool = true, dErr: Bool = false, dCost: Double? = 1.5, dBal: Double? = 110.0,
     sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25
 ) -> [MenuBarTableColumn] {
     MenuBarTable.columns(aliyunFiveHour: a5, aliyunOneWeek: a7,
         kimiConfigured: kConf, kimiHasError: kErr, kimiFiveHour: k5, kimiWeekly: kW,
         openCodeConfigured: oConf, openCodeHasError: oErr, openCodeRolling: oR, openCodeWeekly: oW,
+        deepSeekConfigured: dConf, deepSeekHasError: dErr, deepSeekTodayCost: dCost, deepSeekBalance: dBal,
         systemEnabled: sysOn, cpu: cpu, memory: mem)
 }
 
 let mtAll = mtCols()
-check("mt 4列全显示且固定顺序", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .system])
+check("mt 5列全显示且固定顺序", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .system])
 check("mt 阿里云主次值", mtAll[0].primary.text == "40%" && mtAll[0].secondary.text == "18%")
 check("mt 0% 不省略", mtAll[1].primary.text == "0%" && mtAll[1].primary.pct == 0)
-check("mt 未配置Kimi→隐藏", mtCols(kConf: false).map(\.kind) == [.aliyun, .openCode, .system])
-check("mt 未配置OpenCode→隐藏", mtCols(oConf: false).map(\.kind) == [.aliyun, .kimi, .system])
-check("mt 本机关闭→隐藏", mtCols(sysOn: false).map(\.kind) == [.aliyun, .kimi, .openCode])
+check("mt DeepSeek 金额主次值", mtAll[3].primary.text == "¥1.50" && mtAll[3].secondary.text == "¥110"
+      && mtAll[3].primary.pct == nil && mtAll[3].secondary.pct == nil)
+check("mt 未配置Kimi→隐藏", mtCols(kConf: false).map(\.kind) == [.aliyun, .openCode, .deepSeek, .system])
+check("mt 未配置OpenCode→隐藏", mtCols(oConf: false).map(\.kind) == [.aliyun, .kimi, .deepSeek, .system])
+check("mt 未配置DeepSeek→隐藏", mtCols(dConf: false).map(\.kind) == [.aliyun, .kimi, .openCode, .system])
+check("mt 本机关闭→隐藏", mtCols(sysOn: false).map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek])
 let mtErr = mtCols(kErr: true, k5: nil, kW: nil)
 check("mt 已配置+出错→横杠列", mtErr.map(\.kind).contains(.kimi)
       && mtErr[1].primary.text == "—" && mtErr[1].primary.pct == nil
       && mtErr[1].secondary.text == "—")
 check("mt 已配置无数据无错→隐藏", !mtCols(k5: nil, kW: nil).map(\.kind).contains(.kimi))
-check("mt 本机未采样→横杠", mtCols(cpu: nil, mem: nil)[3].primary.text == "—")
+let mtDsErr = mtCols(dErr: true, dCost: nil, dBal: nil)
+check("mt DeepSeek 出错→横杠", mtDsErr[3].primary.text == "—" && mtDsErr[3].secondary.text == "—"
+      && mtDsErr[3].primary.pct == nil)
+check("mt 本机未采样→横杠", mtCols(cpu: nil, mem: nil)[4].primary.text == "—")
 check("mt 阿里云恒显示(nil→横杠)", mtCols(a5: nil, a7: nil)[0].primary.text == "—")
 let mtTip = MenuBarTable.tooltip(columns: mtAll)
-check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | 本机 CPU 12% · 内存 25%")
+check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | DeepSeek 今日 ¥1.50 · 余额 ¥110 | 本机 CPU 12% · 内存 25%")
 check("mt tooltip 横杠形态", MenuBarTable.tooltip(columns: mtErr).contains("Kimi 5小时 — · 周 —"))
 
-// 渲染契约:值文本最长 4 字符("100%"),renderer 按此定值域宽;超 4 字符会破网格
-check("mt 值文本≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, cpu: 100, mem: 100)
+// 渲染契约:百分比列值文本最长 4 字符("100%");DeepSeek 金额列最长 7 字符
+check("mt 百分比列≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, cpu: 100, mem: 100)
+    .filter { $0.kind != .deepSeek }
     .allSatisfy { $0.primary.text.count <= 4 && $0.secondary.text.count <= 4 })
+check("mt DeepSeek 金额列≤7字符", mtCols(dCost: 0.01, dBal: 123456.78)[3].primary.text.count <= 7
+      && mtCols(dCost: 0.01, dBal: 123456.78)[3].secondary.text.count <= 7
+      && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].primary.text.count <= 7
+      && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].secondary.text.count <= 7)
 
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

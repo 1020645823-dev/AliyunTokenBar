@@ -57,6 +57,27 @@ public final class TokenPlanModel: ObservableObject {
     }
     @Published public var kimiError: String?
 
+    // MARK: - DeepSeek API
+
+    /// DeepSeek 总余额(官方 /user/balance 接口)
+    @Published public var deepSeekBalance: DeepSeekUsageService.DeepSeekBalance?
+    /// 当日使用费用(0点→当前,余额差快照法;见 DeepSeekDailyLedger)
+    @Published public var deepSeekTodayCost: DeepSeekDailyCost?
+    @Published public var deepSeekError: String?
+    @Published public var deepSeekLoading = false
+    /// DeepSeek 最近一次成功拉取时间(状态行展示;失败保留旧值)
+    @Published public var deepSeekLastUpdated: Date?
+    /// DeepSeek API Key(Keychain 存储,didSet 同步回写;敏感凭据不入 UserDefaults)
+    @Published public var deepSeekAPIKey: String {
+        didSet { credentialStore.write(deepSeekAPIKey, account: Self.deepSeekAPIKeyAccount) }
+    }
+    /// DeepSeek 是否已配置 API Key。
+    public var deepSeekConfigured: Bool { !deepSeekAPIKey.isEmpty }
+    /// CredentialStore 里 DeepSeek API Key 的 account 名。
+    public static let deepSeekAPIKeyAccount = KeychainAccounts.deepSeekAPIKey
+    /// 当日费用账本(余额差快照,跨重启持久化)。
+    public let deepSeekDailyStore: DeepSeekDailyStore
+
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: UserDefaultsKeys.refreshIntervalMinutes); resetTimer() }
@@ -77,7 +98,7 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var sparklineEnabled: Bool = true {
         didSet { UserDefaults.standard.set(sparklineEnabled, forKey: UserDefaultsKeys.sparklineEnabled) }
     }
-    /// 每日用量摘要通知(P2-B7,默认关)。开启后每天 20:00 汇总三家 Provider 用量。
+    /// 每日用量摘要通知(P2-B7,默认关)。开启后每天 20:00 汇总全部 Provider 用量。
     @Published public var dailyDigestEnabled: Bool = false {
         didSet {
             UserDefaults.standard.set(dailyDigestEnabled, forKey: UserDefaultsKeys.dailyDigestEnabled)
@@ -186,8 +207,10 @@ public final class TokenPlanModel: ObservableObject {
         credentialStore = KeychainCredentialStore(service: KeychainAccounts.service)
         openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
         openCodeWorkspaceID = defaults.string(forKey: UserDefaultsKeys.openCodeWorkspaceID) ?? ""
+        deepSeekAPIKey = ""   // 延迟到 ensureCredentialLoaded() 读取
 
         historyStore = HistoryStore(backend: FileHistoryBackend(url: HistoryStore.defaultURL()))
+        deepSeekDailyStore = DeepSeekDailyStore()
     }
 
     /// 延迟加载 Keychain 中的 cookie(避免启动时序问题)。幂等。
@@ -197,6 +220,7 @@ public final class TokenPlanModel: ObservableObject {
         CredentialMigration.migrate(legacyKey: "openCodeCookie",
                                     account: Self.openCodeCookieAccount, to: credentialStore)
         openCodeCookie = credentialStore.read(account: Self.openCodeCookieAccount) ?? ""
+        deepSeekAPIKey = credentialStore.read(account: Self.deepSeekAPIKeyAccount) ?? ""
     }
 
     /// 启动定时刷新
@@ -211,6 +235,7 @@ public final class TokenPlanModel: ObservableObject {
         Task { await checkAppUpdate() }                          // P1-C1
         Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
         Task { await refreshKimi() }
+        Task { await refreshDeepSeek() }
         if loadAliyunAKSK() != nil {
             aliyunAKSKConfigured = true
         }
@@ -297,11 +322,12 @@ public final class TokenPlanModel: ObservableObject {
         resetTimer()
     }
 
-    /// 一次拉齐三家(定时器 tick / 唤醒 / 网络恢复共用)。
+    /// 一次拉齐全部 Provider(定时器 tick / 唤醒 / 网络恢复共用)。
     public func refreshAll() async {
         await refresh()
         await refreshOpenCode()
         await refreshKimi()
+        await refreshDeepSeek()
     }
 
     /// P1-C1:查 GitHub Releases 最新版本(启动一次 + 手动)。
@@ -381,6 +407,47 @@ public final class TokenPlanModel: ObservableObject {
         kimiError = nil
         KimiUsageService.clearWebToken()
         notificationTracker.clear(provider: "kimi")
+    }
+
+    // MARK: - DeepSeek API
+
+    /// 拉取 DeepSeek 总余额,并更新当日费用账本(余额差快照法)。
+    /// 未配置 API Key 时静默跳过(设置页/面板有引导)。
+    public func refreshDeepSeek() async {
+        ensureCredentialLoaded()
+        guard deepSeekConfigured else { return }
+        guard !deepSeekLoading else { return }
+        deepSeekLoading = true
+        defer { deepSeekLoading = false }
+        let result = await DeepSeekUsageService.fetchBalance(apiKey: deepSeekAPIKey)
+        switch result {
+        case .success(let b):
+            deepSeekBalance = b
+            deepSeekError = nil
+            deepSeekLastUpdated = Date()
+            deepSeekTodayCost = deepSeekDailyStore.record(balance: b.totalBalance, at: Date())
+            AppLog.debug("DeepSeek 余额刷新成功 total=(b.totalBalance) currency=(b.currency) 今日=(deepSeekTodayCost?.cost ?? 0)", category: .deepseek)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: deepSeekError = "API Key 无效或已失效,请在设置更新"
+            case .network(let s): deepSeekError = "DeepSeek 网络错误: (s)"
+            case .parse: deepSeekError = "DeepSeek 响应格式变化,解析失败"
+            case .invalidResponse: deepSeekError = "DeepSeek 响应异常"
+            case .unknown(let s): deepSeekError = s
+            }
+            AppLog.warning("DeepSeek 刷新失败: \(deepSeekError ?? "")", category: .deepseek)
+        }
+    }
+
+    /// 移除 DeepSeek API Key + 清状态(账本保留,下次配置后同一天继续累计)。
+    public func clearDeepSeek() {
+        credentialStore.delete(account: Self.deepSeekAPIKeyAccount)
+        deepSeekAPIKey = ""
+        deepSeekBalance = nil
+        deepSeekTodayCost = nil
+        deepSeekError = nil
+        deepSeekLastUpdated = nil
     }
 
     // MARK: - 阿里云 OpenAPI AK/SK（console token 自动刷新）
@@ -510,7 +577,9 @@ public final class TokenPlanModel: ObservableObject {
             opencodeMonthly: openCodeQuota?.monthly.pct,
             kimiFiveHour: kimiQuota?.fiveHour.pctInt,
             kimiWeekly: kimiQuota?.weekly.pctInt,
-            kimiMonthly: kimiQuota?.monthly?.pctInt
+            kimiMonthly: kimiQuota?.monthly?.pctInt,
+            deepSeekBalance: deepSeekBalance?.totalBalance,
+            deepSeekTodayCost: deepSeekTodayCost?.cost
         )
         historyStore.append(snap)
 
@@ -540,7 +609,7 @@ public final class TokenPlanModel: ObservableObject {
         }
     }
 
-    /// P2-B7:每天 20:00 汇总三家 Provider 用量发一条摘要通知。
+    /// P2-B7:每天 20:00 汇总全部 Provider 用量发一条摘要通知。
     /// 进程未运行到点即错过(温和功能,不强求);关开关取消。
     private var digestTask: Task<Void, Never>?
 
@@ -570,6 +639,11 @@ public final class TokenPlanModel: ObservableObject {
         if let k = kimiQuota {
             var line = "Kimi 5h \(k.fiveHour.pctInt)% · 周 \(k.weekly.pctInt)%"
             if let m = k.monthly { line += " · 月 \(m.pctInt)%" }
+            parts.append(line)
+        }
+        if let b = deepSeekBalance {
+            var line = "DeepSeek 余额 \(DeepSeekMoneyFormat.full(b.totalBalance))"
+            if let c = deepSeekTodayCost { line += " · 今日 \(DeepSeekMoneyFormat.full(c.cost))" }
             parts.append(line)
         }
         guard !parts.isEmpty else { return }

@@ -251,20 +251,21 @@ enum MenuBarTextRenderer {
         return CloudShape()
     }
 
-    /// 默认紧凑:迷你表格——列=数据源(☁✨⚡▣,顺序固定),行=主/次指标。
+    /// 默认紧凑:迷你表格——列=数据源(☁✨⚡🧠▣,顺序固定),行=主/次指标。
     /// 每列固定宽:图标位 10pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt,留 1pt 余量;过窄会换行破网格),值右对齐;
-    /// 下行缩进图标位宽度,8 个数字严格成网格。
+    /// DeepSeek 列为金额(≤7 字符),值域加宽到 48pt。下行缩进图标位宽度,8 个数字严格成网格。
     /// 非模板渲染:基底色按菜单栏明暗手选;数字独立按阈值 band 变色
     /// (safe→基底 / warning→橙 / critical→红),图标恒基底色——颜色只编码风险。
-    /// 横杠(pct=nil)不着色。总高 ≈21pt;若视觉验收发现溢出/挤压,先把 11pt 降 10.5pt 再调 valueWidth。
+    /// 横杠(pct=nil)与金额不着色。总高 ≈21pt;若视觉验收发现溢出/挤压,先把 11pt 降 10.5pt 再调 valueWidth。
     @MainActor
     private static func miniTableImage(columns: [MenuBarTableColumn], isDark: Bool,
                                        thresholdConfig: ThresholdConfig) -> NSImage {
         let base: Color = isDark ? .white : .black
-        let valueWidth: CGFloat = 34
         let iconWidth: CGFloat = 10
         let content = HStack(alignment: .top, spacing: 7) {
             ForEach(columns, id: \.kind) { col in
+                // DeepSeek 金额列值域更宽(¥99.99 / ¥9999 / ¥12.3万,契约 ≤7 字符)
+                let valueWidth: CGFloat = col.kind == .deepSeek ? 48 : 34
                 VStack(spacing: -1) {
                     HStack(spacing: 2) {
                         Image(systemName: col.kind.symbolName)
