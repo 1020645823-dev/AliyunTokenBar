@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import Network
 
 @MainActor
 public final class TokenPlanModel: ObservableObject {
@@ -90,6 +91,21 @@ public final class TokenPlanModel: ObservableObject {
     private var aliyunEphemeralConfig: BlEphemeralConfig?
     /// 上次自动恢复失败时间；nil = 从未失败或已成功重置。
     @Published public var aliyunAutoRecoveryFailedAt: Date?
+    /// 连续自动恢复失败次数(P1-C11:连续 ≥2 次后暂停弹浏览器,防骚扰)。
+    private var aliyunAutoRecoveryFailures = 0
+    /// 检查更新结果(P1-C1:GitHub Releases 最新版本;有新版时 UI 提示跳转下载)。
+    @Published public var appUpdate: ReleaseInfo?
+    /// 信息类通知 sink(标题,正文):非用量告警的温和提醒(自动恢复暂停等)。
+    /// 由 executable 层注入 NotificationManager;默认 no-op。
+    public var infoNotifySink: ((String, String) -> Void)?
+
+    // MARK: - 自动化调度状态(P1:C2/C3/C4/C6/C7)
+    private var wakeObserver: NSObjectProtocol?
+    private var networkMonitor: NWPathMonitor?
+    private var networkSatisfied = true
+    private var resetBoundaryTask: Task<Void, Never>?
+    private var consecutiveFailures = 0
+    private var currentIntervalMinutes = 0
 
     /// 冷却窗口：刷新间隔的 2 倍，确保至少跳过一个 timer tick（最小 10 分钟）。
     private var autoRecoveryCooldownMinutes: Int {
@@ -169,15 +185,110 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 启动定时刷新
     public func startTimer() {
+        startSystemObservers()                                  // 唤醒/网络(P1-C2/C3)
+        BlEphemeralConfig.sweepStaleTempDirectories()            // P1-C8 崩溃泄漏清扫
         resetTimer()
         ensureCredentialLoaded()
         Task { await checkAuthAndRefresh() }
         Task { await checkBlVersion() }
+        Task { await checkAppUpdate() }                          // P1-C1
         Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
         Task { await refreshKimi() }
         if loadAliyunAKSK() != nil {
             aliyunAKSKConfigured = true
         }
+    }
+
+    // MARK: - 自动化调度(P1:C2/C3/C4/C6/C7)
+
+    /// 睡眠唤醒 + 网络恢复的即时刷新(事件驱动,不等下一个 tick)。
+    private func startSystemObservers() {
+        // C2:系统唤醒 → 立即刷新(合盖期间数据已陈旧)
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            AppLog.info("系统唤醒,立即刷新", category: .general)
+            Task { await self?.refreshAll() }
+        }
+        // C3:网络恢复 → 立即刷新;断网时跳过定时刷新(避免每 tick 空转报错)
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                guard satisfied != self.networkSatisfied else { return }
+                self.networkSatisfied = satisfied
+                if satisfied {
+                    AppLog.info("网络恢复,立即刷新", category: .general)
+                    self.consecutiveFailures = 0
+                    await self.refreshAll()
+                } else {
+                    AppLog.warning("网络断开,暂停定时刷新", category: .general)
+                }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.zww.aliyuntokenbar.network"))
+        networkMonitor = monitor
+    }
+
+    /// C6:按下次用量重置时刻排一次精确刷新(重置后 10s 捕捉归零)。
+    /// 每次成功刷新后重排;窗口不返回重置时间时不排。
+    private func scheduleResetBoundaryRefresh() {
+        resetBoundaryTask?.cancel()
+        guard let q = quota else { return }
+        let now = Date()
+        let candidates: [Int64] = [q.usage.fiveHour.resetTimeMs, q.usage.oneWeek.resetTimeMs]
+            .compactMap { ms -> Int64? in
+                guard ms > 0 else { return nil }
+                let t = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+                return t > now ? ms : nil
+            }
+        guard let nextMs = candidates.min() else { return }
+        let fireAt = TimeInterval(nextMs) / 1000 + 10
+        resetBoundaryTask = Task { [weak self] in
+            let delay = fireAt - Date().timeIntervalSince1970
+            guard delay > 0 else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            AppLog.info("到达用量重置边界,立即刷新", category: .aliyun)
+            await self?.refreshAll()
+        }
+    }
+
+    /// C4+C7:实际刷新间隔 = 基础间隔(低电量 ×2)× 2^连续失败次数,上限 120 分钟。
+    private func effectiveIntervalMinutes() -> Int {
+        var minutes = refreshIntervalMinutes
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { minutes *= 2 }
+        let backoff = min(consecutiveFailures, 3)   // 最多 ×8
+        return min(max(minutes << backoff, 1), 120)
+    }
+
+    /// 失败计数变化后,若有效间隔与当前定时器不一致则重排。
+    private func rescheduleIfNeeded() {
+        let effective = effectiveIntervalMinutes()
+        guard effective != currentIntervalMinutes else { return }
+        resetTimer()
+    }
+
+    /// 一次拉齐三家(定时器 tick / 唤醒 / 网络恢复共用)。
+    public func refreshAll() async {
+        await refresh()
+        await refreshOpenCode()
+        await refreshKimi()
+    }
+
+    /// P1-C1:查 GitHub Releases 最新版本(启动一次 + 手动)。
+    public func checkAppUpdate() async {
+        guard let info = await SelfUpdater.fetchLatest() else { return }
+        if SelfUpdater.isNewer(info.version, than: SelfUpdater.currentVersion()) {
+            appUpdate = info
+            AppLog.info("发现新版本 \(info.version)(当前 \(SelfUpdater.currentVersion()))", category: .general)
+        }
+    }
+
+    /// 打开更新下载页(菜单栏/设置页按钮)。
+    public func openUpdatePage() {
+        let url = appUpdate?.url ?? SelfUpdater.releasesPageURL
+        NSWorkspace.shared.open(url)
     }
 
     /// 自愈:若已有 cookie 但缺 workspace(如旧版登录失败遗留,或 discover 逻辑修复后首次启动),
@@ -300,6 +411,7 @@ public final class TokenPlanModel: ObservableObject {
             let usage = try BlUsageService.parseUsage(data)
             aliyunEphemeralConfig = ephemeral
             aliyunAutoRecoveryFailedAt = nil   // 手动/自动配置成功 → 冷却清零
+            aliyunAutoRecoveryFailures = 0
             guard saveAliyunAKSK(accessKeyID: credential.accessKeyID,
                                   accessKeySecret: credential.accessKeySecret) else {
                 return .failure(.verification("凭据保存失败"))
@@ -337,13 +449,22 @@ public final class TokenPlanModel: ObservableObject {
                                            accessKeySecret: credential.accessKeySecret)
         switch result {
         case .success:
+            aliyunAutoRecoveryFailures = 0
             AppLog.info("阿里云 AK/SK 自动恢复成功", category: .aliyun)
         case .failure(let e):
-            AppLog.warning("阿里云 AK/SK 自动恢复失败: \(String(describing: e)),进入冷却并回退浏览器登录", category: .aliyun)
+            aliyunAutoRecoveryFailures += 1
             aliyunAutoRecoveryFailedAt = Date()
             aliyunEphemeralConfig = nil
-            lastError = "自动恢复失败,请重新登录"
-            relogin()
+            AppLog.warning("阿里云 AK/SK 自动恢复失败(第 \(aliyunAutoRecoveryFailures) 次): \(String(describing: e))", category: .aliyun)
+            // P1-C11:连续 ≥2 次失败后暂停自动弹浏览器,改为温和通知 + 面板提示
+            if aliyunAutoRecoveryFailures < 2 {
+                lastError = "自动恢复失败,请重新登录"
+                relogin()
+            } else {
+                lastError = "自动恢复连续失败,已暂停自动打开浏览器,请手动重新登录"
+                infoNotifySink?("阿里云自动恢复已暂停",
+                                 "连续多次自动恢复失败。已停止自动打开浏览器,请在面板手动重新登录或检查 AK/SK。")
+            }
         }
     }
 
@@ -414,14 +535,13 @@ public final class TokenPlanModel: ObservableObject {
 
     private func resetTimer() {
         timer?.cancel()
-        timer = Timer.publish(every: TimeInterval(refreshIntervalMinutes * 60), on: .main, in: .common)
+        let minutes = effectiveIntervalMinutes()
+        currentIntervalMinutes = minutes
+        timer = Timer.publish(every: TimeInterval(minutes * 60), on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                Task {
-                    await self?.refresh()
-                    await self?.refreshOpenCode()   // OpenCode 随定时器一起刷
-                    await self?.refreshKimi()       // Kimi 随定时器一起刷
-                }
+                guard let self, self.networkSatisfied else { return }   // 断网跳过 tick
+                Task { await self.refreshAll() }
             }
     }
 
@@ -477,11 +597,15 @@ public final class TokenPlanModel: ObservableObject {
                 lastUpdated = Date()
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
+                if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
                 AppLog.info("阿里云全量刷新成功 5h=\(q.usage.fiveHour.percentageInt)% 7d=\(q.usage.oneWeek.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
                 authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
+                consecutiveFailures += 1
+                rescheduleIfNeeded()
                 AppLog.warning("阿里云全量刷新失败: \(String(describing: e))", category: .aliyun)
                 if e == .authExpired { Task { await autoConfigureAliyunIfNeeded() } }
             }
@@ -496,11 +620,15 @@ public final class TokenPlanModel: ObservableObject {
                 lastUpdated = Date()
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
+                if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
                 AppLog.debug("阿里云 usage 刷新成功 5h=\(usage.fiveHour.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
                 authState = authState.afterRefresh(error: e)
                 lastError = errorMessage(e)
+                consecutiveFailures += 1
+                rescheduleIfNeeded()
                 AppLog.warning("阿里云 usage 刷新失败: \(String(describing: e))", category: .aliyun)
                 if e == .authExpired { Task { await autoConfigureAliyunIfNeeded() } }
             }
@@ -520,10 +648,14 @@ public final class TokenPlanModel: ObservableObject {
             lastUpdated = Date()
             lastError = nil
             authState = authState.afterRefresh(error: nil)
+            if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
+            scheduleResetBoundaryRefresh()
             recordAndNotify()
         case .failure(let e):
             authState = authState.afterRefresh(error: e)
             lastError = errorMessage(e)
+            consecutiveFailures += 1
+            rescheduleIfNeeded()
         }
     }
 

@@ -52,6 +52,24 @@ public final class BlEphemeralConfig {
     deinit {
         try? FileManager.default.removeItem(at: directoryURL)
     }
+
+    /// P1-C8:启动时清扫上次崩溃遗留的临时配置目录。
+    /// deinit 只在正常退出时执行;崩溃/强杀会残留 CodingTokenBar-bl-* 目录。
+    /// 只删超过 olderThan(默认 24h)的残留,避免误删正在运行的另一个实例。
+    public static func sweepStaleTempDirectories(olderThan: TimeInterval = 24 * 3600) {
+        let tmp = FileManager.default.temporaryDirectory
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: tmp, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
+        ) else { return }
+        let now = Date()
+        for url in entries where url.lastPathComponent.hasPrefix("CodingTokenBar-bl-") {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let mtime = attrs[.modificationDate] as? Date,
+                  now.timeIntervalSince(mtime) > olderThan else { continue }
+            try? FileManager.default.removeItem(at: url)
+            AppLog.info("清扫崩溃残留临时目录: \(url.lastPathComponent)", category: .general)
+        }
+    }
 }
 
 public enum BlAuthError: Error, Equatable {

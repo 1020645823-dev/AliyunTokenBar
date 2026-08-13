@@ -73,6 +73,24 @@ final class NotificationManager: NSObject, ObservableObject {
         model.notifySink = { [weak self] key, band in
             self?.notify(key: key, band: band)
         }
+        model.infoNotifySink = { [weak self] title, body in
+            self?.notifyInfo(title: title, body: body)
+        }
+    }
+
+    /// 信息类通知(P1-C11:自动恢复暂停等温和提醒)。identifier 带时间戳,允许重复弹出。
+    func notifyInfo(title: String, body: String) {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let req = UNNotificationRequest(
+            identifier: "info-\(Date().timeIntervalSince1970)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 }
 

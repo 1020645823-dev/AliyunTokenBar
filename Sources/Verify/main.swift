@@ -623,6 +623,31 @@ check("cooldown past window -> not cooling",
 check("cooldown zero minutes clamps to 1min",
       AliyunAuthRecovery.inCooldown(failedAt: failBase, now: failBase.addingTimeInterval(30), cooldownMinutes: 0))
 
+// --- SelfUpdater 版本比较(P1-C1 纯函数)---
+check("ver 1.0.28 newer than 1.0.27", SelfUpdater.isNewer("1.0.28", than: "1.0.27"))
+check("ver 1.0.10 newer than 1.0.9", SelfUpdater.isNewer("1.0.10", than: "1.0.9"))
+check("ver equal not newer", !SelfUpdater.isNewer("1.0.27", than: "1.0.27"))
+check("ver older not newer", !SelfUpdater.isNewer("1.0.26", than: "1.0.27"))
+check("ver 2.0.0 newer than 1.9.9", SelfUpdater.isNewer("2.0.0", than: "1.9.9"))
+check("ver garbage differs by string", SelfUpdater.isNewer("abc", than: "def"))
+
+// --- 临时目录清扫(P1-C8)---
+let sweepDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("CodingTokenBar-bl-verify-sweep-\(UUID().uuidString)", isDirectory: true)
+try? FileManager.default.createDirectory(at: sweepDir, withIntermediateDirectories: true)
+// 置为 48h 前(清扫阈值 24h)
+try? FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-48 * 3600)],
+                                       ofItemAtPath: sweepDir.path)
+BlEphemeralConfig.sweepStaleTempDirectories()
+check("sweep removes stale temp dir", !FileManager.default.fileExists(atPath: sweepDir.path))
+// 新目录(刚创建)必须保留
+let freshDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("CodingTokenBar-bl-verify-fresh-\(UUID().uuidString)", isDirectory: true)
+try? FileManager.default.createDirectory(at: freshDir, withIntermediateDirectories: true)
+BlEphemeralConfig.sweepStaleTempDirectories()
+check("sweep keeps fresh temp dir", FileManager.default.fileExists(atPath: freshDir.path))
+try? FileManager.default.removeItem(at: freshDir)
+
 // 迁移:UserDefaults 明文 → CredentialStore
 let testDefaults = UserDefaults(suiteName: "atb-migration-test-\(Int.random(in: 0..<1_000_000))")!
 testDefaults.set("legacy-cookie-value", forKey: "openCodeCookie")
