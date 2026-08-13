@@ -426,12 +426,12 @@ public final class TokenPlanModel: ObservableObject {
             deepSeekError = nil
             deepSeekLastUpdated = Date()
             deepSeekTodayCost = deepSeekDailyStore.record(balance: b.totalBalance, at: Date())
-            AppLog.debug("DeepSeek 余额刷新成功 total=(b.totalBalance) currency=(b.currency) 今日=(deepSeekTodayCost?.cost ?? 0)", category: .deepseek)
+            AppLog.debug("DeepSeek 余额刷新成功 total=\(b.totalBalance) currency=\(b.currency) 今日=\(deepSeekTodayCost?.cost ?? 0)", category: .deepseek)
             recordAndNotify()
         case .failure(let e):
             switch e {
             case .authExpired: deepSeekError = "API Key 无效或已失效,请在设置更新"
-            case .network(let s): deepSeekError = "DeepSeek 网络错误: (s)"
+            case .network(let s): deepSeekError = "DeepSeek 网络错误: \(s)"
             case .parse: deepSeekError = "DeepSeek 响应格式变化,解析失败"
             case .invalidResponse: deepSeekError = "DeepSeek 响应异常"
             case .unknown(let s): deepSeekError = s
