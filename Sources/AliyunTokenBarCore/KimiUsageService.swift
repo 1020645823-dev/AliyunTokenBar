@@ -339,26 +339,19 @@ public enum KimiUsageService {
     /// 纯函数:解析 GetUsages 响应(usages[scope=FEATURE_CODING].detail=周,
     /// limits[0].duration=300=5h,totalQuota=兼容汇总字段)。
     public static func parseWebUsages(_ data: Data) -> KimiWebQuota? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let usages = root["usages"] as? [[String: Any]],
+        guard let root = try? JSONDecoder().decode(WebUsagesResponseDTO.self, from: data),
+              let usages = root.usages,
               let coding = usages.first(where: {
-                  ($0["scope"] as? String)?.uppercased() == "FEATURE_CODING"
+                  ($0.scope ?? "").uppercased() == "FEATURE_CODING"
               }) else { return nil }
-        let weekly = makeWindow(coding["detail"] as? [String: Any])
+        let weekly = makeWindow(coding.detail)
         var fiveHour = KimiWindow(used: 0, limit: 0, resetTimeMs: nil)
-        if let limits = coding["limits"] as? [[String: Any]] {
-            for limit in limits {
-                if let window = limit["window"] as? [String: Any],
-                   intValue(window["duration"]) == 300,
-                   isMinuteUnit(window["timeUnit"]),
-                   let detail = limit["detail"] as? [String: Any] {
-                    fiveHour = makeWindow(detail)
-                    break
-                }
-            }
+        for limit in coding.limits ?? [] where limit.window?.duration == 300 && isMinuteUnit(limit.window?.timeUnit) {
+            fiveHour = makeWindow(limit.detail)
+            break
         }
         var monthly: KimiWindow?
-        if let tq = root["totalQuota"] as? [String: Any], !tq.isEmpty {
+        if let tq = root.totalQuota, tq.hasContent {
             monthly = makeWindow(tq)
         }
         return KimiWebQuota(fiveHour: fiveHour, weekly: weekly, monthly: monthly,
@@ -367,12 +360,12 @@ public enum KimiUsageService {
 
     /// 解析 GetSubscriptionStats.subscriptionBalance 的共享订阅池。
     public static func parseSubscriptionStats(_ data: Data) -> KimiSubscriptionBalance? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = root["subscriptionBalance"] as? [String: Any],
-              let total = ratioValue(raw["amountUsedRatio"]) else { return nil }
+        guard let root = try? JSONDecoder().decode(SubscriptionStatsDTO.self, from: data),
+              let raw = root.subscriptionBalance,
+              let total = raw.amountUsedRatio else { return nil }
         return KimiSubscriptionBalance(totalUsedRatio: total,
-                                       codeUsedRatio: ratioValue(raw["kimiCodeUsedRatio"]),
-                                       expireTimeMs: dateMs(raw["expireTime"]))
+                                       codeUsedRatio: raw.kimiCodeUsedRatio,
+                                       expireTimeMs: raw.expireTime.flatMap(dateMs))
     }
 
     // MARK: - Fetch
@@ -440,6 +433,105 @@ public enum KimiUsageService {
         }
     }
 
+    // MARK: - DTO(P2-A1:宽容 Codable 解码,替代 [String:Any] 手写取数)
+
+    /// 单窗口字段(usage/detail/totalQuota 共用)。数值字段 Int/Double/字符串均宽容。
+    fileprivate struct WindowDTO: Decodable {
+        var limit: Int64?
+        var used: Int64?
+        var remaining: Int64?
+        var resetTime: String?
+
+        var hasContent: Bool {
+            limit != nil || used != nil || remaining != nil || resetTime != nil
+        }
+
+        enum CodingKeys: String, CodingKey { case limit, used, remaining, resetTime }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            limit = try c.decodeIfPresent(FlexibleInt64.self, forKey: .limit)?.wrappedValue
+            used = try c.decodeIfPresent(FlexibleInt64.self, forKey: .used)?.wrappedValue
+            remaining = try c.decodeIfPresent(FlexibleInt64.self, forKey: .remaining)?.wrappedValue
+            resetTime = try c.decodeIfPresent(String.self, forKey: .resetTime)
+        }
+    }
+
+    fileprivate struct LimitDTO: Decodable {
+        struct WindowMeta: Decodable {
+            var duration: Int64?
+            var timeUnit: String?
+            enum CodingKeys: String, CodingKey { case duration, timeUnit }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                duration = try c.decodeIfPresent(FlexibleInt64.self, forKey: .duration)?.wrappedValue
+                timeUnit = try c.decodeIfPresent(String.self, forKey: .timeUnit)
+            }
+        }
+        var window: WindowMeta?
+        var detail: WindowDTO?
+    }
+
+    fileprivate struct BoosterDTO: Decodable {
+        struct BalanceDTO: Decodable {
+            var amountLeft: Double?
+            enum CodingKeys: String, CodingKey { case amountLeft }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                amountLeft = try c.decodeIfPresent(FlexibleDouble.self, forKey: .amountLeft)?.wrappedValue
+            }
+        }
+        struct PriceDTO: Decodable {
+            var priceInCents: Int64?
+            enum CodingKeys: String, CodingKey { case priceInCents }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                priceInCents = try c.decodeIfPresent(FlexibleInt64.self, forKey: .priceInCents)?.wrappedValue
+            }
+        }
+        var status: String?
+        var balance: BalanceDTO?
+        var monthlyUsed: PriceDTO?
+        var monthlyChargeLimit: PriceDTO?
+    }
+
+    fileprivate struct UsagesResponseDTO: Decodable {
+        struct UserDTO: Decodable {
+            struct MembershipDTO: Decodable { var level: String? }
+            var membership: MembershipDTO?
+        }
+        var usage: WindowDTO?
+        var limits: [LimitDTO]?
+        var totalQuota: WindowDTO?
+        var boosterWallet: BoosterDTO?
+        var user: UserDTO?
+    }
+
+    fileprivate struct WebUsagesResponseDTO: Decodable {
+        struct UsageDTO: Decodable {
+            var scope: String?
+            var detail: WindowDTO?
+            var limits: [LimitDTO]?
+        }
+        var usages: [UsageDTO]?
+        var totalQuota: WindowDTO?
+    }
+
+    fileprivate struct SubscriptionStatsDTO: Decodable {
+        struct BalanceDTO: Decodable {
+            var amountUsedRatio: Double?
+            var kimiCodeUsedRatio: Double?
+            var expireTime: String?
+            enum CodingKeys: String, CodingKey { case amountUsedRatio, kimiCodeUsedRatio, expireTime }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                amountUsedRatio = try c.decodeIfPresent(FlexibleDouble.self, forKey: .amountUsedRatio)?.wrappedValue
+                kimiCodeUsedRatio = try c.decodeIfPresent(FlexibleDouble.self, forKey: .kimiCodeUsedRatio)?.wrappedValue
+                expireTime = try c.decodeIfPresent(String.self, forKey: .expireTime)
+            }
+        }
+        var subscriptionBalance: BalanceDTO?
+    }
+
     // MARK: - Parse(纯函数,fixture 测试覆盖)
 
     /// 解析官方 usages 响应。
@@ -449,72 +541,56 @@ public enum KimiUsageService {
     /// - totalQuota → 月度总额(API 未返回时为空对象 {} → nil)
     /// - boosterWallet → 加油包(余额单位 1e-8 元)
     public static func parse(_ data: Data) -> KimiQuota? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        guard let root = try? JSONDecoder().decode(UsagesResponseDTO.self, from: data) else { return nil }
 
-        let usage = root["usage"] as? [String: Any]
-        let weekly = makeWindow(usage)
+        let weekly = makeWindow(root.usage)
 
         // 5h 窗口:limits 中 window.duration == 300
         var fiveHour = KimiWindow(used: 0, limit: 0, resetTimeMs: nil)
-        if let limits = root["limits"] as? [[String: Any]] {
-            for limit in limits {
-                if let window = limit["window"] as? [String: Any],
-                   intValue(window["duration"]) == 300,
-                   isMinuteUnit(window["timeUnit"]),
-                   let detail = limit["detail"] as? [String: Any] {
-                    fiveHour = makeWindow(detail)
-                    break
-                }
-            }
+        for limit in root.limits ?? [] where limit.window?.duration == 300 && isMinuteUnit(limit.window?.timeUnit) {
+            fiveHour = makeWindow(limit.detail)
+            break
         }
 
         // 月度总额:totalQuota(空对象 → nil)
         var monthly: KimiWindow?
-        if let tq = root["totalQuota"] as? [String: Any], !tq.isEmpty {
+        if let tq = root.totalQuota, tq.hasContent {
             monthly = makeWindow(tq)
         }
 
         // 加油包
-        let booster = makeBooster(root["boosterWallet"] as? [String: Any])
-
-        let membership = (root["user"] as? [String: Any])?["membership"] as? [String: Any]
-        let level = membership?["level"] as? String
+        let booster = makeBooster(root.boosterWallet)
+        let level = root.user?.membership?.level
 
         return KimiQuota(fiveHour: fiveHour, weekly: weekly, monthly: monthly,
                          booster: booster, membershipLevel: level)
     }
 
-    /// 从 detail/usage 字典构造窗口。字段为字符串或数字,宽松取值。
-    private static func makeWindow(_ dict: [String: Any]?) -> KimiWindow {
-        guard let dict, !dict.isEmpty else { return KimiWindow(used: 0, limit: 0, resetTimeMs: nil) }
-        let limit = intValue(dict["limit"]) ?? 0
-        let used: Int
-        if let u = intValue(dict["used"]) {
+    /// 从 DTO 构造窗口。字段为字符串或数字,宽松取值(与旧 [String:Any] 语义一致)。
+    private static func makeWindow(_ d: WindowDTO?) -> KimiWindow {
+        guard let d, d.hasContent else { return KimiWindow(used: 0, limit: 0, resetTimeMs: nil) }
+        let limit = d.limit ?? 0
+        let used: Int64
+        if let u = d.used {
             used = u
-        } else if let remaining = intValue(dict["remaining"]), limit > 0 {
+        } else if let remaining = d.remaining, limit > 0 {
             used = max(0, limit - remaining)
         } else {
             used = 0
         }
-        let resetMs = dateMs(dict["resetTime"])
-        return KimiWindow(used: used, limit: limit, resetTimeMs: resetMs)
+        return KimiWindow(used: Int(used), limit: Int(limit),
+                          resetTimeMs: d.resetTime.flatMap(dateMs))
     }
 
-    private static func makeBooster(_ dict: [String: Any]?) -> KimiBooster? {
-        guard let dict, !dict.isEmpty else { return nil }
-        let status = (dict["status"] as? String)?.uppercased() ?? ""
+    private static func makeBooster(_ d: BoosterDTO?) -> KimiBooster? {
+        guard let d,
+              !(d.status == nil && d.balance == nil && d.monthlyUsed == nil && d.monthlyChargeLimit == nil) else { return nil }
+        let status = (d.status ?? "").uppercased()
         let enabled = status == "STATUS_ACTIVE" || status == "STATUS_ENABLED"
         // 余额:balance.amountLeft,单位 1e-8 元(未返回时 0,不估算)
-        var balanceYuan = 0.0
-        if let balance = dict["balance"] as? [String: Any] {
-            if let amountLeftStr = balance["amountLeft"] as? String, let v = Double(amountLeftStr) {
-                balanceYuan = max(0, v / 100_000_000.0)
-            } else if let amountLeftNum = balance["amountLeft"] as? Double {
-                balanceYuan = max(0, amountLeftNum / 100_000_000.0)
-            }
-        }
-        let monthlyUsedCents = intValue((dict["monthlyUsed"] as? [String: Any])?["priceInCents"]) ?? 0
-        let monthlyLimitCents = intValue((dict["monthlyChargeLimit"] as? [String: Any])?["priceInCents"]) ?? 0
+        let balanceYuan = max(0, (d.balance?.amountLeft ?? 0) / 100_000_000.0)
+        let monthlyUsedCents = d.monthlyUsed?.priceInCents ?? 0
+        let monthlyLimitCents = d.monthlyChargeLimit?.priceInCents ?? 0
         return KimiBooster(enabled: enabled,
                            balanceYuan: balanceYuan,
                            monthlyUsedYuan: Double(monthlyUsedCents) / 100.0,
@@ -523,43 +599,34 @@ public enum KimiUsageService {
 
     // MARK: - 宽松取值辅助
 
-    /// 字符串或数字 → Int
-    private static func intValue(_ v: Any?) -> Int? {
-        if let s = v as? String { return Int(s) }
-        if let n = v as? Int { return n }
-        if let n = v as? Double { return Int(n) }
-        if let n = v as? NSNumber { return n.intValue }
-        return nil
-    }
-
-    /// 字符串或数字 → 0...1 比例。
-    private static func ratioValue(_ value: Any?) -> Double? {
-        let raw: Double?
-        if let s = value as? String { raw = Double(s) }
-        else if let n = value as? Double { raw = n }
-        else if let n = value as? Int { raw = Double(n) }
-        else if let n = value as? NSNumber { raw = n.doubleValue }
-        else { raw = nil }
-        guard let raw else { return nil }
-        return min(max(raw, 0), 1)
-    }
-
     /// 5 小时窗口的时间单位兼容 protobuf 枚举和简化字符串。
-    private static func isMinuteUnit(_ value: Any?) -> Bool {
-        guard let raw = value as? String else { return true }
+    /// nil/非字符串按分钟处理(与旧 Any? 版本语义一致)。
+    private static func isMinuteUnit(_ value: String?) -> Bool {
+        guard let raw = value else { return true }
         let unit = raw.uppercased()
         return unit == "TIME_UNIT_MINUTE" || unit == "MINUTE"
     }
 
-    /// ISO8601 字符串 → epoch 毫秒
-    private static func dateMs(_ v: Any?) -> Int64? {
-        guard let s = v as? String else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = formatter.date(from: s) { return Int64(d.timeIntervalSince1970 * 1000) }
-        // 无小数秒 fallback
-        formatter.formatOptions = [.withInternetDateTime]
-        if let d = formatter.date(from: s) { return Int64(d.timeIntervalSince1970 * 1000) }
+    /// ISO8601 字符串 → epoch 毫秒(Formatter 静态缓存,避免每行新建)
+    private static func dateMs(_ s: String) -> Int64? {
+        if let d = Self.isoWithFraction.date(from: s) {
+            return Int64(d.timeIntervalSince1970 * 1000)
+        }
+        if let d = Self.isoPlain.date(from: s) {
+            return Int64(d.timeIntervalSince1970 * 1000)
+        }
         return nil
     }
+
+    private static let isoWithFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 }

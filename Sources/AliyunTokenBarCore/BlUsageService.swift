@@ -8,44 +8,115 @@ public final class BlUsageService {
     public static let subscriptionAPI = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription"
     public static let addonAPI = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/addon/summary"
 
-    // MARK: - Parsing (pure functions, fully tested)
+    // MARK: - DTO(P2-A1:三层嵌套 data.DataV2.data.data,宽容 Codable 解码)
+    //
+    // 语义与旧 [String:Any] 解析完全一致(Verify fixture 全量回归):
+    // - usage 窗口字段缺失/null → 按 0(官方控制台同款,避免整次更新 .parse)
+    // - subscription 三必填字段缺失 → throw(等价旧 value(as:) 的 BlValueMismatch)
+    // - addon 全可选 → 缺失按 0
 
-    /// 解析 usage 响应。JSON 三层嵌套:data.DataV2.data.data.<字段>
-    /// 宽容解析:窗口为空(如 5h 内零用量)时服务端可能返回 null/缺失字段,
-    /// 官方控制台该状态显示 0%;这里同样按 0 处理,避免严格解析把整次更新
-    /// 打成 .parse 失败、UI 静默保留几小时前的旧值(2026-08-03 事故根因)。
+    // 嵌套层级(与旧 [String:Any] 完全一致):
+    // root.data → .DataV2 → .data → .data(字段)
+    private struct Envelope: Decodable {
+        struct Level1: Decodable {
+            struct Level2: Decodable {
+                struct Level3: Decodable {
+                    struct Payload: Decodable {
+                        var per5HourPercentage: Double?
+                        var per5HourResetTime: Int64?
+                        var per1WeekPercentage: Double?
+                        var per1WeekResetTime: Int64?
+                        var specCode: String?
+                        var status: String?
+                        var remainingDays: Int64?
+                        var startTime: Int64?
+                        var endTime: Int64?
+                        var autoRenewFlag: Bool?
+                        var remainingCredits: Double?
+                        var totalCredits: Double?
+                        var activeCount: Int64?
+
+                        enum CodingKeys: String, CodingKey {
+                            case per5HourPercentage, per5HourResetTime
+                            case per1WeekPercentage, per1WeekResetTime
+                            case specCode, status, remainingDays
+                            case startTime, endTime, autoRenewFlag
+                            case remainingCredits, totalCredits, activeCount
+                        }
+
+                        // 手写解码:property wrapper 合成对缺失键会抛 keyNotFound,
+                        // 这里逐字段 decodeIfPresent(缺失/null → nil;类型异常经宽容包装器 → nil)
+                        init(from decoder: Decoder) throws {
+                            let c = try decoder.container(keyedBy: CodingKeys.self)
+                            per5HourPercentage = try c.decodeIfPresent(FlexibleDouble.self, forKey: .per5HourPercentage)?.wrappedValue
+                            per5HourResetTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .per5HourResetTime)?.wrappedValue
+                            per1WeekPercentage = try c.decodeIfPresent(FlexibleDouble.self, forKey: .per1WeekPercentage)?.wrappedValue
+                            per1WeekResetTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .per1WeekResetTime)?.wrappedValue
+                            specCode = try c.decodeIfPresent(String.self, forKey: .specCode)
+                            status = try c.decodeIfPresent(String.self, forKey: .status)
+                            remainingDays = try c.decodeIfPresent(FlexibleInt64.self, forKey: .remainingDays)?.wrappedValue
+                            startTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .startTime)?.wrappedValue
+                            endTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .endTime)?.wrappedValue
+                            autoRenewFlag = try c.decodeIfPresent(FlexibleBool.self, forKey: .autoRenewFlag)?.wrappedValue
+                            remainingCredits = try c.decodeIfPresent(FlexibleDouble.self, forKey: .remainingCredits)?.wrappedValue
+                            totalCredits = try c.decodeIfPresent(FlexibleDouble.self, forKey: .totalCredits)?.wrappedValue
+                            activeCount = try c.decodeIfPresent(FlexibleInt64.self, forKey: .activeCount)?.wrappedValue
+                        }
+                    }
+                    var data: Payload?
+                }
+                var data: Level3?
+            }
+            var DataV2: Level2?
+        }
+        var data: Level1?
+    }
+
+    private struct BlEnvelopeError: Error {}
+
+    private static func decodePayload(_ data: Data) throws -> Envelope.Level1.Level2.Level3.Payload {
+        let env = try JSONDecoder().decode(Envelope.self, from: data)
+        guard let payload = env.data?.DataV2?.data?.data else { throw BlEnvelopeError() }
+        return payload
+    }
+
+    /// 解析 usage 响应。宽容解析:窗口为空(如 5h 内零用量)时服务端可能返回
+    /// null/缺失字段,官方控制台该状态显示 0%;这里同样按 0 处理,避免严格解析
+    /// 把整次更新打成 .parse 失败、UI 静默保留几小时前的旧值(2026-08-03 事故根因)。
     public static func parseUsage(_ data: Data) throws -> UsageWindows {
-        let p = try extractInnerPayload(data)
+        let p = try decodePayload(data)
         return UsageWindows(
             fiveHour: UsageDetail(
-                percentageRaw: p.optionalDouble("per5HourPercentage") ?? 0,
-                resetTimeMs: p.optionalInt64("per5HourResetTime") ?? 0
+                percentageRaw: p.per5HourPercentage ?? 0,
+                resetTimeMs: p.per5HourResetTime ?? 0
             ),
             oneWeek: UsageDetail(
-                percentageRaw: p.optionalDouble("per1WeekPercentage") ?? 0,
-                resetTimeMs: p.optionalInt64("per1WeekResetTime") ?? 0
+                percentageRaw: p.per1WeekPercentage ?? 0,
+                resetTimeMs: p.per1WeekResetTime ?? 0
             )
         )
     }
 
     public static func parseSubscription(_ data: Data) throws -> SubscriptionDetail {
-        let p = try extractInnerPayload(data)
+        let p = try decodePayload(data)
+        guard let specCode = p.specCode, let status = p.status,
+              let remainingDays = p.remainingDays else { throw BlEnvelopeError() }
         return SubscriptionDetail(
-            specCode: try p.value("specCode", as: String.self),
-            status: try p.value("status", as: String.self),
-            remainingDays: try p.value("remainingDays", as: Int.self),
-            startTimeMs: try? p.value("startTime", as: Int64.self),
-            endTimeMs: try? p.value("endTime", as: Int64.self),
-            autoRenewFlag: (try? p.value("autoRenewFlag", as: Bool.self)) ?? false
+            specCode: specCode,
+            status: status,
+            remainingDays: Int(remainingDays),
+            startTimeMs: p.startTime,
+            endTimeMs: p.endTime,
+            autoRenewFlag: p.autoRenewFlag ?? false
         )
     }
 
     public static func parseAddon(_ data: Data) throws -> AddonSummary {
-        let p = try extractInnerPayload(data)
+        let p = try decodePayload(data)
         return AddonSummary(
-            remainingCredits: (try? p.value("remainingCredits", as: Double.self)) ?? 0,
-            totalCredits: (try? p.value("totalCredits", as: Double.self)) ?? 0,
-            activeCount: (try? p.value("activeCount", as: Int.self)) ?? 0
+            remainingCredits: p.remainingCredits ?? 0,
+            totalCredits: p.totalCredits ?? 0,
+            activeCount: Int(p.activeCount ?? 0)
         )
     }
 
@@ -135,35 +206,4 @@ public final class BlUsageService {
         return (await subRes, await addonRes)
     }
 
-    /// 抽取三层嵌套的最内层 data: data.DataV2.data.data
-    private static func extractInnerPayload(_ data: Data) throws -> [String: Any] {
-        struct ParseErr: Error {}
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let d1 = root["data"] as? [String: Any],
-              let d2 = d1["DataV2"] as? [String: Any],
-              let d3 = d2["data"] as? [String: Any],
-              let inner = d3["data"] as? [String: Any] else {
-            throw ParseErr()
-        }
-        return inner
-    }
-}
-
-// MARK: - [String:Any] 类型安全取值辅助
-private struct BlValueMismatch: Error {}
-
-private extension Dictionary where Key == String, Value == Any {
-    func value<T>(_ key: String, as type: T.Type) throws -> T {
-        guard let v = self[key] as? T else { throw BlValueMismatch() }
-        return v
-    }
-
-    /// 数值字段宽容取值:缺失/null/非数字 → nil;JSON 数字(Int/Double)经 NSNumber 统一转换。
-    func optionalDouble(_ key: String) -> Double? {
-        (self[key] as? NSNumber)?.doubleValue
-    }
-
-    func optionalInt64(_ key: String) -> Int64? {
-        (self[key] as? NSNumber)?.int64Value
-    }
 }
