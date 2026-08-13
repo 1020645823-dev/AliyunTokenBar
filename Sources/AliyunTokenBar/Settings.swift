@@ -49,7 +49,7 @@ private final class SettingsWindow {
 
 /// 设置页:通用 / 外观 / 通知 / 服务(系统设置式侧边栏导航)。
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, appearance, notifications, services
+    case general, appearance, notifications, services, history
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -57,6 +57,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return "外观"
         case .notifications: return "通知"
         case .services: return "服务"
+        case .history: return "历史"
         }
     }
     var icon: String {
@@ -65,6 +66,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return "paintpalette"
         case .notifications: return "bell"
         case .services: return "cloud"
+        case .history: return "chart.xyaxis.line"
         }
     }
 }
@@ -101,6 +103,7 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsPage()
         case .notifications: NotificationSettingsPage()
         case .services: ServicesSettingsPage()
+        case .history: HistorySettingsPage()
         }
     }
 }
@@ -165,6 +168,11 @@ private struct NotificationSettingsPage: View {
         Form {
             Section("用量告警") {
                 Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
+                Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)
+                if model.dailyDigestEnabled {
+                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi 用量发送一条通知。")
+                        .font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
+                }
                 if model.notificationsEnabled {
                     // 告警阈值(提示级):50/70/80
                     Picker("提示阈值", selection: Binding(
@@ -336,5 +344,175 @@ private struct ServicesSettingsPage: View {
     /// 说明文字(未配置引导/补充描述)。
     private func caption(_ text: String) -> some View {
         Text(text).font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
+    }
+}
+
+// MARK: - 历史(P2-B5)
+
+/// 历史分析页:各窗口趋势 sparkline + 近 7 天每日汇总 + CSV 导出。
+private struct HistorySettingsPage: View {
+    @StateObject private var model = TokenPlanModel.shared
+    @State private var exportDone = false
+    @State private var exportCount = 0
+
+    private var snapshots: [UsageSnapshot] {
+        model.historyStore.recent(1000)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
+                trendSection
+                dailySummarySection
+                exportSection
+            }
+            .padding(DesignTokens.spacingL)
+        }
+    }
+
+    // MARK: 趋势
+
+    private var trendSection: some View {
+        historyCard(icon: "chart.xyaxis.line", iconColor: .atbBlue, title: "用量趋势(近 40 个采样点)") {
+            trendRow("阿里云 · 5小时", color: .atbBlue, provider: "aliyun", window: "5h")
+            trendRow("阿里云 · 7天", color: .orange, provider: "aliyun", window: "7d")
+            if model.openCodeConfigured {
+                trendRow("OpenCode · 滚动", color: .purple, provider: "opencode", window: "rolling")
+                trendRow("OpenCode · 每周", color: .atbBlue, provider: "opencode", window: "weekly")
+                trendRow("OpenCode · 每月", color: .orange, provider: "opencode", window: "monthly")
+            }
+            if model.kimiConfigured {
+                trendRow("Kimi · 5小时", color: .teal, provider: "kimi", window: "5h")
+                trendRow("Kimi · 每周", color: .indigo, provider: "kimi", window: "weekly")
+            }
+        }
+    }
+
+    private func trendRow(_ label: String, color: Color, provider: String, window: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                Spacer()
+                LimitEstimateLabel(provider: provider, window: window)
+            }
+            UsageSparkline(provider: provider, window: window, color: color, height: 22)
+        }
+    }
+
+    // MARK: 每日汇总
+
+    private var dailySummarySection: some View {
+        historyCard(icon: "calendar", iconColor: .green, title: "每日汇总(近 7 天,各窗口峰值)") {
+            let rows = dailyRows()
+            if rows.isEmpty {
+                Text("暂无历史数据,积累中…")
+                    .font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
+                    GridRow {
+                        Text("日期").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
+                        Text("阿里云 7d").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
+                        Text("OpenCode 月").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
+                        Text("Kimi 周").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
+                    }
+                    ForEach(rows, id: \.date) { row in
+                        GridRow {
+                            Text(row.date).font(.system(size: 10, design: .monospaced)).foregroundStyle(.atbTextSecondary)
+                            Text(row.aliyun).font(.system(size: 10, design: .monospaced)).foregroundStyle(.atbTextPrimary)
+                            Text(row.opencode).font(.system(size: 10, design: .monospaced)).foregroundStyle(.atbTextPrimary)
+                            Text(row.kimi).font(.system(size: 10, design: .monospaced)).foregroundStyle(.atbTextPrimary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private struct DailyRow {
+        let date: String
+        let aliyun: String
+        let opencode: String
+        let kimi: String
+    }
+
+    private func dailyRows() -> [DailyRow] {
+        let cal = Calendar.current
+        let snaps = snapshots
+        guard !snaps.isEmpty else { return [] }
+        var byDay: [Date: [UsageSnapshot]] = [:]
+        for s in snaps {
+            let day = cal.startOfDay(for: s.timestamp)
+            byDay[day, default: []].append(s)
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MM-dd"
+        let days = byDay.keys.sorted().suffix(7)
+        return days.map { day in
+            let ss = byDay[day] ?? []
+            func maxOf(_ f: (UsageSnapshot) -> Int?) -> String {
+                let v = ss.compactMap(f).max()
+                return v.map { "\($0)%" } ?? "—"
+            }
+            return DailyRow(
+                date: fmt.string(from: day),
+                aliyun: maxOf { $0.aliyunOneWeek },
+                opencode: maxOf { $0.opencodeMonthly },
+                kimi: maxOf { $0.kimiWeekly }
+            )
+        }
+    }
+
+    // MARK: 导出
+
+    private var exportSection: some View {
+        historyCard(icon: "square.and.arrow.up", iconColor: .orange, title: "导出") {
+            HStack(spacing: DesignTokens.spacingM) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(snapshots.count) 条历史快照(最多保留 7 天)")
+                        .font(.system(size: 11)).foregroundStyle(.atbTextSecondary)
+                    if exportDone {
+                        Text("已导出 \(exportCount) 条到 CSV")
+                            .font(.system(size: 10)).foregroundStyle(.green)
+                    }
+                }
+                Spacer()
+                Button("导出 CSV") { exportCSV() }
+                    .buttonStyle(ATBPrimaryButtonStyle())
+            }
+        }
+    }
+
+    private func exportCSV() {
+        let csv = HistoryStore.csv(snapshots)
+        guard !csv.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "coding-token-bar-history.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            do {
+                try csv.write(to: url, atomically: true, encoding: .utf8)
+                exportCount = snapshots.count
+                exportDone = true
+            } catch {
+                AppLog.error("CSV 导出失败: \(error.localizedDescription)", category: .history)
+            }
+        }
+    }
+
+    private func historyCard(icon: String, iconColor: Color, title: String,
+                             @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
+            HStack(spacing: DesignTokens.spacingS) {
+                Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundStyle(iconColor)
+                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
+            }
+            content()
+        }
+        .padding(DesignTokens.spacingL)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
     }
 }

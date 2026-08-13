@@ -65,18 +65,21 @@ struct UsageSparkline: View {
 
 // MARK: - 耗尽预测标注
 
-/// 基于近 7 天阿里云 7d 序列线性外推「距达上限约 X 分钟」。
+/// 基于近 7 天指定窗口序列线性外推「距达上限约 X 分钟」(P2-B6:支持任意 provider/window)。
 /// 估算粗略(滚动窗口非固定周期),仅作提示。
 struct LimitEstimateLabel: View {
+    var provider: String = "aliyun"
+    var window: String = "7d"
     var store: HistoryStore = TokenPlanModel.shared.historyStore
     var body: some View {
         let snaps = store.recent(100)
-        if let mins = HistoryStore.estimateMinutesToLimit(snapshots: snaps) {
+        if let mins = HistoryStore.estimateMinutesToLimit(snapshots: snaps, provider: provider, window: window) {
             let text = mins >= 60 ? "约 \(mins / 60) 小时后达上限(估算)" : "约 \(mins) 分钟后达上限(估算)"
             Text(text)
                 .font(.system(size: 9))
                 .foregroundStyle(.orange)
                 .lineLimit(1)
+                .help("按近 7 天该窗口用量增速线性外推,仅供参考")
         }
     }
 }

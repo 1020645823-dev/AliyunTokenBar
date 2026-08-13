@@ -518,6 +518,23 @@ hs4.append(UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: 8
 hs4.append(UsageSnapshot(timestamp: baseT.addingTimeInterval(3600), aliyunFiveHour: nil, aliyunOneWeek: 70, opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil))
 check("history estimate nil when non-increasing",
       HistoryStore.estimateMinutesToLimit(snapshots: hs4.recent(100)) == nil)
+// P2-B6:泛化预测——任意 provider/window 序列
+let ocSnaps = [
+    UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: nil,
+                  opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: 20),
+    UsageSnapshot(timestamp: baseT.addingTimeInterval(3600), aliyunFiveHour: nil, aliyunOneWeek: nil,
+                  opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: 40),
+]
+check("history estimate generalized opencode monthly ~180min",
+      HistoryStore.estimateMinutesToLimit(snapshots: ocSnaps, provider: "opencode", window: "monthly") == 180)
+check("history estimate wrong window nil",
+      HistoryStore.estimateMinutesToLimit(snapshots: ocSnaps, provider: "opencode", window: "weekly") == nil)
+
+// P2-B5:CSV 输出(表头 + 行数 + 空值留空)
+let csvOut = HistoryStore.csv(ocSnaps)
+check("csv header", csvOut.hasPrefix("timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly"))
+check("csv row count", csvOut.split(separator: "\n").count == 3)
+check("csv empty cells", csvOut.split(separator: "\n")[1].components(separatedBy: ",").count == 9)
 
 // FileHistoryBackend 往返(Codable)
 let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("atb-test-\(Int.random(in: 0..<1_000_000)).json")

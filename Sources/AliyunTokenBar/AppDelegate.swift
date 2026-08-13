@@ -17,6 +17,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var visibilityMonitor = StatusItemVisibilityMonitor(requiredHiddenSamples: 3)
     private var themeChangeObserver: NSObjectProtocol?
 
+    /// P1-C10:URL scheme 触发刷新(codingtokenbar://refresh),供脚本/快捷指令调用。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "codingtokenbar" {
+            if url.host == nil || url.host == "refresh" {
+                AppLog.info("URL scheme 触发刷新: \(url.absoluteString)", category: .general)
+                Task { await TokenPlanModel.shared.refreshAll() }
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 单实例保护(P0-D2):双开会并发写 history.json + 双状态项 + 通知双发。
         // swift run 裸二进制无 bundle id,自动跳过;history 写入另有 flock 双保险。

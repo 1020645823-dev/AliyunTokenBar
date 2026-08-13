@@ -175,11 +175,6 @@ struct TokenPlanMenu: View {
                 AliyunAuthCard()
             } else {
                 usageSection
-                if model.sparklineEnabled {
-                    LimitEstimateLabel()
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.horizontal, 2)
-                }
                 if let sub = model.quota?.subscription { subscriptionRow(sub) }
                 if let addon = model.quota?.addon { addonRow(addon) }
             }
@@ -414,6 +409,8 @@ struct UsageCard: View {
             scaledProgressBar
             if showSparkline && !dataUnavailable {
                 UsageSparkline(provider: sparklineProvider, window: sparklineWindow, color: color, height: 16)
+                LimitEstimateLabel(provider: sparklineProvider, window: sparklineWindow)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS + 2)
@@ -655,8 +652,16 @@ struct BlVersionRow: View {
                     Button("更新") {
                         updating = true
                         BlAuthManager.updateBl()
-                        // 开了 Terminal 后,标记一下(实际完成需用户在终端看)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { updating = false }
+                        // P1-C5:在 Terminal 里安装后轮询版本变化(最长 2.5 分钟),完成后自动刷新版本行
+                        let before = model.blInstalledVersion
+                        Task {
+                            for _ in 0..<30 {
+                                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                                await model.checkBlVersion()
+                                if model.blInstalledVersion != before { break }
+                            }
+                            updating = false
+                        }
                     }
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(.atbBlue).buttonStyle(.plain)
                 }

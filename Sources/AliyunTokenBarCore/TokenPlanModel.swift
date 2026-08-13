@@ -77,6 +77,13 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var sparklineEnabled: Bool = true {
         didSet { UserDefaults.standard.set(sparklineEnabled, forKey: UserDefaultsKeys.sparklineEnabled) }
     }
+    /// 每日用量摘要通知(P2-B7,默认关)。开启后每天 20:00 汇总三家 Provider 用量。
+    @Published public var dailyDigestEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(dailyDigestEnabled, forKey: UserDefaultsKeys.dailyDigestEnabled)
+            scheduleDailyDigest()
+        }
+    }
     /// 菜单栏是否显示本机 CPU/内存(默认开)。
     @Published public var systemStatsEnabled: Bool = true {
         didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: UserDefaultsKeys.systemStatsEnabled) }
@@ -166,6 +173,9 @@ public final class TokenPlanModel: ObservableObject {
         if defaults.object(forKey: UserDefaultsKeys.systemStatsEnabled) != nil {
             systemStatsEnabled = defaults.bool(forKey: UserDefaultsKeys.systemStatsEnabled)
         }
+        if defaults.object(forKey: UserDefaultsKeys.dailyDigestEnabled) != nil {
+            dailyDigestEnabled = defaults.bool(forKey: UserDefaultsKeys.dailyDigestEnabled)
+        }
 
         credentialStore = KeychainCredentialStore(service: KeychainAccounts.service)
         openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
@@ -187,6 +197,7 @@ public final class TokenPlanModel: ObservableObject {
     public func startTimer() {
         startSystemObservers()                                  // 唤醒/网络(P1-C2/C3)
         BlEphemeralConfig.sweepStaleTempDirectories()            // P1-C8 崩溃泄漏清扫
+        scheduleDailyDigest()                                    // P2-B7
         resetTimer()
         ensureCredentialLoaded()
         Task { await checkAuthAndRefresh() }
@@ -512,6 +523,43 @@ public final class TokenPlanModel: ObservableObject {
         }
     }
 
+    /// P2-B7:每天 20:00 汇总三家 Provider 用量发一条摘要通知。
+    /// 进程未运行到点即错过(温和功能,不强求);关开关取消。
+    private var digestTask: Task<Void, Never>?
+
+    private func scheduleDailyDigest() {
+        digestTask?.cancel()
+        guard dailyDigestEnabled else { return }
+        digestTask = Task { [weak self] in
+            guard let self else { return }
+            let now = Date()
+            guard let next = Calendar.current.nextDate(
+                after: now, matching: DateComponents(hour: 20, minute: 0), matchingPolicy: .nextTime
+            ) else { return }
+            try? await Task.sleep(nanoseconds: UInt64(next.timeIntervalSince(now) * 1_000_000_000))
+            guard self.dailyDigestEnabled, !Task.isCancelled else { return }
+            self.sendDailyDigest()
+        }
+    }
+
+    private func sendDailyDigest() {
+        var parts: [String] = []
+        if let q = quota {
+            parts.append("阿里云 5h \(q.usage.fiveHour.percentageInt)% · 7d \(q.usage.oneWeek.percentageInt)%")
+        }
+        if let o = openCodeQuota {
+            parts.append("OpenCode 滚动 \(o.rolling.pct)% · 周 \(o.weekly.pct)% · 月 \(o.monthly.pct)%")
+        }
+        if let k = kimiQuota {
+            var line = "Kimi 5h \(k.fiveHour.pctInt)% · 周 \(k.weekly.pctInt)%"
+            if let m = k.monthly { line += " · 月 \(m.pctInt)%" }
+            parts.append(line)
+        }
+        guard !parts.isEmpty else { return }
+        AppLog.info("发送每日用量摘要", category: .general)
+        infoNotifySink?("今日用量摘要", parts.joined(separator: "\n"))
+    }
+
     /// 订阅到期预警(P1-B2):剩余 ≤7 天时每天最多温和提醒一次。
     /// 用独立 UserDefaults 键记"今日已提醒",避免每次刷新重复轰炸。
     private func checkSubscriptionExpiry() {
@@ -579,14 +627,18 @@ public final class TokenPlanModel: ObservableObject {
         guard !isReloginWatching else { return }
         isReloginWatching = true
         Task {
-            for _ in 0..<36 {
+            var done = false
+            // P1-C9:监听延长到 5 分钟(60×5s),浏览器扫码慢也能赶上
+            for _ in 0..<60 {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 if await BlAuthManager.currentAuthState() == .ok {
                     authState = .ok
                     await refresh()
+                    done = true
                     break
                 }
             }
+            if !done { lastError = "浏览器登录超时(5 分钟),可点击重新登录再试" }
             isReloginWatching = false
         }
     }

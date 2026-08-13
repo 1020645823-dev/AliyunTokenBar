@@ -211,18 +211,24 @@ public final class HistoryStore {
         }
     }
 
-    /// 基于近 N 条有效点线性外推「距达 100% 还需多少分钟」。
+    /// 基于近 N 条有效点线性外推「距达 100% 还需多少分钟」(P2-B6 泛化)。
+    /// provider/window 指定目标序列(默认阿里云 7d,兼容旧调用)。
     /// 用两点间斜率(百分比/小时)推算;数据不足或斜率非正返回 nil。
     /// 结果仅粗略估算(滚动窗口非固定周期),UI 应标注「估算」。
-    public static func estimateMinutesToLimit(snapshots: [UsageSnapshot]) -> Int? {
-        // 取最近 ≤12 条且非空、且时间严格递增的有效点
-        let pts: [(t: Date, pct: Int)] = snapshots.suffix(12).compactMap { snap in
-            // 默认按阿里云 7d(最长窗口)估算;调用方按窗口传对应序列更准
-            guard let pct = snap.aliyunOneWeek else { return nil }
-            return (snap.timestamp, pct)
+    public static func estimateMinutesToLimit(
+        snapshots: [UsageSnapshot],
+        provider: String = "aliyun",
+        window: String = "7d"
+    ) -> Int? {
+        let values = series(snapshots, provider: provider, window: window)
+        guard values.count == snapshots.count else { return nil }
+        // 有效点(非 nil)→ 取最近 ≤12 条
+        let pts: [(t: Date, pct: Int)] = zip(snapshots, values).compactMap { snap, v in
+            v.map { (snap.timestamp, $0) }
         }
-        guard pts.count >= 2 else { return nil }
-        let first = pts.first!, last = pts.last!
+        let recent = Array(pts.suffix(12))
+        guard recent.count >= 2 else { return nil }
+        let first = recent.first!, last = recent.last!
         let hours = last.t.timeIntervalSince(first.t) / 3600
         guard hours > 0 else { return nil }
         let deltaPct = Double(last.pct - first.pct)
@@ -230,5 +236,22 @@ public final class HistoryStore {
         let remainingPct = Double(100 - last.pct)
         guard remainingPct > 0 else { return 0 }               // 已达/超限 → 0
         return Int((remainingPct / (deltaPct / hours)) * 60)
+    }
+
+    /// 快照序列 → CSV(P2-B5)。首行表头,ISO8601 时间戳,空值留空。
+    public static func csv(_ snapshots: [UsageSnapshot]) -> String {
+        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly"
+        let fmt = ISO8601DateFormatter()
+        var rows: [String] = [header]
+        for s in snapshots {
+            func cell(_ v: Int?) -> String { v.map(String.init) ?? "" }
+            rows.append([
+                fmt.string(from: s.timestamp),
+                cell(s.aliyunFiveHour), cell(s.aliyunOneWeek),
+                cell(s.opencodeRolling), cell(s.opencodeWeekly), cell(s.opencodeMonthly),
+                cell(s.kimiFiveHour), cell(s.kimiWeekly), cell(s.kimiMonthly),
+            ].joined(separator: ","))
+        }
+        return rows.joined(separator: "\n")
     }
 }

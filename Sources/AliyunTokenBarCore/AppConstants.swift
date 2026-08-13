@@ -18,6 +18,8 @@ public enum UserDefaultsKeys {
     public static let systemStatsEnabled = "systemStatsEnabled"
     /// 阿里云套餐到期提醒"今日已提醒"标记(P1-B2)
     public static let subscriptionExpiryWarnedDay = "subscriptionExpiryWarnedDay"
+    /// 每日用量摘要开关(P2-B7)
+    public static let dailyDigestEnabled = "dailyDigestEnabled"
 }
 
 public enum KeychainAccounts {
