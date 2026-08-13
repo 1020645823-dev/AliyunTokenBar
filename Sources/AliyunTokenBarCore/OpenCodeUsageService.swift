@@ -57,24 +57,17 @@ public final class OpenCodeUsageService {
 
     /// 从页面 HTML 提取三窗口用量。
     /// 正则匹配 `rollingUsage:$R[N]={status:"ok",resetInSec:12345,usagePercent:43}`。
+    ///
+    /// P1-D6 加固:不再假设键序——先定位 `key:$R[n]={...}` 块,再在块内**独立**
+    /// 提取各字段(官方改键序/加空格不再整片失效);并校验 status=="ok"
+    /// (登录态异常按 .parse 失败呈现,不静默展示旧值)。
     public static func parse(_ html: String) -> OpenCodeQuota? {
         var rolling: OpenCodeWindow?
         var weekly: OpenCodeWindow?
         var monthly: OpenCodeWindow?
 
         for (name, key) in windowKeys {
-            // 正则:捕获 status / resetInSec / usagePercent
-            let pattern = "\(NSRegularExpression.escapedPattern(for: key)):\\$R\\[\\d+\\]=\\{status:\"([^\"]*)\",resetInSec:(\\d+),usagePercent:(\\d+)\\}"
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-            let range = NSRange(html.startIndex..., in: html)
-            guard let m = regex.firstMatch(in: html, range: range) else { return nil }
-
-            let status = capture(m, at: 1, in: html)      // "ok"
-            _ = status
-            let resetInSec = Int64(capture(m, at: 2, in: html) ?? "0") ?? 0
-            let pct = Int(capture(m, at: 3, in: html) ?? "0") ?? 0
-
-            let window = OpenCodeWindow(pct: pct, resetInSec: resetInSec)
+            guard let window = parseWindow(html, key: key) else { return nil }
             switch name {
             case "rolling": rolling = window
             case "weekly": weekly = window
@@ -87,9 +80,34 @@ public final class OpenCodeUsageService {
         return OpenCodeQuota(rolling: r, weekly: w, monthly: mth)
     }
 
-    private static func capture(_ match: NSTextCheckingResult, at idx: Int, in text: String) -> String? {
-        guard let range = Range(match.range(at: idx), in: text) else { return nil }
-        return String(text[range])
+    /// 单窗口解析:块定位 + 字段独立提取。
+    private static func parseWindow(_ html: String, key: String) -> OpenCodeWindow? {
+        let k = NSRegularExpression.escapedPattern(for: key)
+        let blockPattern = "\(k):\\$R\\[\\d+\\]=\\{([^}]*)\\}"
+        guard let blockRegex = try? NSRegularExpression(pattern: blockPattern),
+              let m = blockRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let r = Range(m.range(at: 1), in: html) else { return nil }
+        let block = String(html[r])
+        guard field("status", in: block) == "ok" else { return nil }
+        guard let reset = fieldInt("resetInSec", in: block),
+              let pct = fieldInt("usagePercent", in: block) else { return nil }
+        return OpenCodeWindow(pct: Int(pct), resetInSec: reset)
+    }
+
+    private static func field(_ name: String, in block: String) -> String? {
+        let pattern = "\(NSRegularExpression.escapedPattern(for: name)):\\s*\"([^\"]*)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)),
+              let r = Range(m.range(at: 1), in: block) else { return nil }
+        return String(block[r])
+    }
+
+    private static func fieldInt(_ name: String, in block: String) -> Int64? {
+        let pattern = "\(NSRegularExpression.escapedPattern(for: name)):\\s*(\\d+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)),
+              let r = Range(m.range(at: 1), in: block) else { return nil }
+        return Int64(String(block[r]))
     }
 
     // MARK: - 登录辅助

@@ -152,7 +152,7 @@ public enum KimiUsageService {
         accounts[0]["credential"] = cred
         root["accounts"] = accounts
         if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
-            try? out.write(to: kimiCodeBarCredentialsURL, options: .atomic)
+            atomicReplaceWrite(out, to: kimiCodeBarCredentialsURL)
         }
     }
 
@@ -163,7 +163,26 @@ public enum KimiUsageService {
         root["refresh_token"] = token.refreshToken
         root["expires_at"] = token.expiresAt
         if let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
-            try? out.write(to: kimiCliCredentialsURL, options: .atomic)
+            atomicReplaceWrite(out, to: kimiCliCredentialsURL)
+        }
+    }
+
+    /// P1-D5:外部凭据文件回写保护——先备份旧文件(.bak),再经临时文件原子替换。
+    /// 与 KimiCodeBar/CLI 并发写时保证文件永不出现在写一半的状态;失败只记日志,
+    /// 不影响本 App 自身的拉取(下一轮重新读旧 token 并再试刷新)。
+    private static func atomicReplaceWrite(_ data: Data, to url: URL) {
+        do {
+            let dir = url.deletingLastPathComponent()
+            let tmp = dir.appendingPathComponent(".(url.lastPathComponent).tmp-(UUID().uuidString)")
+            try data.write(to: tmp, options: .atomic)
+            let bak = dir.appendingPathComponent(url.lastPathComponent + ".bak")
+            if FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.removeItem(at: bak)
+                try? FileManager.default.copyItem(at: url, to: bak)
+            }
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp, backupItemName: nil, options: [])
+        } catch {
+            AppLog.warning("Kimi 凭据回写失败(不影响本 App 拉取): (error.localizedDescription)", category: .kimi)
         }
     }
 

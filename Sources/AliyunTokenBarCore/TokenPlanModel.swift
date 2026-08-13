@@ -488,6 +488,7 @@ public final class TokenPlanModel: ObservableObject {
 
         // 预渲染菜单栏图标(数据更新后,主线程上下文稳定)
         prerenderIcon()
+        checkSubscriptionExpiry()
 
         guard notificationsEnabled else { return }
         var entries: [(WatchKey, Int)] = []
@@ -509,6 +510,20 @@ public final class TokenPlanModel: ObservableObject {
         for (key, band) in notificationTracker.evaluate(entries, config: thresholdConfig) {
             notifySink?(key, band)
         }
+    }
+
+    /// 订阅到期预警(P1-B2):剩余 ≤7 天时每天最多温和提醒一次。
+    /// 用独立 UserDefaults 键记"今日已提醒",避免每次刷新重复轰炸。
+    private func checkSubscriptionExpiry() {
+        guard let sub = quota?.subscription,
+              (0...7).contains(sub.remainingDays) else { return }
+        let key = "subscriptionExpiryWarnedDay"
+        let defaults = UserDefaults.standard
+        let today = Calendar.current.startOfDay(for: Date())
+        if let warned = defaults.object(forKey: key) as? Date, warned == today { return }
+        defaults.set(today, forKey: key)
+        AppLog.warning("阿里云套餐剩余 \(sub.remainingDays) 天,触发到期提醒", category: .aliyun)
+        infoNotifySink?("阿里云套餐即将到期", "套餐剩余 \(sub.remainingDays) 天,请及时续费。")
     }
 
     /// 登出 OpenCode:清凭据 + 重置状态 + 清通知记忆(下次登录重新走首次通知)。

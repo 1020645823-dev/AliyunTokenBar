@@ -138,6 +138,15 @@ check("opencode rolling 含 3小时", oc?.rolling.timeUntilReset.contains("3小�
 let ocPartial = "<script>rollingUsage:$R[1]={status:\"ok\",resetInSec:1,usagePercent:5}</script>"
 check("opencode partial -> nil", OpenCodeUsageService.parse(ocPartial) == nil)
 
+// P1-D6:键序无关 + 空格容忍 + status 校验(页面改版不整体失效)
+let ocReordered = "<script>weeklyUsage:$R[2]={usagePercent:43, resetInSec:777, status:\"ok\"}, rollingUsage:$R[1]={resetInSec:12345,status:\"ok\",usagePercent:22}, monthlyUsage:$R[3]={usagePercent:98,status:\"ok\",resetInSec:888}</script>"
+let ocR = OpenCodeUsageService.parse(ocReordered)
+check("opencode reordered keys parses", ocR?.rolling.pct == 22 && ocR?.rolling.resetInSec == 12345)
+check("opencode reordered weekly", ocR?.weekly.pct == 43)
+check("opencode reordered monthly", ocR?.monthly.pct == 98)
+let ocBadStatus = "<script>weeklyUsage:$R[2]={status:\"error\",resetInSec:777,usagePercent:43}, rollingUsage:$R[1]={status:\"ok\",resetInSec:12345,usagePercent:22}, monthlyUsage:$R[3]={status:\"ok\",resetInSec:888,usagePercent:98}</script>"
+check("opencode bad status -> nil", OpenCodeUsageService.parse(ocBadStatus) == nil)
+
 // rolling 空窗:服务端恒返完整 5h 时长(18000)→ 隐藏倒计时(2026-08-03 用户反馈回归)
 check("opencode rolling empty hides reset", OpenCodeWindow(pct: 0, resetInSec: 18000).rollingResetText == nil)
 check("opencode rolling active shows reset", OpenCodeWindow(pct: 3, resetInSec: 3600).rollingResetText?.contains("1小时") == true)

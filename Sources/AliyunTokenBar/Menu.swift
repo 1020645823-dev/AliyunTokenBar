@@ -181,6 +181,7 @@ struct TokenPlanMenu: View {
                         .padding(.horizontal, 2)
                 }
                 if let sub = model.quota?.subscription { subscriptionRow(sub) }
+                if let addon = model.quota?.addon { addonRow(addon) }
             }
         }
     }
@@ -269,16 +270,67 @@ struct TokenPlanMenu: View {
     }
 
     private func subscriptionRow(_ sub: SubscriptionDetail) -> some View {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+            HStack(spacing: DesignTokens.spacingS) {
+                Text("\(sub.specDisplay) 套餐").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                tagPill(sub.statusDisplay, color: .green)
+                if sub.autoRenewFlag {
+                    tagPill("自动续费", color: .atbBlue)
+                }
+                Spacer()
+                let days = sub.remainingDays
+                Text(days <= 0 ? "已到期" : "剩余 \(days) 天")
+                    .font(.system(size: 12, weight: days <= 7 ? .semibold : .regular))
+                    .foregroundStyle(days <= 0 ? .atbCritical : (days <= 7 ? .orange : .atbTextSecondary))
+            }
+            if let end = sub.endTimeMs.map({ Self.detailDateText(TimeInterval($0) / 1000) }) {
+                HStack(spacing: DesignTokens.spacingXS) {
+                    Image(systemName: "calendar").font(.system(size: 9)).foregroundStyle(.atbTextTertiary)
+                    Text("有效期至 \(end)")
+                        .font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+                }
+            }
+        }
+        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS + 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+    }
+
+    /// 加购资源包行:此前数据拉取了但从未展示(P1-B1)。
+    private func addonRow(_ addon: AddonSummary) -> some View {
         HStack(spacing: DesignTokens.spacingS) {
-            Text("\(sub.specDisplay) 套餐").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
-            tagPill(sub.statusDisplay, color: .green)
+            Image(systemName: "wallet.pass").font(.system(size: 12)).foregroundStyle(.orange)
+            Text("加购资源包").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
+            Text("\(addon.activeCount) 个生效")
+                .font(.system(size: 9, weight: .medium)).foregroundStyle(.atbTextSecondary)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Color.atbSeparator)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 2))
             Spacer()
-            Text("剩余 \(sub.remainingDays) 天").font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+            if addon.totalCredits > 0 {
+                Text("剩余 \(Self.creditsText(addon.remainingCredits)) / \(Self.creditsText(addon.totalCredits))")
+                    .font(.system(size: 12)).monospacedDigit().foregroundStyle(.atbTextSecondary)
+            } else {
+                Text("—").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
+            }
         }
         .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS + 2)
         .background(Color.atbCardBackground)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
         .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+    }
+
+    /// credits 数值展示:整数不带小数,其余保留 1 位。
+    private static func creditsText(_ v: Double) -> String {
+        v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v)
+    }
+
+    private static func detailDateText(_ seconds: TimeInterval) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date(timeIntervalSince1970: seconds))
     }
 
     private func tagPill(_ text: String, color: Color) -> some View {

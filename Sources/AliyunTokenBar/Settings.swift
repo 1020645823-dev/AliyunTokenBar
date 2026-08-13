@@ -193,6 +193,8 @@ private struct ServicesSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var showOpenCodeLogin = false
     @State private var showKimiLogin = false
+    @State private var manualWorkspaceID = ""
+    @State private var manualWorkspaceError: String?
 
     var body: some View {
         ScrollView {
@@ -252,14 +254,56 @@ private struct ServicesSettingsPage: View {
         cardContainer(icon: "bolt.fill", iconColor: .purple, title: "OpenCode Go") {
             if model.openCodeConfigured {
                 statusRow("已登录 (workspace: \(model.openCodeWorkspaceID.prefix(12))...)")
-                Button("登出") { model.clearOpenCode() }
-                    .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                manualWorkspaceRow
+                Button("登出") {
+                    model.clearOpenCode()
+                    OpenCodeWebCleanup.clearCookies()   // P1-D7:清共享 WebView 登录态
+                }
+                .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
             } else {
                 Button("登录 OpenCode") { showOpenCodeLogin = true }
                     .buttonStyle(ATBPrimaryButtonStyle())
                 caption("点击登录,在弹出窗口完成 OpenCode 授权。cookie 会过期,届时可重新登录。")
+                // P1-B3:登录成功但 workspace 发现失败时,可在这里手动填写(此前提示的死胡同)
+                manualWorkspaceRow
             }
         }
+    }
+
+    /// 手动填写/修改 workspace ID(P1-B3)。
+    private var manualWorkspaceRow: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+            HStack(spacing: DesignTokens.spacingS) {
+                TextField("workspace ID (wrk_xxx)", text: $manualWorkspaceID)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .onAppear { manualWorkspaceID = model.openCodeWorkspaceID }
+                Button("保存") { saveManualWorkspace() }
+                    .buttonStyle(ATBTextButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
+            }
+            if let manualWorkspaceError {
+                Text(manualWorkspaceError)
+                    .font(.system(size: 10)).foregroundStyle(.atbCritical)
+            } else {
+                caption("登录后自动发现失败时可手动填写;保存后立即拉取用量。")
+            }
+        }
+    }
+
+    private func saveManualWorkspace() {
+        let ws = manualWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ws.hasPrefix("wrk_") else {
+            manualWorkspaceError = "ID 应以 wrk_ 开头"
+            return
+        }
+        guard !model.openCodeCookie.isEmpty else {
+            manualWorkspaceError = "请先登录 OpenCode 获取凭据"
+            return
+        }
+        manualWorkspaceError = nil
+        model.openCodeWorkspaceID = ws
+        Task { await model.refreshOpenCode() }
     }
 
     // MARK: 卡片零件

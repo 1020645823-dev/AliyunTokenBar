@@ -69,6 +69,17 @@ struct OpenCodeLoginView: View {
     }
 }
 
+/// 登出辅助(P1-D7):清 WKWebsiteDataStore 里 opencode.ai 的 cookies。
+/// 登出只删 Keychain 会残留共享 WebView 的登录态(隐私 + 误判登录)。
+enum OpenCodeWebCleanup {
+    static func clearCookies() {
+        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: [WKWebsiteDataTypeCookies]) { records in
+            let opencode = records.filter { $0.displayName.contains("opencode.ai") }
+            WKWebsiteDataStore.default().removeData(ofTypes: [WKWebsiteDataTypeCookies], for: opencode) {}
+        }
+    }
+}
+
 /// WKWebView 包装:加载 opencode.ai/auth,监听 cookie + URL 变化。
 struct OpenCodeWebView: NSViewRepresentable {
     let onLoginSuccess: (String) -> Void
