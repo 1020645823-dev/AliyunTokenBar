@@ -65,53 +65,91 @@ public enum ProcessRunner {
             return Result(exitCode: -1, stdout: "", stderr: error.localizedDescription, timedOut: false)
         }
 
-        // 后台线程读管道:与 waitUntilExit 并行,防 64KB 管道缓冲写满死锁
+        // 热修复(2026-08-13):管道读改非阻塞轮询——
+        // 旧实现 readDataToEndOfFile + DispatchGroup.wait 在「孙进程继承管道」
+        // 场景(bl/npm 偶发 fork 子进程)会永久阻塞,runAsync 永不返回,
+        // isLoading 恒真 = 面板一直 loading。非阻塞方案在任何情况下都能返回。
+        // 读端设 O_NONBLOCK,用 POSIX read 轮询——
+        // 不用 NSFileHandle.availableData:非阻塞描述符上遇 EAGAIN 会抛
+        // NSFileHandleOperationException(实测 crash)。
+        let outFD = outPipe.fileHandleForReading.fileDescriptor
+        let errFD = errPipe.fileHandleForReading.fileDescriptor
+        let outFlags = fcntl(outFD, F_GETFL)
+        if outFlags >= 0 { _ = fcntl(outFD, F_SETFL, outFlags | O_NONBLOCK) }
+        let errFlags = fcntl(errFD, F_GETFL)
+        if errFlags >= 0 { _ = fcntl(errFD, F_SETFL, errFlags | O_NONBLOCK) }
+
         var outData = Data()
         var errData = Data()
-        let outLock = NSLock()
-        let errLock = NSLock()
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global(qos: .utility).async {
-            let d = outPipe.fileHandleForReading.readDataToEndOfFile()
-            outLock.lock(); outData = d; outLock.unlock()
-            group.leave()
-        }
-        group.enter()
-        DispatchQueue.global(qos: .utility).async {
-            let d = errPipe.fileHandleForReading.readDataToEndOfFile()
-            errLock.lock(); errData = d; errLock.unlock()
-            group.leave()
-        }
-
-        // 超时看护:SIGTERM → 2s → SIGKILL
-        var timedOut = false
-        if timeout > 0 {
-            let deadline = Date().addingTimeInterval(timeout)
-            while proc.isRunning {
-                if Date() >= deadline {
-                    timedOut = true
-                    proc.terminate()
-                    let killDeadline = Date().addingTimeInterval(2)
-                    while proc.isRunning, Date() < killDeadline {
-                        Thread.sleep(forTimeInterval: 0.05)
-                    }
-                    if proc.isRunning { Darwin.kill(proc.processIdentifier, SIGKILL) }
-                    break
-                }
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-        }
-        proc.waitUntilExit()
-        group.wait()   // 等读线程收尾,确保拿到完整输出
-
-        outLock.lock(); defer { outLock.unlock() }
-        errLock.lock(); defer { errLock.unlock() }
         let maxBytes = max(1, maxOutputBytes)
+        let deadline = Date().addingTimeInterval(timeout)
+        var timedOut = false
+
+        while true {
+            // 排空管道(非阻塞,EAGAIN/EOF 立即返回)
+            drainNonBlocking(fd: outFD, into: &outData, maxBytes: maxBytes)
+            drainNonBlocking(fd: errFD, into: &errData, maxBytes: maxBytes)
+
+            if !proc.isRunning {
+                // 进程已退出:有限轮排空(孙进程可能仍持有管道,最多 ~0.5s 后放弃)
+                var rounds = 10
+                while rounds > 0 {
+                    let before = outData.count + errData.count
+                    drainNonBlocking(fd: outFD, into: &outData, maxBytes: maxBytes)
+                    drainNonBlocking(fd: errFD, into: &errData, maxBytes: maxBytes)
+                    if outData.count + errData.count == before {
+                        rounds -= 1
+                        Thread.sleep(forTimeInterval: 0.05)
+                    } else {
+                        rounds = 10
+                    }
+                }
+                break
+            }
+
+            if timeout > 0, Date() >= deadline {
+                timedOut = true
+                proc.terminate()                       // SIGTERM
+                let killDeadline = Date().addingTimeInterval(2)
+                while proc.isRunning, Date() < killDeadline {
+                    drainNonBlocking(fd: outFD, into: &outData, maxBytes: maxBytes)
+                    drainNonBlocking(fd: errFD, into: &errData, maxBytes: maxBytes)
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if proc.isRunning {
+                    Darwin.kill(proc.processIdentifier, SIGKILL)
+                }
+                // 最多再等 1s 确认退出;无论死活都收尾返回(看护自身不死锁)
+                let confirmDeadline = Date().addingTimeInterval(1)
+                while proc.isRunning, Date() < confirmDeadline {
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if !proc.isRunning { proc.waitUntilExit() }
+        let code = timedOut ? -1 : (proc.isRunning ? -1 : proc.terminationStatus)
         let sOut = String(data: outData.prefix(maxBytes), encoding: .utf8) ?? ""
         let sErr = String(data: errData.prefix(maxBytes), encoding: .utf8) ?? ""
-        let code = timedOut ? -1 : proc.terminationStatus
         return Result(exitCode: code, stdout: sOut, stderr: sErr, timedOut: timedOut)
+    }
+
+    /// 非阻塞排空一个管道读端:EAGAIN/EWOULDBLOCK/EOF 立即返回,不抛异常。
+    private static func drainNonBlocking(fd: Int32, into data: inout Data, maxBytes: Int) {
+        guard data.count < maxBytes else { return }
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        while data.count < maxBytes {
+            let n = read(fd, &buf, buf.count)
+            if n > 0 {
+                data.append(contentsOf: buf.prefix(n).prefix(maxBytes - data.count))
+                continue
+            }
+            // n == 0 → EOF;-1 且 EAGAIN/EWOULDBLOCK/EINTR → 当前无数据;其余 → 放弃
+            if n < 0, errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { return }
+            return
+        }
     }
 
     /// async 包装:阻塞执行移出协作线程池。

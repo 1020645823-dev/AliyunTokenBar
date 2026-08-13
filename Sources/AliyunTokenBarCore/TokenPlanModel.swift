@@ -115,6 +115,10 @@ public final class TokenPlanModel: ObservableObject {
     private var resetBoundaryTask: Task<Void, Never>?
     private var consecutiveFailures = 0
     private var currentIntervalMinutes = 0
+    /// 上次自动刷新完成时刻 + 最小间隔(P1 热修复第二道防线:定时/唤醒/网络/重置边界
+    /// 等自动路径 30s 内只放行一次,任何调度回环都无法把服务端打爆)。
+    private var lastAutoRefreshAt: Date = .distantPast
+    private let minAutoRefreshSpacing: TimeInterval = 30
 
     /// 冷却窗口：刷新间隔的 2 倍，确保至少跳过一个 timer tick（最小 10 分钟）。
     private var autoRecoveryCooldownMinutes: Int {
@@ -247,6 +251,11 @@ public final class TokenPlanModel: ObservableObject {
 
     /// C6:按下次用量重置时刻排一次精确刷新(重置后 10s 捕捉归零)。
     /// 每次成功刷新后重排;窗口不返回重置时间时不排。
+    ///
+    /// ⚠️ 热修复(2026-08-13 用户反馈"一直 loading/不断刷新"):睡眠被下一次调度
+    /// cancel 后,`try? await Task.sleep` 吞掉 CancellationError 会**继续往下走**,
+    /// 于是「取消→立即刷新→成功→重新调度→再取消」形成每秒一次的自我维持热循环,
+    /// 把服务端打爆且 isLoading 恒真。修复:取消即退出,绝不因取消而触发刷新。
     private func scheduleResetBoundaryRefresh() {
         resetBoundaryTask?.cancel()
         guard let q = quota else { return }
@@ -262,7 +271,12 @@ public final class TokenPlanModel: ObservableObject {
         resetBoundaryTask = Task { [weak self] in
             let delay = fireAt - Date().timeIntervalSince1970
             guard delay > 0 else { return }
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return   // 被新调度取消:静默退出,绝不触发刷新(热循环根因)
+            }
+            guard !Task.isCancelled else { return }
             AppLog.info("到达用量重置边界,立即刷新", category: .aliyun)
             await self?.refreshAll()
         }
@@ -650,6 +664,12 @@ public final class TokenPlanModel: ObservableObject {
     /// 否则沿用上次缓存。失败时:auth 错误 → 置 .expired;其他 → 保留旧数据 + 记录错误。
     public func refresh() async {
         guard !isLoading else { return }
+        // 自动路径节流:30s 内只放行一次(热修复第二道防线;手动 refreshFull 不受限)
+        guard Date().timeIntervalSince(lastAutoRefreshAt) >= minAutoRefreshSpacing else {
+            AppLog.debug("自动刷新节流跳过(距上次 \(String(format: "%.0f", Date().timeIntervalSince(lastAutoRefreshAt)))s)", category: .aliyun)
+            return
+        }
+        lastAutoRefreshAt = Date()
         isLoading = true
         let start = Date()
         defer { isLoading = false }

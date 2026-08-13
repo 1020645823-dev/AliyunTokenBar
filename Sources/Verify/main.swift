@@ -438,6 +438,16 @@ check("pr slow times out", slowR.timedOut && slowR.exitCode == -1)
 let badR = ProcessRunner.run(executable: URL(fileURLWithPath: "/nonexistent/xyz"),
                              arguments: [], timeout: 2)
 check("pr launch failure nonzero", badR.exitCode == -1 && !badR.stderr.isEmpty)
+// 热修复回归:孙进程继承管道(sh 退出后 sleep 仍持有 stdout)——
+// 旧实现 readDataToEndOfFile + group.wait 会阻塞到孙进程结束;新实现必须数秒内返回
+let grandchildStart = Date()
+let gcR = ProcessRunner.run(executable: URL(fileURLWithPath: "/bin/sh"),
+                            arguments: ["-c", "echo hello; sleep 30 &"],
+                            timeout: 5)
+let gcElapsed = Date().timeIntervalSince(grandchildStart)
+check("pr grandchild returns fast (<4s)", gcElapsed < 4)
+check("pr grandchild exit 0", gcR.exitCode == 0 && !gcR.timedOut)
+check("pr grandchild stdout kept", gcR.stdout.contains("hello"))
 
 
 // --- HistoryStore(内存后端 + 固定时钟)---
