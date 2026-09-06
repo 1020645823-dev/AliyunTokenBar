@@ -80,16 +80,20 @@ public final class BlUsageService {
         return payload
     }
 
-    /// 解析 usage 响应。宽容解析:窗口为空(如 5h 内零用量)时服务端可能返回
-    /// null/缺失字段,官方控制台该状态显示 0%;这里同样按 0 处理,避免严格解析
-    /// 把整次更新打成 .parse 失败、UI 静默保留几小时前的旧值(2026-08-03 事故根因)。
+    /// 解析 usage 响应。宽容解析:
+    /// - 5h 两个字段均缺失/null → fiveHour == nil(2026-08-15 官方限时取消 5h 窗口后的
+    ///   常态;也可能是窗口存在但零用量的旧空窗形态,两种对展示语义等价:隐藏 5h 统计);
+    ///   任一字段存在 → 窗口有效,缺失侧按 0(零用量正常显示,不隐藏)。
+    /// - 7d 字段缺失/null → 按 0(官方控制台同款,避免整次更新 .parse;
+    ///   2026-08-03 事故根因)。
     public static func parseUsage(_ data: Data) throws -> UsageWindows {
         let p = try decodePayload(data)
+        let fiveHour: UsageDetail? = (p.per5HourPercentage != nil || p.per5HourResetTime != nil)
+            ? UsageDetail(percentageRaw: p.per5HourPercentage ?? 0,
+                          resetTimeMs: p.per5HourResetTime ?? 0)
+            : nil
         return UsageWindows(
-            fiveHour: UsageDetail(
-                percentageRaw: p.per5HourPercentage ?? 0,
-                resetTimeMs: p.per5HourResetTime ?? 0
-            ),
+            fiveHour: fiveHour,
             oneWeek: UsageDetail(
                 percentageRaw: p.per1WeekPercentage ?? 0,
                 resetTimeMs: p.per1WeekResetTime ?? 0

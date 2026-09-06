@@ -24,18 +24,54 @@ extension ShapeStyle where Self == Color {
 }
 
 // MARK: - 设计 token(间距/圆角/描边统一)
-
+//
+// 「Hyperion v2」设计语言(v1:中性灰卡 + 微阴影;v2:叠加 Hero 层 + 品牌竖纹):
+//   - spacing:扩展 6/20 节点;Hero 卡用更大内边距
+//   - radiusXL 用于外层容器(分组卡);radiusM/S 保持原节奏
+//   - 新增 strokeHairline:卡片内描边,使卡与材质底产生微弱边界
 enum DesignTokens {
-    /// 间距阶梯(4pt 基准)
+    /// 间距阶梯(4pt 基准)+ XL/XXL 用于 Hero 大卡
+    static let spacingXXS: CGFloat = 2
     static let spacingXS: CGFloat = 4
     static let spacingS: CGFloat = 8
     static let spacingM: CGFloat = 12
     static let spacingL: CGFloat = 16
-    static let spacingXL: CGFloat = 24
+    static let spacingXL: CGFloat = 20   // Hero 卡水平内边距
+    static let spacingXXL: CGFloat = 24
     /// 圆角阶梯
     static let radiusS: CGFloat = 6   // tag、小按钮
     static let radiusM: CGFloat = 10  // 用量卡、主按钮
     static let radiusL: CGFloat = 14  // 容器卡
+    static let radiusXL: CGFloat = 18 // Hero 卡、分组卡
+    /// 发丝描边(卡片内描边,提供视觉边界感而不靠阴影)
+    static let strokeHairline: CGFloat = 0.5
+    /// 品牌竖纹宽度(卡左侧 3pt 色条)
+    static let stripeWidth: CGFloat = 3
+}
+
+// MARK: - 统一卡片外观修饰符
+
+extension View {
+    /// 通用卡片外观:内边距 + 卡片底色 + 圆角 + 发丝描边。
+    /// v2 改进:取代 v1 的微阴影——阴影在 .regularMaterial 上常显得脏,
+    /// 改用内描边产生「卡片漂在材质底上」的层次感。
+    /// alignment 只影响 maxWidth 填充时的内容对齐(加载环等居中场景传 .center)。
+    func atbCard(corner: CGFloat = DesignTokens.radiusM,
+                 paddingH: CGFloat = DesignTokens.spacingM,
+                 paddingV: CGFloat = DesignTokens.spacingS + 2,
+                 alignment: Alignment = .leading) -> some View {
+        self
+            .padding(.horizontal, paddingH)
+            .padding(.vertical, paddingV)
+            .frame(maxWidth: .infinity, alignment: alignment)
+            .background(Color.atbCardBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: corner)
+                    .strokeBorder(Color.atbSeparator.opacity(0.5),
+                                  lineWidth: DesignTokens.strokeHairline)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: corner))
+    }
 }
 
 // MARK: - 阈值色(与 Provider 品牌色正交)
@@ -189,12 +225,14 @@ enum MenuBarTextRenderer {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
         let content = HStack(spacing: 4) {
-            // 阿里云:云朵 + 双百分比
+            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显 7d 段)
             cloudShape.fill(Color.black).frame(width: 14, height: 11)
-            Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
-            Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(fiveHour.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
-            Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+            if fiveHour != nil || oneWeek == nil {
+                Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(fiveHour.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
+                Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+            }
             Text("7d").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
             Text(pctText(oneWeek)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                 .foregroundStyle(oneWeek.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
@@ -288,13 +326,15 @@ enum MenuBarTextRenderer {
         return render(content, isTemplate: false)
     }
 
-    /// 单行:35%·61%(nil 时显示横杠);尾部追加 C/M 段
+    /// 单行:35%·61%(nil 时显示横杠;5h 窗口取消时只显 7d 段);尾部追加 C/M 段
     @MainActor
     private static func singleLineImage(fiveHour: Int?, oneWeek: Int?,
                                         cpu: Int? = nil, memory: Int? = nil) -> NSImage {
         let content = HStack(spacing: 3) {
-            Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
-            Text("·").font(.system(size: 12, weight: .medium))
+            if fiveHour != nil || oneWeek == nil {
+                Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                Text("·").font(.system(size: 12, weight: .medium))
+            }
             Text(pctText(oneWeek)).font(.system(size: 12, weight: .medium)).monospacedDigit()
             if cpu != nil || memory != nil {
                 Text("·").font(.system(size: 12, weight: .medium))
@@ -415,7 +455,7 @@ struct AliyunTokenBarApp: App {
             let monitor = SystemMetricsMonitor.shared
             return MenuBarTextRenderer.image(
                 scheme: MenuBarStyleManager.shared.scheme,
-                fiveHour: model.quota?.usage.fiveHour.percentageInt,
+                fiveHour: model.quota?.usage.fiveHour?.percentageInt,
                 oneWeek: model.quota?.usage.oneWeek.percentageInt,
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,

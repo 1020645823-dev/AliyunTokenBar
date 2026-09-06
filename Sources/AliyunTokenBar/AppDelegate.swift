@@ -9,22 +9,47 @@ import AliyunTokenBarCore
 /// 为什么不用 MenuBarExtra:macOS 26 的「允许在菜单栏中显示」开关一旦被系统关闭,
 /// MenuBarExtra 的场景无法挂载,整个进程会被框架优雅回收(exit 0,无崩溃日志)。
 /// 手动 NSStatusItem 在系统隐藏时只是 isVisible=false,进程存活。
+///
+/// 存活不等于可达:macOS 26 也会在运行期把状态项隐藏/「停放」到屏幕外(菜单栏
+/// 空间竞争、全屏应用、系统级开关)。Accessory 应用无 Dock 图标,状态项是唯一
+/// 入口,因此本类常驻可见性监控(StatusItemRecoveryMonitor):连续异常按阶梯
+/// 恢复(重设可见 → 重建状态项 → Dock 回退),并对外提供 codingtokenbar://open
+/// 与双击 .app 重开(reopen)两条救生索。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var cancellables = Set<AnyCancellable>()
-    private var visibilityMonitor = StatusItemVisibilityMonitor(requiredHiddenSamples: 3)
+    private var recoveryMonitor = StatusItemRecoveryMonitor(requiredHiddenSamples: 3)
     private var themeChangeObserver: NSObjectProtocol?
+    private var visibilityTimer: Timer?
+    /// 启动期未见可见前用 1s 快采样(与旧启动自检节奏一致),确认可见后转 30s 慢采样。
+    private var hasSeenStatusItemVisible = false
+    /// 上次采样的有效可见值(变化时落 OSLog,便于事后诊断)。
+    private var lastLoggedEffectivelyVisible: Bool?
 
-    /// P1-C10:URL scheme 触发刷新(codingtokenbar://refresh),供脚本/快捷指令调用。
+    /// P1-C10:URL scheme 触发刷新(codingtokenbar://refresh),供脚本/快捷指令调用;
+    /// codingtokenbar://open 为救生索:状态项不可见时兜底弹设置窗。
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme == "codingtokenbar" {
-            if url.host == nil || url.host == "refresh" {
+            switch url.host {
+            case nil, "refresh":
                 AppLog.info("URL scheme 触发刷新: \(url.absoluteString)", category: .general)
                 Task { await TokenPlanModel.shared.refreshAll() }
+            case "open", "panel", "settings":
+                AppLog.info("URL scheme 打开面板: \(url.absoluteString)", category: .general)
+                openPanelOrFallback()
+            default:
+                break
             }
         }
+    }
+
+    /// 双击 .app/Dock 图标重开运行中的实例:状态项可见则弹面板,不可见则兜底
+    /// Dock 图标+设置窗——避免「进程在跑但无处可点」被感知为「应用打不开」。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openPanelOrFallback()
+        return true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -36,8 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupPopover()
         observeModel()
-        // 等菜单栏完成启动布局后连续采样,避免把瞬态不可见误判为隐藏。
-        scheduleVisibilityCheck()
+        // 常驻可见性监控:启动 1s 快采样对齐旧自检节奏,运行期 30s 慢采样,
+        // 连续异常走恢复阶梯(详见 StatusItemRecoveryMonitor)。
+        scheduleNextVisibilityTick(interval: 1)
         // 数据刷新(原 MenuBarExtra 的 .task 逻辑)——App 启动即开始,不等面板打开
         NotificationManager.shared.requestAuthorization()
         NotificationManager.shared.attach(to: TokenPlanModel.shared)
@@ -68,11 +94,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard running.contains(where: { $0.processIdentifier != mine }) else { return }
         if let other = running.first(where: { $0.processIdentifier != mine }) {
             other.activate(options: [.activateAllWindows])
+            // 已有实例可能状态项不可见(无处可点),借 URL scheme 让它把 UI 亮出来。
+            NSWorkspace.shared.open(URL(string: "codingtokenbar://open")!)
         }
         NSApp.terminate(nil)
     }
 
     private func setupStatusItem() {
+        rebuildStatusItem()
+        // 菜单栏明暗:读系统全局域 AppleInterfaceStyle。
+        // 不能用 button.effectiveAppearance——用户强制 app 主题时 NSApp.appearance
+        // 会污染按钮外观,与菜单栏真实明暗脱节(曾致黑字隐没于深菜单栏)。
+        themeChangeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshMenuBarAppearance()
+                TokenPlanModel.shared.prerenderIcon()
+            }
+        }
+        // 用真实明暗值重渲染一次(首个图标可能在读取前已按默认浅色基底渲染)
+        TokenPlanModel.shared.prerenderIcon()
+    }
+
+    /// (重)建状态项:恢复阶梯的 recreate 级也走这里——移除旧 item(停放坐标
+    /// 挂在旧 item 上,remove 即释放)后新建,由系统重新布局。
+    private func rebuildStatusItem() {
+        if let old = statusItem {
+            NSStatusBar.system.removeStatusItem(old)
+            statusItem = nil
+        }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.isVisible = true
         if let button = item.button {
@@ -83,21 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePopover)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = TokenPlanModel.shared.menuBarTooltip
-            // 菜单栏明暗:读系统全局域 AppleInterfaceStyle。
-            // 不能用 button.effectiveAppearance——用户强制 app 主题时 NSApp.appearance
-            // 会污染按钮外观,与菜单栏真实明暗脱节(曾致黑字隐没于深菜单栏)。
             refreshMenuBarAppearance()
-            themeChangeObserver = DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-                object: nil, queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.refreshMenuBarAppearance()
-                    TokenPlanModel.shared.prerenderIcon()
-                }
-            }
-            // 用真实明暗值重渲染一次(首个图标可能在读取前已按默认浅色基底渲染)
-            TokenPlanModel.shared.prerenderIcon()
         }
         statusItem = item
     }
@@ -111,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupPopover() {
         let p = NSPopover()
-        p.contentSize = NSSize(width: 340, height: 560)
+        p.contentSize = NSSize(width: 360, height: 560)
         p.behavior = .transient
         p.animates = true
         p.contentViewController = NSHostingController(rootView: TokenPlanMenu())
@@ -155,28 +193,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func scheduleVisibilityCheck() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            guard let self, let statusItem = self.statusItem else { return }
-            if statusItem.isVisible { return }
-            if self.visibilityMonitor.record(isVisible: false) {
-                self.handleVisibilityFallback()
+    // MARK: - 常驻可见性监控与恢复阶梯
+
+    private func scheduleNextVisibilityTick(interval: TimeInterval) {
+        visibilityTimer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.tickVisibilityMonitor() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        visibilityTimer = timer
+    }
+
+    private func currentEffectivelyVisible() -> Bool {
+        guard let statusItem else { return false }
+        return StatusItemRecoveryMonitor.isEffectivelyVisible(
+            isVisible: statusItem.isVisible,
+            buttonFrame: statusItem.button?.window?.frame,
+            screenFrames: NSScreen.screens.map(\.frame)
+        )
+    }
+
+    private func tickVisibilityMonitor() {
+        let effectivelyVisible = currentEffectivelyVisible()
+        if effectivelyVisible {
+            hasSeenStatusItemVisible = true
+        }
+        if lastLoggedEffectivelyVisible != effectivelyVisible {
+            lastLoggedEffectivelyVisible = effectivelyVisible
+            // 不可见走 warning 级(OSLog info 默认不落盘,真出事时要能事后检索到)
+            if effectivelyVisible {
+                AppLog.info("状态项有效可见性 → true", category: .general)
             } else {
-                self.scheduleVisibilityCheck()
+                AppLog.warning("状态项有效可见性 → false(被系统隐藏/停放?)", category: .general)
             }
         }
+        let action = recoveryMonitor.sample(isEffectivelyVisible: effectivelyVisible)
+        switch action {
+        case .none:
+            break
+        case .resurrect:
+            AppLog.warning("状态项持续不可见,尝试重设 isVisible", category: .general)
+            statusItem?.isVisible = true
+        case .recreate:
+            AppLog.warning("状态项仍不可见,重建状态项(对抗系统停放)", category: .general)
+            rebuildStatusItem()
+            TokenPlanModel.shared.prerenderIcon()
+        case .dockFallback:
+            handleVisibilityFallback()
+        }
+        // 恢复动作后 5s 复评(给动作留生效窗口);其余按 启动快/运行慢 节奏。
+        let next: TimeInterval
+        if action != .none {
+            next = 5
+        } else {
+            next = hasSeenStatusItemVisible ? 30 : 1
+        }
+        scheduleNextVisibilityTick(interval: next)
     }
 
     /// 多次未检测到状态项时回退:改为 .regular 显示 Dock 图标 + 通知引导。
     private func handleVisibilityFallback() {
         AppLog.warning("菜单栏状态项持续不可见,回退 Dock 图标 + 通知引导", category: .general)
         NSApp.setActivationPolicy(.regular)
+        // `swift run` 裸二进制无 bundleProxy,UNUserNotificationCenter 会抛
+        // NSInternalInconsistencyException(Swift 不可 catch)——只对有 bundle 的进程发通知。
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
         content.title = "未检测到菜单栏图标"
         content.body = "图标可能因菜单栏空间不足或系统设置而未显示。请检查 系统设置 → 控制中心 → 菜单栏,或从 Dock 图标打开。"
         content.sound = .default
         center.add(UNNotificationRequest(identifier: "menubar-hidden-fallback", content: content, trigger: nil))
+    }
+
+    // MARK: - 救生索入口(URL scheme open / 双击 .app reopen 共用)
+
+    /// 状态项有效可见 → 弹出面板;否则落 Dock 图标 + 弹设置窗(保证总有入口)。
+    private func openPanelOrFallback() {
+        if currentEffectivelyVisible(), let popover, let button = statusItem?.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        } else {
+            AppLog.warning("打开面板:状态项不可见,回退 Dock 图标 + 设置窗", category: .general)
+            NSApp.setActivationPolicy(.regular)
+            SettingsWindowManager.shared.show()
+        }
     }
 
     private func fallbackIcon() -> NSImage {

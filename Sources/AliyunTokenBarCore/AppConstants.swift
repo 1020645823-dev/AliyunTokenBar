@@ -30,4 +30,10 @@ public enum KeychainAccounts {
     public static let kimiWebToken = "kimi-web-token"
     /// DeepSeek 开放平台 API Key(sk-...)
     public static let deepSeekAPIKey = "deepseek-api-key"
+    /// 智谱 GLM Coding Plan API Key(自动发现 opencode 配置时无需此项)
+    public static let zhipuAPIKey = "zhipu-api-key"
+    /// 小米 MiMo 开放平台控制台 Cookie(整段 Cookie 请求头)
+    public static let mimoCookie = "mimo-console-cookie"
+    /// MiniMax Coding Plan API Key
+    public static let minimaxAPIKey = "minimax-api-key"
 }

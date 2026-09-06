@@ -46,24 +46,31 @@ let addonFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调�
 let expiredFixture = #"{"error":{"code":3,"message":"Console session is not logged in or has expired.","hint":"Run `bl auth login --console` to sign in or refresh your console session."}}"#
 
 let u = try? BlUsageService.parseUsage(Data(usageFixture.utf8))
-check("usage 5h pct 35.0", u?.fiveHour.percentage == 35.0)
-check("usage 5h reset", u?.fiveHour.resetTimeMs == 1785560220000)
+check("usage 5h pct 35.0", u?.fiveHour?.percentage == 35.0)
+check("usage 5h reset", u?.fiveHour?.resetTimeMs == 1785560220000)
 check("usage 7d pct 61.43", u?.oneWeek.percentage == 61.43)
 check("usage 7d reset", u?.oneWeek.resetTimeMs == 1785687360000)
 
-// 空窗形态(2026-08-03 事故根因回归):字段 null/缺失 → 宽容解析为 0,不再整次抛错
+// 空窗形态(2026-08-03 事故根因回归):5h 字段缺失/null → fiveHour == nil(无窗口),
+// 不再整次抛错,也不冒充 0%(0% 与「窗口存在零用量」混淆;无窗口应隐藏统计)
 let usageEmptyFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per5HourPercentage":null,"per1WeekResetTime":1785687360000,"per1WeekPercentage":0.61428294255},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
 let ue = try? BlUsageService.parseUsage(Data(usageEmptyFixture.utf8))
 check("usage empty-window parses", ue != nil)
-check("usage empty-window 5h pct 0", ue?.fiveHour.percentage == 0.0)
-check("usage empty-window 5h reset 0", ue?.fiveHour.resetTimeMs == 0)
+check("usage empty-window 5h nil(无窗口)", ue?.fiveHour == nil)
 check("usage empty-window 7d kept", ue?.oneWeek.percentage == 61.43)
-// 整数 0(JSON 可能返回 Int 形态)也应解析
+// 无 5h 窗口实测形态(2026-08-15 官方限时取消 5h 限额后服务端只返回周窗口)
+let usageNo5hFixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per1WeekResetTime":1787149800000,"per1WeekPercentage":0.1107448506},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
+let un = try? BlUsageService.parseUsage(Data(usageNo5hFixture.utf8))
+check("usage 无5h窗口 fiveHour nil", un?.fiveHour == nil)
+check("usage 无5h窗口 7d 11.07", un?.oneWeek.percentage == 11.07)
+check("usage 无5h窗口 7d reset", un?.oneWeek.resetTimeMs == 1787149800000)
+// 整数 0(JSON 可能返回 Int 形态)也应解析;字段存在(哪怕 0)≠ 无窗口
 let usageIntFixture = #"{"code":"200","data":{"DataV2":{"data":{"data":{"per5HourPercentage":0,"per1WeekResetTime":1785687360000,"per5HourResetTime":1785560220000,"per1WeekPercentage":0}}}}}"#
-check("usage int-zero parses", (try? BlUsageService.parseUsage(Data(usageIntFixture.utf8)))?.fiveHour.percentage == 0.0)
+check("usage int-zero parses", (try? BlUsageService.parseUsage(Data(usageIntFixture.utf8)))?.fiveHour?.percentage == 0.0)
+check("usage int-zero 窗口存在", (try? BlUsageService.parseUsage(Data(usageIntFixture.utf8)))?.fiveHour != nil)
 // resetTimeDisplay 可选语义:无重置时间 → nil(调用方隐藏重置行)
 check("usage resetText nil when 0", UsageDetail(percentageRaw: 0, resetTimeMs: 0).resetTimeDisplay == nil)
-check("usage resetText some when >0", u?.fiveHour.resetTimeDisplay != nil)
+check("usage resetText some when >0", u?.fiveHour?.resetTimeDisplay != nil)
 
 let s = try? BlUsageService.parseSubscription(Data(subscriptionFixture.utf8))
 check("sub specCode pro", s?.specCode == "pro")
@@ -86,7 +93,7 @@ if ProcessInfo.processInfo.environment["BL_LIVE"] == "1" {
     do {
         let data = try await BlUsageService.callRPC(BlUsageService.usageAPI)
         let w = try BlUsageService.parseUsage(data)
-        check("live usage parses", w.fiveHour.percentage >= 0)
+        check("live usage parses", w.oneWeek.percentage >= 0 && (w.fiveHour?.percentage ?? 0) >= 0)
     } catch {
         check("live usage parses", false)  // counts as a fail if bl not logged in
         print("live error: \(error)")
@@ -542,15 +549,16 @@ check("history estimate wrong window nil",
 
 // P2-B5:CSV 输出(表头 + 行数 + 空值留空 + DeepSeek 金额列)
 let csvOut = HistoryStore.csv(ocSnaps)
-check("csv header", csvOut.hasPrefix("timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost"))
+check("csv header", csvOut.hasPrefix("timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost,zhipu5h,zhipuWeekly,mimoBalance,mimoPlanPct,minimaxInterval,minimaxWeekly"))
 check("csv row count", csvOut.split(separator: "\n").count == 3)
-check("csv empty cells", csvOut.split(separator: "\n")[1].components(separatedBy: ",").count == 11)
+check("csv empty cells", csvOut.split(separator: "\n")[1].components(separatedBy: ",").count == 17)
 let dsCsvSnaps = [UsageSnapshot(timestamp: baseT, aliyunFiveHour: nil, aliyunOneWeek: nil,
                                 opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
                                 deepSeekBalance: 110.0, deepSeekTodayCost: 1.5)]
 let dsCsv = HistoryStore.csv(dsCsvSnaps)
-check("csv deepseek 金额单元格",
-      dsCsv.split(separator: "\n")[1].components(separatedBy: ",").suffix(2) == ["110.00", "1.50"])
+let dsCells = dsCsv.split(separator: "\n")[1].components(separatedBy: ",")
+check("csv deepseek 金额单元格", dsCells.count == 17 && dsCells[9] == "110.00" && dsCells[10] == "1.50")
+check("csv 新增列空值留空", dsCells.suffix(7).dropFirst(2).allSatisfy { $0.isEmpty })
 
 // FileHistoryBackend 往返(Codable)
 let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("atb-test-\(Int.random(in: 0..<1_000_000)).json")
@@ -586,14 +594,56 @@ check("history v1 empty header",
       FileHistoryBackend.decode(Data("// header only\n".utf8)).isEmpty)
 try? FileManager.default.removeItem(at: tmpURL)
 
-// --- 菜单栏状态项可见性去抖 ---
-var visibility = StatusItemVisibilityMonitor(requiredHiddenSamples: 3)
-check("visibility transient hidden does not notify", visibility.record(isVisible: false) == false)
-check("visibility recovery resets hidden samples", visibility.record(isVisible: true) == false)
-check("visibility hidden sample 1", visibility.record(isVisible: false) == false)
-check("visibility hidden sample 2", visibility.record(isVisible: false) == false)
-check("visibility sustained hidden notifies", visibility.record(isVisible: false) == true)
-check("visibility notifies only once", visibility.record(isVisible: false) == false)
+// --- 菜单栏状态项恢复阶梯(运行期图标被系统隐藏/停放的自愈) ---
+var recovery = StatusItemRecoveryMonitor(requiredHiddenSamples: 3)
+check("recovery transient hidden no action", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery visible resets samples", recovery.sample(isEffectivelyVisible: true) == .none)
+check("recovery hidden sample 1", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery hidden sample 2", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery sustained hidden resurrects", recovery.sample(isEffectivelyVisible: false) == .resurrect)
+// 触发动作后计数清零:重建前需再攒满 3 个异常样本
+check("recovery action window sample 1", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery action window sample 2", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery still hidden recreates", recovery.sample(isEffectivelyVisible: false) == .recreate)
+check("recovery recreate window sample 1", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery recreate window sample 2", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery final fallback docks", recovery.sample(isEffectivelyVisible: false) == .dockFallback)
+check("recovery dock fallback fires once", recovery.sample(isEffectivelyVisible: false) == .none)
+check("recovery dock fallback visible then hidden stays none", {
+    _ = recovery.sample(isEffectivelyVisible: true)
+    _ = recovery.sample(isEffectivelyVisible: false)
+    _ = recovery.sample(isEffectivelyVisible: false)
+    return recovery.sample(isEffectivelyVisible: false) == .none
+}())
+check("recovery dock fallback flag", recovery.hasIssuedDockFallback == true)
+// 恢复可见后阶梯回零:下一次故障从最轻动作(resurrect)重新开始
+var recovery2 = StatusItemRecoveryMonitor(requiredHiddenSamples: 3)
+_ = recovery2.sample(isEffectivelyVisible: false)
+_ = recovery2.sample(isEffectivelyVisible: false)
+check("recovery2 first trouble resurrects", recovery2.sample(isEffectivelyVisible: false) == .resurrect)
+_ = recovery2.sample(isEffectivelyVisible: true)
+_ = recovery2.sample(isEffectivelyVisible: false)
+_ = recovery2.sample(isEffectivelyVisible: false)
+check("recovery2 ladder resets after recovery", recovery2.sample(isEffectivelyVisible: false) == .resurrect)
+
+// --- 有效可见性判定(isVisible + 按钮帧在屏幕内;停放=帧在屏幕外) ---
+let screens = [CGRect(x: 0, y: 0, width: 1728, height: 1117)]
+check("effective hidden when not visible",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: false, buttonFrame: CGRect(x: 1500, y: 5, width: 30, height: 24), screenFrames: screens) == false)
+check("effective visible on screen",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: CGRect(x: 1500, y: 5, width: 30, height: 24), screenFrames: screens) == true)
+// AX 观察到的停放位 (-1,1113)(左上原点)换算到 AppKit 左下原点坐标 ≈ (-1,-20):
+// 帧大部分在屏幕外,只有边缘几像素蹭在屏幕内——按面积占比判定为不可见
+check("parked frame mostly offscreen detected",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: CGRect(x: -1, y: -20, width: 30, height: 24), screenFrames: screens) == false)
+check("parked frame grossly offscreen detected",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: CGRect(x: -200, y: -200, width: 30, height: 24), screenFrames: screens) == false)
+check("missing frame trusts isVisible",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: nil, screenFrames: screens) == true)
+check("no screens trusts isVisible",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: CGRect(x: 1500, y: 5, width: 30, height: 24), screenFrames: []) == true)
+check("edge frame mostly onscreen still visible",
+      StatusItemRecoveryMonitor.isEffectivelyVisible(isVisible: true, buttonFrame: CGRect(x: -10, y: 5, width: 30, height: 24), screenFrames: screens) == true)
 
 // --- CredentialStore (InMemory + 迁移) ---
 let cs = InMemoryCredentialStore()
@@ -908,25 +958,30 @@ func mtCols(
     kConf: Bool = true, kErr: Bool = false, k5: Int? = 0, kW: Int? = 58,
     oConf: Bool = true, oErr: Bool = false, oR: Int? = 3, oW: Int? = 2,
     dConf: Bool = true, dErr: Bool = false, dCost: Double? = 1.5, dBal: Double? = 110.0,
+    mmConf: Bool = true, mmErr: Bool = false, mmI: Int? = 1, mmW: Int? = 1,
     sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25
 ) -> [MenuBarTableColumn] {
     MenuBarTable.columns(aliyunFiveHour: a5, aliyunOneWeek: a7,
         kimiConfigured: kConf, kimiHasError: kErr, kimiFiveHour: k5, kimiWeekly: kW,
         openCodeConfigured: oConf, openCodeHasError: oErr, openCodeRolling: oR, openCodeWeekly: oW,
         deepSeekConfigured: dConf, deepSeekHasError: dErr, deepSeekTodayCost: dCost, deepSeekBalance: dBal,
+        minimaxConfigured: mmConf, minimaxHasError: mmErr, minimaxInterval: mmI, minimaxWeekly: mmW,
         systemEnabled: sysOn, cpu: cpu, memory: mem)
 }
 
 let mtAll = mtCols()
-check("mt 5列全显示且固定顺序", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .system])
+check("mt 6列全显示且固定顺序(本机恒最后)", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .minimax, .system])
 check("mt 阿里云主次值", mtAll[0].primary.text == "40%" && mtAll[0].secondary.text == "18%")
 check("mt 0% 不省略", mtAll[1].primary.text == "0%" && mtAll[1].primary.pct == 0)
 check("mt DeepSeek 金额主次值", mtAll[3].primary.text == "¥1.50" && mtAll[3].secondary.text == "¥110"
       && mtAll[3].primary.pct == nil && mtAll[3].secondary.pct == nil)
-check("mt 未配置Kimi→隐藏", mtCols(kConf: false).map(\.kind) == [.aliyun, .openCode, .deepSeek, .system])
-check("mt 未配置OpenCode→隐藏", mtCols(oConf: false).map(\.kind) == [.aliyun, .kimi, .deepSeek, .system])
-check("mt 未配置DeepSeek→隐藏", mtCols(dConf: false).map(\.kind) == [.aliyun, .kimi, .openCode, .system])
-check("mt 本机关闭→隐藏", mtCols(sysOn: false).map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek])
+check("mt MiniMax 主次值", mtAll[4].primary.text == "1%" && mtAll[4].secondary.text == "1%"
+      && mtAll[4].primaryLabel == "本窗" && mtAll[4].secondaryLabel == "周")
+check("mt 未配置Kimi→隐藏", mtCols(kConf: false).map(\.kind) == [.aliyun, .openCode, .deepSeek, .minimax, .system])
+check("mt 未配置OpenCode→隐藏", mtCols(oConf: false).map(\.kind) == [.aliyun, .kimi, .deepSeek, .minimax, .system])
+check("mt 未配置DeepSeek→隐藏", mtCols(dConf: false).map(\.kind) == [.aliyun, .kimi, .openCode, .minimax, .system])
+check("mt 未配置MiniMax→隐藏", mtCols(mmConf: false).map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .system])
+check("mt 本机关闭→隐藏(仍恒最后)", mtCols(sysOn: false).map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .minimax])
 let mtErr = mtCols(kErr: true, k5: nil, kW: nil)
 check("mt 已配置+出错→横杠列", mtErr.map(\.kind).contains(.kimi)
       && mtErr[1].primary.text == "—" && mtErr[1].primary.pct == nil
@@ -935,20 +990,247 @@ check("mt 已配置无数据无错→隐藏", !mtCols(k5: nil, kW: nil).map(\.ki
 let mtDsErr = mtCols(dErr: true, dCost: nil, dBal: nil)
 check("mt DeepSeek 出错→横杠", mtDsErr[3].primary.text == "—" && mtDsErr[3].secondary.text == "—"
       && mtDsErr[3].primary.pct == nil)
-check("mt 本机未采样→横杠", mtCols(cpu: nil, mem: nil)[4].primary.text == "—")
+let mmErrCols = mtCols(mmErr: true, mmI: nil, mmW: nil)
+check("mt MiniMax 出错→横杠列", mmErrCols[4].primary.text == "—" && mmErrCols[4].secondary.text == "—"
+      && mmErrCols[4].primary.pct == nil)
+check("mt MiniMax 已配置无数据无错→隐藏", !mtCols(mmI: nil, mmW: nil).map(\.kind).contains(.minimax))
+check("mt 本机未采样→横杠(仍在末位)", mtCols(cpu: nil, mem: nil)[5].primary.text == "—")
 check("mt 阿里云恒显示(nil→横杠)", mtCols(a5: nil, a7: nil)[0].primary.text == "—")
+// 5h 窗口取消形态:单值列(主行 7d,次行横杠对齐网格,tooltip 省略次段)
+let mtNo5h = mtCols(a5: nil, a7: 11)
+check("mt 5h无窗口→主行显7d", mtNo5h[0].primary.text == "11%" && mtNo5h[0].primary.pct == 11)
+check("mt 5h无窗口→单值列标签", mtNo5h[0].primaryLabel == "7天" && mtNo5h[0].secondaryLabel == nil)
+check("mt 5h无窗口→次行横杠", mtNo5h[0].secondary.text == "—" && mtNo5h[0].secondary.pct == nil)
+check("mt 5h无窗口 tooltip", MenuBarTable.tooltip(columns: mtNo5h).hasPrefix("阿里云 7天 11% |"))
 let mtTip = MenuBarTable.tooltip(columns: mtAll)
-check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | DeepSeek 今日 ¥1.50 · 余额 ¥110 | 本机 CPU 12% · 内存 25%")
+check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | DeepSeek 今日 ¥1.50 · 余额 ¥110 | MiniMax 本窗 1% · 周 1% | 本机 CPU 12% · 内存 25%")
 check("mt tooltip 横杠形态", MenuBarTable.tooltip(columns: mtErr).contains("Kimi 5小时 — · 周 —"))
 
 // 渲染契约:百分比列值文本最长 4 字符("100%");DeepSeek 金额列最长 7 字符
-check("mt 百分比列≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, cpu: 100, mem: 100)
+check("mt 百分比列≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, mmI: 100, mmW: 100, cpu: 100, mem: 100)
     .filter { $0.kind != .deepSeek }
     .allSatisfy { $0.primary.text.count <= 4 && $0.secondary.text.count <= 4 })
 check("mt DeepSeek 金额列≤7字符", mtCols(dCost: 0.01, dBal: 123456.78)[3].primary.text.count <= 7
       && mtCols(dCost: 0.01, dBal: 123456.78)[3].secondary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].primary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].secondary.text.count <= 7)
+
+// --- ZhipuUsageService:智谱 GLM Coding Plan 解析 ---
+// fixture = 2026-08-14 真实响应(双 TOKENS_LIMIT + TIME_LIMIT + level max)
+let zhipuLive = #"{"code":200,"msg":"操作成功","data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":11,"nextResetTime":1786703321390},{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":2,"nextResetTime":1786888215998},{"type":"TIME_LIMIT","unit":5,"number":1,"usage":4000,"currentValue":5,"remaining":3995,"percentage":1,"nextResetTime":1787925015983,"usageDetails":[{"modelCode":"search-prime","usage":2},{"modelCode":"web-reader","usage":0},{"modelCode":"zread","usage":3}]}],"level":"max"},"success":true}"#
+let zq = ZhipuUsageService.parseQuota(from: Data(zhipuLive.utf8))
+check("zhipu live parse ok", zq != nil)
+check("zhipu 5h=11", zq?.fiveHour?.pct == 11)
+check("zhipu 5h reset ms", zq?.fiveHour?.resetTimeMs == 1786703321390)
+check("zhipu weekly=2", zq?.weekly?.pct == 2)
+check("zhipu level=max", zq?.level == "max")
+check("zhipu mcp pct=1", zq?.mcp?.percentage == 1)
+check("zhipu mcp usageText", zq?.mcp?.usageText == "5/4000 次")
+check("zhipu mcp details=3", zq?.mcp?.details.count == 3)
+check("zhipu mcp detail values", zq?.mcp?.details.first?.modelCode == "search-prime"
+      && zq?.mcp?.details.first?.usage == 2)
+check("zhipu mcp reset", zq?.mcp?.resetTimeMs == 1787925015983)
+// 倒序乱序 limits:排序按窗口时长,不依赖返回顺序
+let zhipuShuffled = #"{"code":200,"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":2},{"type":"TIME_LIMIT","unit":5,"number":1,"percentage":1},{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":11}],"level":"pro"}}"#
+let zq2 = ZhipuUsageService.parseQuota(from: Data(zhipuShuffled.utf8))
+check("zhipu shuffled 5h=11", zq2?.fiveHour?.pct == 11)
+check("zhipu shuffled weekly=2", zq2?.weekly?.pct == 2)
+check("zhipu shuffled level=pro", zq2?.level == "pro")
+// 单条 TOKENS_LIMIT:窗口 ≥24h 归周,<24h 归 5h
+let zhipuWeeklyOnly = #"{"code":200,"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":7}]}}"#
+let zq3 = ZhipuUsageService.parseQuota(from: Data(zhipuWeeklyOnly.utf8))
+check("zhipu weekly-only归类", zq3?.fiveHour == nil && zq3?.weekly?.pct == 7)
+let zhipu5hOnly = #"{"code":200,"success":true,"data":{"limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":9}]}}"#
+let zq4 = ZhipuUsageService.parseQuota(from: Data(zhipu5hOnly.utf8))
+check("zhipu 5h-only归类", zq4?.weekly == nil && zq4?.fiveHour?.pct == 9)
+// 空 limits / 缺 data
+check("zhipu empty limits -> 无窗口", ZhipuUsageService.parseQuota(
+    from: Data(#"{"code":200,"success":true,"data":{"limits":[]}}"#.utf8))?.fiveHour == nil)
+check("zhipu missing data -> nil", ZhipuUsageService.parseQuota(
+    from: Data(#"{"code":200,"success":true}"#.utf8)) == nil)
+// 业务错误包络:code 1001 → authExpired;其它 code → invalidResponse;success 包 → nil
+check("zhipu 1001 -> authExpired", ZhipuUsageService.envelopeError(
+    in: Data(#"{"code":1001,"msg":"Header中未收到Authorization参数，无法进行身份验证。","success":false}"#.utf8)) == .authExpired)
+check("zhipu other code -> invalidResponse", {
+    if case .invalidResponse = ZhipuUsageService.envelopeError(
+        in: Data(#"{"code":500,"msg":"server busy","success":false}"#.utf8)) { return true }
+    return false
+}())
+check("zhipu success envelope -> nil", ZhipuUsageService.envelopeError(
+    in: Data(zhipuLive.utf8)) == nil)
+check("zhipu error envelope not parsed", ZhipuUsageService.parseQuota(
+    from: Data(#"{"code":1001,"msg":"Header中未收到Authorization参数","success":false}"#.utf8)) == nil)
+// windowMinutes 枚举(1=天 3=小时 5=分钟 6=周)
+check("zhipu unit 3h×5=300min", ZhipuUsageService.windowMinutes(unit: 3, number: 5) == 300)
+check("zhipu unit 6w×1=10080min", ZhipuUsageService.windowMinutes(unit: 6, number: 1) == 10080)
+check("zhipu unit 1d×2=2880min", ZhipuUsageService.windowMinutes(unit: 1, number: 2) == 2880)
+check("zhipu unit 5m×30=30min", ZhipuUsageService.windowMinutes(unit: 5, number: 30) == 30)
+check("zhipu unit unknown -> nil", ZhipuUsageService.windowMinutes(unit: 9, number: 1) == nil)
+check("zhipu number 0 -> nil", ZhipuUsageService.windowMinutes(unit: 3, number: 0) == nil)
+// 重置倒计时文案(共享 resetText)
+let zReset90 = Int64((Date().addingTimeInterval(90 * 60).timeIntervalSince1970) * 1000)
+let zt = ZhipuWindow.resetText(fromMs: zReset90)
+check("zhipu 90min contains 1小时", zt?.contains("1小时") == true && zt?.contains("分钟") == true)
+check("zhipu past reset -> nil", ZhipuWindow.resetText(
+    fromMs: Int64((Date().timeIntervalSince1970 - 60) * 1000)) == nil)
+check("zhipu nil reset -> nil", ZhipuWindow.resetText(fromMs: nil) == nil)
+let zMCPNoUsage = ZhipuMCPQuota(usage: nil, currentValue: nil, remaining: nil,
+                                percentage: 3, resetTimeMs: nil, details: [])
+check("zhipu mcp usageText nil 兜底", zMCPNoUsage.usageText == nil)
+// UsageSnapshot:旧 JSON(无 zhipu 字段)解码兼容 + 新字段往返
+let zOldSnapJson = #"{"timestamp":700000000,"aliyunFiveHour":10,"aliyunOneWeek":5}"#
+let zOldSnap = try? JSONDecoder().decode(UsageSnapshot.self, from: Data(zOldSnapJson.utf8))
+check("zhipu snapshot 旧JSON兼容", zOldSnap?.zhipuFiveHour == nil && zOldSnap?.zhipuWeekly == nil)
+let zNewSnap = UsageSnapshot(timestamp: Date(), aliyunFiveHour: nil, aliyunOneWeek: nil,
+                             opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
+                             zhipuFiveHour: 11, zhipuWeekly: 2)
+let zEnc = try? JSONEncoder().encode(zNewSnap)
+let zDec = zEnc.flatMap { try? JSONDecoder().decode(UsageSnapshot.self, from: $0) }
+check("zhipu snapshot 新字段往返", zDec?.zhipuFiveHour == 11 && zDec?.zhipuWeekly == 2)
+check("zhipu series 映射", HistoryStore.series([zNewSnap], provider: "zhipu", window: "5h") == [11]
+      && HistoryStore.series([zNewSnap], provider: "zhipu", window: "weekly") == [2])
+
+// --- 小米 MiMo 开放平台(余额 + Token 套餐)---
+let mimoBal = MiMoUsageService.parseBalance(from: Data(
+    #"{"code":0,"message":"success","data":{"balance":"110.50","currency":"CNY","cashBalance":"100.50","giftBalance":"10.00"}}"#.utf8))
+check("mimo balance ok", mimoBal != nil)
+check("mimo balance=110.5", mimoBal?.balance == 110.5)
+check("mimo currency CNY", mimoBal?.currency == "CNY")
+check("mimo cash=100.5", mimoBal?.cashBalance == 100.5)
+check("mimo gift=10", mimoBal?.giftBalance == 10.0)
+check("mimo 数字金额容忍", MiMoUsageService.parseBalance(from: Data(
+    #"{"code":0,"data":{"balance":88,"currency":"CNY"}}"#.utf8))?.balance == 88)
+check("mimo code≠0 拒绝", MiMoUsageService.parseBalance(from: Data(
+    #"{"code":401,"message":"unauthorized"}"#.utf8)) == nil)
+check("mimo 缺 data 拒绝", MiMoUsageService.parseBalance(from: Data(#"{"code":0}"#.utf8)) == nil)
+
+let mimoDetail = MiMoUsageService.parsePlanDetail(from: Data(
+    #"{"code":0,"data":{"planCode":"standard","currentPeriodEnd":"2026-09-01 00:00:00","expired":false}}"#.utf8))
+check("mimo detail planCode", mimoDetail?.planCode == "standard")
+check("mimo detail 未过期", mimoDetail?.expired == false)
+check("mimo detail periodEnd 2026", Calendar.current.dateComponents([.year], from: mimoDetail?.periodEnd ?? Date()).year == 2026)
+check("mimo detail code≠0 → nil", MiMoUsageService.parsePlanDetail(from: Data(
+    #"{"code":500,"message":"boom"}"#.utf8)) == nil)
+
+let mimoPlanUsage = MiMoUsageService.parsePlanUsage(from: Data(
+    #"{"code":0,"data":{"monthUsage":{"percent":0.1633,"items":[{"name":"default","used":163326,"limit":1000000,"percent":0.1633}]}}}"#.utf8))
+check("mimo plan used", mimoPlanUsage?.used == 163326)
+check("mimo plan limit", mimoPlanUsage?.limit == 1_000_000)
+check("mimo plan pct≈16.33", abs((mimoPlanUsage?.usedPct ?? 0) - 16.33) < 0.01)
+check("mimo plan 无percent→计数计算", MiMoUsageService.parsePlanUsage(from: Data(
+    #"{"code":0,"data":{"monthUsage":{"items":[{"used":50,"limit":200}]}}}"#.utf8))?.usedPct == 25)
+
+check("mimo cookie 合法(带前缀)", MiMoUsageService.normalizedCookie(
+    from: "Cookie: api-platform_serviceToken=abc; userId=123") != nil)
+check("mimo cookie 去前缀", MiMoUsageService.normalizedCookie(
+    from: "Cookie: api-platform_serviceToken=abc; userId=123") == "api-platform_serviceToken=abc; userId=123")
+check("mimo cookie 缺 serviceToken → nil", MiMoUsageService.normalizedCookie(from: "userId=123") == nil)
+check("mimo cookie 缺 userId → nil", MiMoUsageService.normalizedCookie(from: "api-platform_serviceToken=abc") == nil)
+check("mimo cookie 大小写不敏感", MiMoUsageService.normalizedCookie(
+    from: "api-platform_ServiceToken=x; UserID=1") != nil)
+
+check("mimo 200→nil", MiMoUsageService.classifyHTTP(200) == nil)
+check("mimo 302→loginRequired", MiMoUsageService.classifyHTTP(302) == .loginRequired)
+check("mimo 401→loginRequired", MiMoUsageService.classifyHTTP(401) == .loginRequired)
+check("mimo 403→invalidCredentials", MiMoUsageService.classifyHTTP(403) == .invalidCredentials)
+check("mimo 500→unknown", {
+    if case .unknown = MiMoUsageService.classifyHTTP(500)! { return true }
+    return false
+}())
+check("mimo envelope 0→nil", MiMoUsageService.classifyEnvelope(code: 0, message: nil) == nil)
+check("mimo envelope 401→loginRequired", MiMoUsageService.classifyEnvelope(code: 401, message: nil) == .loginRequired)
+check("mimo envelope 403→invalidCredentials", MiMoUsageService.classifyEnvelope(code: 403, message: nil) == .invalidCredentials)
+check("mimo envelope 1000→parse", {
+    if case .parse = MiMoUsageService.classifyEnvelope(code: 1000, message: "boom")! { return true }
+    return false
+}())
+
+check("mimo money full CNY", MiMoMoneyFormat.full(110.5, currency: "CNY") == "¥110.50")
+check("mimo money full USD", MiMoMoneyFormat.full(9.5, currency: "USD") == "$9.50")
+check("mimo money compact 万", MiMoMoneyFormat.compact(12345.6, currency: "CNY") == "¥1.2万")
+check("mimo money compact 小额", MiMoMoneyFormat.compact(9.996, currency: "CNY") == "¥10.00")
+
+// --- MiniMax Coding Plan(token_plan/remains)---
+// 2026-08-18 真实订阅 payload(CN 端点原样):general 纯百分比窗口(total=0)
+// + video 专项日/周次数;base_resp 成功。
+let mmLive = #"{"model_remains":[{"start_time":1786982400000,"end_time":1787000400000,"remains_time":17656587,"current_interval_total_count":0,"current_interval_usage_count":0,"model_name":"general","current_weekly_total_count":0,"current_weekly_usage_count":0,"weekly_start_time":1786896000000,"weekly_end_time":1787500800000,"weekly_remains_time":518056587,"current_interval_status":1,"current_interval_remaining_percent":100,"current_weekly_status":1,"current_weekly_remaining_percent":100},{"start_time":1786982400000,"end_time":1787068800000,"remains_time":86056587,"current_interval_total_count":3,"current_interval_usage_count":0,"model_name":"video","current_weekly_total_count":21,"current_weekly_usage_count":0,"weekly_start_time":1786896000000,"weekly_end_time":1787500800000,"weekly_remains_time":518056587,"current_interval_status":1,"current_interval_remaining_percent":100,"current_weekly_status":1,"current_weekly_remaining_percent":100}],"base_resp":{"status_code":0,"status_msg":"success"}}"#
+let mmq = MiniMaxUsageService.parseQuota(from: Data(mmLive.utf8))
+check("minimax 真实 payload 解析 ok", mmq != nil)
+check("minimax 主条目=general", mmq?.modelName == "general")
+check("minimax general 纯百分比窗口 pct=0", mmq?.interval?.pct == 0)
+check("minimax general total=0 → usageText nil", mmq?.interval?.usageText == nil)
+check("minimax general interval reset=endTime", mmq?.interval?.resetTimeMs == 1_787_000_400_000)
+check("minimax general 周窗口 pct=0", mmq?.weekly?.pct == 0)
+check("minimax general 周窗口 reset", mmq?.weekly?.resetTimeMs == 1_787_500_800_000)
+check("minimax 其他模型条目=video", mmq?.models.count == 1 && mmq?.models.first?.name == "video")
+check("minimax video 日次数(percent反推)", mmq?.models.first?.interval?.usageText == "0/3 次")
+check("minimax video 周次数", mmq?.models.first?.weekly?.usageText == "0/21 次")
+
+// percent 反推计数(rp=83 → 剩 498/600,已用 102,pct 17;usage_count 故意填错值验证被忽略)
+let mmRp = #"{"data":{"model_remains":[{"model_name":"general","current_interval_total_count":600,"current_interval_usage_count":999,"end_time":1787000400000,"current_interval_remaining_percent":83}]}}"#
+let mmqRp = MiniMaxUsageService.parseQuota(from: Data(mmRp.utf8))
+check("minimax rp=83 → pct=17", mmqRp?.interval?.pct == 17)
+check("minimax rp 反推计数 used=102 remaining=498", mmqRp?.interval?.used == 102 && mmqRp?.interval?.remaining == 498)
+
+// percent 缺失 → 字面语义 usage_count=已用(2026-08-18 实测修正;旧社区口径相反,见模型头注释)
+let mmNoPct = #"{"data":{"model_remains":[{"model_name":"general","current_interval_total_count":200,"current_interval_usage_count":50,"remains_time":600000,"current_weekly_total_count":0,"current_weekly_usage_count":0}]}}"#
+let mmq2 = MiniMaxUsageService.parseQuota(from: Data(mmNoPct.utf8))
+check("minimax 无percent→字面语义 used=50 pct=25%", mmq2?.interval?.pct == 25 && mmq2?.interval?.used == 50)
+check("minimax 周额度0且无percent→nil", mmq2?.weekly == nil)
+check("minimax 无 general→首条为主条目", MiniMaxUsageService.parseQuota(from: Data(
+    #"{"data":{"model_remains":[{"model_name":"MiniMax-M2.5","current_interval_total_count":10,"current_interval_usage_count":2,"current_interval_remaining_percent":80}]}}"#.utf8))?.modelName == "MiniMax-M2.5")
+check("minimax total0且无percent→窗口nil", MiniMaxUsageService.parseQuota(from: Data(
+    #"{"data":{"model_remains":[{"model_name":"M","current_interval_total_count":0,"current_interval_usage_count":0}]}}"#.utf8))?.interval == nil)
+check("minimax 空 model_remains→nil", MiniMaxUsageService.parseQuota(from: Data(
+    #"{"data":{"model_remains":[]}}"#.utf8)) == nil)
+
+check("minimax envelope 1004→authExpired", MiniMaxUsageService.envelopeError(in: Data(
+    #"{"base_resp":{"status_code":1004,"status_msg":"not login"}}"#.utf8)) == .authExpired)
+check("minimax envelope 2062→noSubscription(实测)", MiniMaxUsageService.envelopeError(in: Data(
+    #"{"base_resp":{"status_code":2062,"status_msg":"no active token plan subscription"}}"#.utf8)) == .noSubscription)
+check("minimax envelope 2062 空消息→noSubscription", MiniMaxUsageService.envelopeError(in: Data(
+    #"{"base_resp":{"status_code":2062}}"#.utf8)) == .noSubscription)
+check("minimax envelope 1024→invalidResponse", {
+    if case .invalidResponse = MiniMaxUsageService.envelopeError(in: Data(
+        #"{"base_resp":{"status_code":1024,"status_msg":"insufficient"}}"#.utf8))! { return true }
+    return false
+}())
+check("minimax envelope 内嵌 data→authExpired", MiniMaxUsageService.envelopeError(in: Data(
+    #"{"data":{"base_resp":{"status_code":1004}}}"#.utf8)) == .authExpired)
+check("minimax envelope 0→nil", MiniMaxUsageService.envelopeError(in: Data(mmLive.utf8)) == nil)
+
+check("minimax epochMs 秒→毫秒", MiniMaxUsageService.epochMs(1_755_400_000) == 1_755_400_000_000)
+check("minimax epochMs 毫秒原样", MiniMaxUsageService.epochMs(1_755_400_000_000) == 1_755_400_000_000)
+check("minimax epochMs 非法→nil", MiniMaxUsageService.epochMs(1000) == nil && MiniMaxUsageService.epochMs(nil) == nil)
+check("minimax remains→now+1h", MiniMaxUsageService.resetTimeMs(
+    endTime: nil, remainsTime: 3_600_000, now: Date(timeIntervalSince1970: 1_000_000)) == 1_003_600_000)
+check("minimax endTime 优先", MiniMaxUsageService.resetTimeMs(
+    endTime: 1_755_400_000, remainsTime: 999, now: Date()) == 1_755_400_000_000)
+check("minimax 倒计时 90min 含1小时", MiniMaxWindow.resetText(
+    fromMs: Int64((Date().timeIntervalSince1970 + 90 * 60) * 1000))?.contains("1小时") == true)
+check("minimax 过去重置→nil", MiniMaxWindow.resetText(
+    fromMs: Int64((Date().timeIntervalSince1970 - 60) * 1000)) == nil)
+
+// UsageSnapshot:mimo/minimax 新字段旧 JSON 兼容 + 往返 + 序列/CSV
+let mmOldSnap = try? JSONDecoder().decode(UsageSnapshot.self, from: Data(
+    #"{"timestamp":700000000,"aliyunFiveHour":10}"#.utf8))
+check("minimax snapshot 旧JSON兼容", mmOldSnap?.minimaxInterval == nil && mmOldSnap?.mimoBalance == nil)
+let mmNewSnap = UsageSnapshot(timestamp: Date(), aliyunFiveHour: nil, aliyunOneWeek: nil,
+                              opencodeRolling: nil, opencodeWeekly: nil, opencodeMonthly: nil,
+                              mimoBalance: 110.5, mimoPlanPct: 16,
+                              minimaxInterval: 17, minimaxWeekly: 7)
+let mmEnc = try? JSONEncoder().encode(mmNewSnap)
+let mmDec = mmEnc.flatMap { try? JSONDecoder().decode(UsageSnapshot.self, from: $0) }
+check("minimax snapshot 往返", mmDec?.minimaxInterval == 17 && mmDec?.minimaxWeekly == 7
+      && mmDec?.mimoBalance == 110.5 && mmDec?.mimoPlanPct == 16)
+check("minimax series 映射", HistoryStore.series([mmNewSnap], provider: "minimax", window: "interval") == [17]
+      && HistoryStore.series([mmNewSnap], provider: "minimax", window: "weekly") == [7]
+      && HistoryStore.series([mmNewSnap], provider: "mimo", window: "plan") == [16])
+check("minimax CSV 前缀兼容+新列", {
+    let csv = HistoryStore.csv([mmNewSnap])
+    return csv.hasPrefix("timestamp,aliyun5h") && csv.contains("minimaxInterval")
+      && csv.contains("mimoBalance")
+}())
 
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

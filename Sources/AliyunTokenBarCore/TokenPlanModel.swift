@@ -78,6 +78,56 @@ public final class TokenPlanModel: ObservableObject {
     /// 当日费用账本(余额差快照,跨重启持久化)。
     public let deepSeekDailyStore: DeepSeekDailyStore
 
+    // MARK: - 智谱 GLM Coding Plan
+
+    /// 智谱 Coding Plan 用量(5h/周 + MCP 月度);未配置/未拉取为 nil
+    @Published public var zhipuQuota: ZhipuQuota?
+    /// 智谱 API Key(Keychain 存储,设置页粘贴;留空则自动发现 opencode 配置)。
+    @Published public var zhipuAPIKey: String {
+        didSet { credentialStore.write(zhipuAPIKey, account: Self.zhipuAPIKeyAccount) }
+    }
+    /// 智谱是否已配置(Keychain 手动配置 或 自动发现 opencode 的 coding-plan key)。
+    public var zhipuConfigured: Bool { zhipuEffectiveAPIKey != nil }
+    @Published public var zhipuError: String?
+    /// 实际生效的 key:手动配置优先,其次自动发现(均空为未配置)。
+    public var zhipuEffectiveAPIKey: String? {
+        if !zhipuAPIKey.isEmpty { return zhipuAPIKey }
+        return ZhipuUsageService.discoveredAPIKey()
+    }
+    /// CredentialStore 里智谱 API Key 的 account 名。
+    public static let zhipuAPIKeyAccount = KeychainAccounts.zhipuAPIKey
+
+    // MARK: - 小米 MiMo API
+
+    /// MiMo 余额 + Token 套餐用量(控制台 Cookie 认证);未配置/未拉取为 nil
+    @Published public var mimoUsage: MiMoUsageService.MiMoUsage?
+    @Published public var mimoError: String?
+    @Published public var mimoLoading = false
+    /// MiMo 最近一次成功拉取时间(状态行展示;失败保留旧值)
+    @Published public var mimoLastUpdated: Date?
+    /// MiMo 控制台 Cookie(整段 Cookie 请求头,Keychain 存储,didSet 同步回写)
+    @Published public var mimoCookie: String {
+        didSet { credentialStore.write(mimoCookie, account: Self.mimoCookieAccount) }
+    }
+    /// MiMo 是否已配置 Cookie。
+    public var mimoConfigured: Bool { !mimoCookie.isEmpty }
+    /// CredentialStore 里 MiMo Cookie 的 account 名。
+    public static let mimoCookieAccount = KeychainAccounts.mimoCookie
+
+    // MARK: - MiniMax Coding Plan
+
+    /// MiniMax Coding Plan 用量(当前窗口 + 周);未配置/未拉取为 nil
+    @Published public var minimaxQuota: MiniMaxQuota?
+    /// MiniMax Coding Plan API Key(Keychain 存储,设置页粘贴)
+    @Published public var minimaxAPIKey: String {
+        didSet { credentialStore.write(minimaxAPIKey, account: Self.minimaxAPIKeyAccount) }
+    }
+    /// MiniMax 是否已配置 API Key。
+    public var minimaxConfigured: Bool { !minimaxAPIKey.isEmpty }
+    @Published public var minimaxError: String?
+    /// CredentialStore 里 MiniMax API Key 的 account 名。
+    public static let minimaxAPIKeyAccount = KeychainAccounts.minimaxAPIKey
+
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
         didSet { UserDefaults.standard.set(refreshIntervalMinutes, forKey: UserDefaultsKeys.refreshIntervalMinutes); resetTimer() }
@@ -208,6 +258,9 @@ public final class TokenPlanModel: ObservableObject {
         openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
         openCodeWorkspaceID = defaults.string(forKey: UserDefaultsKeys.openCodeWorkspaceID) ?? ""
         deepSeekAPIKey = ""   // 延迟到 ensureCredentialLoaded() 读取
+        zhipuAPIKey = ""      // 延迟到 ensureCredentialLoaded() 读取
+        mimoCookie = ""       // 延迟到 ensureCredentialLoaded() 读取
+        minimaxAPIKey = ""    // 延迟到 ensureCredentialLoaded() 读取
 
         historyStore = HistoryStore(backend: FileHistoryBackend(url: HistoryStore.defaultURL()))
         deepSeekDailyStore = DeepSeekDailyStore()
@@ -221,6 +274,9 @@ public final class TokenPlanModel: ObservableObject {
                                     account: Self.openCodeCookieAccount, to: credentialStore)
         openCodeCookie = credentialStore.read(account: Self.openCodeCookieAccount) ?? ""
         deepSeekAPIKey = credentialStore.read(account: Self.deepSeekAPIKeyAccount) ?? ""
+        zhipuAPIKey = credentialStore.read(account: Self.zhipuAPIKeyAccount) ?? ""
+        mimoCookie = credentialStore.read(account: Self.mimoCookieAccount) ?? ""
+        minimaxAPIKey = credentialStore.read(account: Self.minimaxAPIKeyAccount) ?? ""
     }
 
     /// 启动定时刷新
@@ -236,6 +292,9 @@ public final class TokenPlanModel: ObservableObject {
         Task { await recoverOpenCodeIfNeeded(); await refreshOpenCode() }
         Task { await refreshKimi() }
         Task { await refreshDeepSeek() }
+        Task { await refreshZhipu() }
+        Task { await refreshMiMo() }
+        Task { await refreshMiniMax() }
         if loadAliyunAKSK() != nil {
             aliyunAKSKConfigured = true
         }
@@ -285,13 +344,15 @@ public final class TokenPlanModel: ObservableObject {
         resetBoundaryTask?.cancel()
         guard let q = quota else { return }
         let now = Date()
-        let candidates: [Int64] = [q.usage.fiveHour.resetTimeMs, q.usage.oneWeek.resetTimeMs]
-            .compactMap { ms -> Int64? in
-                guard ms > 0 else { return nil }
-                let t = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
-                return t > now ? ms : nil
-            }
-        guard let nextMs = candidates.min() else { return }
+        var candidates: [Int64] = []
+        if let ms = q.usage.fiveHour?.resetTimeMs { candidates.append(ms) }
+        candidates.append(q.usage.oneWeek.resetTimeMs)
+        let upcoming = candidates.compactMap { ms -> Int64? in
+            guard ms > 0 else { return nil }
+            let t = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+            return t > now ? ms : nil
+        }
+        guard let nextMs = upcoming.min() else { return }
         let fireAt = TimeInterval(nextMs) / 1000 + 10
         resetBoundaryTask = Task { [weak self] in
             let delay = fireAt - Date().timeIntervalSince1970
@@ -328,6 +389,9 @@ public final class TokenPlanModel: ObservableObject {
         await refreshOpenCode()
         await refreshKimi()
         await refreshDeepSeek()
+        await refreshZhipu()
+        await refreshMiMo()
+        await refreshMiniMax()
     }
 
     /// P1-C1:查 GitHub Releases 最新版本(启动一次 + 手动)。
@@ -409,6 +473,40 @@ public final class TokenPlanModel: ObservableObject {
         notificationTracker.clear(provider: "kimi")
     }
 
+    // MARK: - 智谱 GLM Coding Plan
+
+    /// 拉取智谱 Coding Plan 用量。未配置(无手动 key 且未发现 opencode 配置)时静默跳过。
+    public func refreshZhipu() async {
+        ensureCredentialLoaded()
+        guard let key = zhipuEffectiveAPIKey else { return }
+        let result = await ZhipuUsageService.fetchQuota(apiKey: key)
+        switch result {
+        case .success(let q):
+            zhipuQuota = q
+            zhipuError = nil
+            AppLog.debug("智谱用量刷新成功 5h=\(q.fiveHour.map { "\($0.pctInt)%" } ?? "无") weekly=\(q.weekly.map { "\($0.pctInt)%" } ?? "无") level=\(q.level ?? "?")", category: .zhipu)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: zhipuError = "智谱 API Key 无效或已失效,请在设置更新"
+            case .network(let s): zhipuError = "智谱 网络错误: \(s)"
+            case .parse: zhipuError = "智谱 响应格式变化,解析失败"
+            case .invalidResponse(let s): zhipuError = "智谱 响应异常: \(s)"
+            case .unknown(let s): zhipuError = s
+            }
+            AppLog.warning("智谱刷新失败: \(zhipuError ?? "")", category: .zhipu)
+        }
+    }
+
+    /// 移除手动配置的智谱 API Key + 清状态(自动发现的 opencode 配置不受影响)。
+    public func clearZhipu() {
+        credentialStore.delete(account: Self.zhipuAPIKeyAccount)
+        zhipuAPIKey = ""
+        zhipuQuota = nil
+        zhipuError = nil
+        notificationTracker.clear(provider: "zhipu")
+    }
+
     // MARK: - DeepSeek API
 
     /// 拉取 DeepSeek 总余额,并更新当日费用账本(余额差快照法)。
@@ -448,6 +546,81 @@ public final class TokenPlanModel: ObservableObject {
         deepSeekTodayCost = nil
         deepSeekError = nil
         deepSeekLastUpdated = nil
+    }
+
+    // MARK: - 小米 MiMo API
+
+    /// 拉取 MiMo 余额 + Token 套餐用量(控制台 Cookie 认证)。
+    /// 未配置 Cookie 时静默跳过;失败保留旧数据 + 状态行报错(DeepSeek 同语义)。
+    public func refreshMiMo() async {
+        ensureCredentialLoaded()
+        guard mimoConfigured else { return }
+        guard !mimoLoading else { return }
+        mimoLoading = true
+        defer { mimoLoading = false }
+        let result = await MiMoUsageService.fetchUsage(cookieHeader: mimoCookie)
+        switch result {
+        case .success(let usage):
+            mimoUsage = usage
+            mimoError = nil
+            mimoLastUpdated = Date()
+            AppLog.debug("MiMo 余额刷新成功 balance=\(usage.balance.balance)\(usage.balance.currency) plan=\(usage.plan.map { "\(Int($0.usedPct.rounded()))%" } ?? "无")", category: .mimo)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .invalidCookie: mimoError = "Cookie 缺少必需字段(serviceToken/userId),请重新复制"
+            case .loginRequired: mimoError = "MiMo 登录已过期,请重新登录平台并复制新 Cookie"
+            case .invalidCredentials: mimoError = "MiMo 账号无权访问(403),请检查账号"
+            case .network(let s): mimoError = "MiMo 网络错误: \(s)"
+            case .parse(let s): mimoError = "MiMo 响应格式变化,解析失败(\(s))"
+            case .unknown(let s): mimoError = s
+            }
+            AppLog.warning("MiMo 刷新失败: \(mimoError ?? "")", category: .mimo)
+        }
+    }
+
+    /// 移除 MiMo Cookie + 清状态。
+    public func clearMiMo() {
+        credentialStore.delete(account: Self.mimoCookieAccount)
+        mimoCookie = ""
+        mimoUsage = nil
+        mimoError = nil
+        mimoLastUpdated = nil
+    }
+
+    // MARK: - MiniMax Coding Plan
+
+    /// 拉取 MiniMax Coding Plan 用量(国内→国际→旧端点依次尝试)。
+    public func refreshMiniMax() async {
+        ensureCredentialLoaded()
+        guard minimaxConfigured else { return }
+        let result = await MiniMaxUsageService.fetchQuota(apiKey: minimaxAPIKey)
+        switch result {
+        case .success(let q):
+            minimaxQuota = q
+            minimaxError = nil
+            AppLog.debug("MiniMax 用量刷新成功 本窗=\(q.interval.map { "\($0.pctInt)%" } ?? "无") 周=\(q.weekly.map { "\($0.pctInt)%" } ?? "无") plan=\(q.planName ?? "?")", category: .minimax)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: minimaxError = "MiniMax API Key 无效或已失效,请在设置更新"
+            case .noSubscription: minimaxError = "Key 有效,但当前无生效中的 Coding Plan 订阅(订阅后自动恢复显示)"
+            case .network(let s): minimaxError = "MiniMax 网络错误: \(s)"
+            case .parse: minimaxError = "MiniMax 响应格式变化,解析失败"
+            case .invalidResponse(let s): minimaxError = "MiniMax 响应异常: \(s)"
+            case .unknown(let s): minimaxError = s
+            }
+            AppLog.warning("MiniMax 刷新失败: \(minimaxError ?? "")", category: .minimax)
+        }
+    }
+
+    /// 移除 MiniMax API Key + 清状态。
+    public func clearMiniMax() {
+        credentialStore.delete(account: Self.minimaxAPIKeyAccount)
+        minimaxAPIKey = ""
+        minimaxQuota = nil
+        minimaxError = nil
+        notificationTracker.clear(provider: "minimax")
     }
 
     // MARK: - 阿里云 OpenAPI AK/SK（console token 自动刷新）
@@ -570,7 +743,7 @@ public final class TokenPlanModel: ObservableObject {
     public func recordAndNotify() {
         let snap = UsageSnapshot(
             timestamp: Date(),
-            aliyunFiveHour: quota?.usage.fiveHour.percentageInt,
+            aliyunFiveHour: quota?.usage.fiveHour?.percentageInt,
             aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
             opencodeRolling: openCodeQuota?.rolling.pct,
             opencodeWeekly: openCodeQuota?.weekly.pct,
@@ -579,7 +752,13 @@ public final class TokenPlanModel: ObservableObject {
             kimiWeekly: kimiQuota?.weekly.pctInt,
             kimiMonthly: kimiQuota?.monthly?.pctInt,
             deepSeekBalance: deepSeekBalance?.totalBalance,
-            deepSeekTodayCost: deepSeekTodayCost?.cost
+            deepSeekTodayCost: deepSeekTodayCost?.cost,
+            zhipuFiveHour: zhipuQuota?.fiveHour?.pctInt,
+            zhipuWeekly: zhipuQuota?.weekly?.pctInt,
+            mimoBalance: mimoUsage?.balance.balance,
+            mimoPlanPct: mimoUsage?.plan.map { Int($0.usedPct.rounded()) },
+            minimaxInterval: minimaxQuota?.interval?.pctInt,
+            minimaxWeekly: minimaxQuota?.weekly?.pctInt
         )
         historyStore.append(snap)
 
@@ -590,7 +769,9 @@ public final class TokenPlanModel: ObservableObject {
         guard notificationsEnabled else { return }
         var entries: [(WatchKey, Int)] = []
         if let q = quota {
-            entries.append((WatchKey(provider: "aliyun", window: "5h"), q.usage.fiveHour.percentageInt))
+            if let f = q.usage.fiveHour {
+                entries.append((WatchKey(provider: "aliyun", window: "5h"), f.percentageInt))
+            }
             entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentageInt))
         }
         if let oc = openCodeQuota {
@@ -602,6 +783,23 @@ public final class TokenPlanModel: ObservableObject {
             entries.append((WatchKey(provider: "kimi", window: "weekly"), k.weekly.pctInt))
             if let m = k.monthly {
                 entries.append((WatchKey(provider: "kimi", window: "monthly"), m.pctInt))
+            }
+        }
+        if let z = zhipuQuota {
+            if let f = z.fiveHour {
+                entries.append((WatchKey(provider: "zhipu", window: "5h"), f.pctInt))
+            }
+            if let w = z.weekly {
+                entries.append((WatchKey(provider: "zhipu", window: "weekly"), w.pctInt))
+            }
+        }
+        // MiMo 为余额型(同 DeepSeek),不参与阈值告警;MiniMax 双窗口参与。
+        if let mm = minimaxQuota {
+            if let i = mm.interval {
+                entries.append((WatchKey(provider: "minimax", window: "interval"), i.pctInt))
+            }
+            if let w = mm.weekly {
+                entries.append((WatchKey(provider: "minimax", window: "weekly"), w.pctInt))
             }
         }
         for (key, band) in notificationTracker.evaluate(entries, config: thresholdConfig) {
@@ -631,7 +829,10 @@ public final class TokenPlanModel: ObservableObject {
     private func sendDailyDigest() {
         var parts: [String] = []
         if let q = quota {
-            parts.append("阿里云 5h \(q.usage.fiveHour.percentageInt)% · 7d \(q.usage.oneWeek.percentageInt)%")
+            var line = "阿里云"
+            if let f = q.usage.fiveHour { line += " 5h \(f.percentageInt)%" }
+            line += " 7d \(q.usage.oneWeek.percentageInt)%"
+            parts.append(line)
         }
         if let o = openCodeQuota {
             parts.append("OpenCode 滚动 \(o.rolling.pct)% · 周 \(o.weekly.pct)% · 月 \(o.monthly.pct)%")
@@ -644,6 +845,24 @@ public final class TokenPlanModel: ObservableObject {
         if let b = deepSeekBalance {
             var line = "DeepSeek 余额 \(DeepSeekMoneyFormat.full(b.totalBalance))"
             if let c = deepSeekTodayCost { line += " · 今日 \(DeepSeekMoneyFormat.full(c.cost))" }
+            parts.append(line)
+        }
+        if let z = zhipuQuota {
+            var line = "智谱 GLM"
+            if let f = z.fiveHour { line += " 5h \(f.pctInt)%" }
+            if let w = z.weekly { line += " · 周 \(w.pctInt)%" }
+            if let m = z.mcp { line += " · MCP \(Int(m.percentage.rounded()))%" }
+            parts.append(line)
+        }
+        if let m = mimoUsage {
+            var line = "MiMo 余额 \(MiMoMoneyFormat.full(m.balance.balance, currency: m.balance.currency))"
+            if let p = m.plan { line += " · 套餐 \(Int(p.usedPct.rounded()))%" }
+            parts.append(line)
+        }
+        if let mm = minimaxQuota {
+            var line = "MiniMax"
+            if let i = mm.interval { line += " 本窗 \(i.pctInt)%" }
+            if let w = mm.weekly { line += " · 周 \(w.pctInt)%" }
             parts.append(line)
         }
         guard !parts.isEmpty else { return }
@@ -762,7 +981,7 @@ public final class TokenPlanModel: ObservableObject {
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
                 if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
-                AppLog.info("阿里云全量刷新成功 5h=\(q.usage.fiveHour.percentageInt)% 7d=\(q.usage.oneWeek.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                AppLog.info("阿里云全量刷新成功 \(logFiveHour(q.usage))7d=\(q.usage.oneWeek.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
@@ -785,7 +1004,7 @@ public final class TokenPlanModel: ObservableObject {
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
                 if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
-                AppLog.debug("阿里云 usage 刷新成功 5h=\(usage.fiveHour.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                AppLog.debug("阿里云 usage 刷新成功 \(logFiveHour(usage))耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
@@ -831,6 +1050,11 @@ public final class TokenPlanModel: ObservableObject {
         case .invalidResponse: return "响应异常"
         case .unknown(let s): return s
         }
+    }
+
+    /// 日志用 5h 片段:窗口存在时 "5h=X% "(带尾空格),缺失时空串。
+    private func logFiveHour(_ w: UsageWindows) -> String {
+        w.fiveHour.map { "5h=\($0.percentageInt)% " } ?? ""
     }
 
     /// 语义化版本比较:返回 -1(a<b)/0(=)/1(a>b)。解析失败按字符串比。

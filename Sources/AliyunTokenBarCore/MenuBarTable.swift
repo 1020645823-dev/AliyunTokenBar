@@ -15,9 +15,9 @@ public struct MenuBarTableValue: Equatable {
     }
 }
 
-/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→🧠→▣。
+/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→🧠→∞→▣(本机恒最后)。
 public enum MenuBarColumnKind: String, CaseIterable, Equatable {
-    case aliyun, kimi, openCode, deepSeek, system
+    case aliyun, kimi, openCode, deepSeek, minimax, system
 
     public var symbolName: String {
         switch self {
@@ -25,6 +25,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .kimi: return "sparkles"
         case .openCode: return "bolt.fill"
         case .deepSeek: return "brain.head.profile"
+        case .minimax: return "infinity"
         case .system: return "desktopcomputer"
         }
     }
@@ -34,6 +35,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .kimi: return "Kimi"
         case .openCode: return "OpenCode"
         case .deepSeek: return "DeepSeek"
+        case .minimax: return "MiniMax"
         case .system: return "本机"
         }
     }
@@ -43,6 +45,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .aliyun, .kimi: return "5小时"
         case .openCode: return "滚动"
         case .deepSeek: return "今日"
+        case .minimax: return "本窗"
         case .system: return "CPU"
         }
     }
@@ -50,7 +53,7 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
     public var secondaryLabel: String {
         switch self {
         case .aliyun: return "7天"
-        case .kimi, .openCode: return "周"
+        case .kimi, .openCode, .minimax: return "周"
         case .deepSeek: return "余额"
         case .system: return "内存"
         }
@@ -61,10 +64,25 @@ public struct MenuBarTableColumn: Equatable {
     public let kind: MenuBarColumnKind
     public let primary: MenuBarTableValue    // 上行:5h/5h/滚/CPU
     public let secondary: MenuBarTableValue  // 下行:7d/周/周/内存
+    /// 上行 tooltip 标签(默认取 kind.primaryLabel)。
+    public let primaryLabel: String
+    /// 下行 tooltip 标签(默认取 kind.secondaryLabel);nil = 单值列,tooltip 省略下行。
+    public let secondaryLabel: String?
     public init(kind: MenuBarColumnKind, primary: MenuBarTableValue, secondary: MenuBarTableValue) {
         self.kind = kind
         self.primary = primary
         self.secondary = secondary
+        self.primaryLabel = kind.primaryLabel
+        self.secondaryLabel = kind.secondaryLabel
+    }
+    /// 单值列:仅上行有指标(如阿里云 5h 窗口取消后只显 7d);次行仍给值(横杠)保持网格对齐。
+    public init(singleValueKind kind: MenuBarColumnKind, primary: MenuBarTableValue,
+                primaryLabel: String, secondary: MenuBarTableValue) {
+        self.kind = kind
+        self.primary = primary
+        self.secondary = secondary
+        self.primaryLabel = primaryLabel
+        self.secondaryLabel = nil
     }
 }
 
@@ -80,19 +98,19 @@ public enum MenuBarTable {
         MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compact($0) } ?? "—", pct: nil)
     }
 
-    /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→▣,与配置无关)。
-    /// 阿里云恒显示;Kimi/OpenCode/DeepSeek 已配置且(有数据或出错)时显示,出错→横杠;
+    /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→∞→▣,与配置无关;本机恒最后)。
+    /// 阿里云恒显示;Kimi/OpenCode/DeepSeek/MiniMax 已配置且(有数据或出错)时显示,出错→横杠;
     /// 本机开关开时显示,采样未就绪→横杠。
     public static func columns(
         aliyunFiveHour: Int?, aliyunOneWeek: Int?,
         kimiConfigured: Bool, kimiHasError: Bool, kimiFiveHour: Int?, kimiWeekly: Int?,
         openCodeConfigured: Bool, openCodeHasError: Bool, openCodeRolling: Int?, openCodeWeekly: Int?,
         deepSeekConfigured: Bool, deepSeekHasError: Bool, deepSeekTodayCost: Double?, deepSeekBalance: Double?,
+        minimaxConfigured: Bool, minimaxHasError: Bool, minimaxInterval: Int?, minimaxWeekly: Int?,
         systemEnabled: Bool, cpu: Int?, memory: Int?
     ) -> [MenuBarTableColumn] {
         var cols: [MenuBarTableColumn] = [
-            MenuBarTableColumn(kind: .aliyun,
-                               primary: value(aliyunFiveHour), secondary: value(aliyunOneWeek))
+            aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek)
         ]
         if kimiConfigured && (kimiHasError || kimiFiveHour != nil || kimiWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .kimi,
@@ -106,6 +124,10 @@ public enum MenuBarTable {
             cols.append(MenuBarTableColumn(kind: .deepSeek,
                                            primary: moneyValue(deepSeekTodayCost), secondary: moneyValue(deepSeekBalance)))
         }
+        if minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
+            cols.append(MenuBarTableColumn(kind: .minimax,
+                                           primary: value(minimaxInterval), secondary: value(minimaxWeekly)))
+        }
         if systemEnabled {
             cols.append(MenuBarTableColumn(kind: .system,
                                            primary: value(cpu), secondary: value(memory)))
@@ -113,10 +135,27 @@ public enum MenuBarTable {
         return cols
     }
 
-    /// 悬停 tooltip:每列「名称 主标签 值 · 次标签 值」,列间「 | 」分隔。
+    /// 阿里云列:5h 窗口存在 → 主=5h/次=7d;窗口缺失(2026-08-15 官方限时取消 5h 限额,
+    /// 服务端不再返回 per5Hour 字段)→ 单值列,主行直接显示 7d,次行横杠保持网格对齐。
+    /// 完全无数据(主行也横杠)同样走单值形态,标签仍标 7d。
+    static func aliyunColumn(fiveHour: Int?, oneWeek: Int?) -> MenuBarTableColumn {
+        guard let f5 = fiveHour else {
+            return MenuBarTableColumn(singleValueKind: .aliyun,
+                                      primary: value(oneWeek), primaryLabel: "7天",
+                                      secondary: value(nil))
+        }
+        return MenuBarTableColumn(kind: .aliyun, primary: value(f5), secondary: value(oneWeek))
+    }
+
+    /// 悬停 tooltip:每列「名称 主标签 值 · 次标签 值」,列间「 | 」分隔;
+    /// 单值列(secondaryLabel == nil)省略次段。
     public static func tooltip(columns: [MenuBarTableColumn]) -> String {
-        columns.map { col in
-            "\(col.kind.displayName) \(col.kind.primaryLabel) \(col.primary.text) · \(col.kind.secondaryLabel) \(col.secondary.text)"
+        columns.map { col -> String in
+            var text = "\(col.kind.displayName) \(col.primaryLabel) \(col.primary.text)"
+            if let secondaryLabel = col.secondaryLabel {
+                text += " · \(secondaryLabel) \(col.secondary.text)"
+            }
+            return text
         }.joined(separator: " | ")
     }
 }
@@ -128,7 +167,7 @@ extension TokenPlanModel {
     public func menuBarColumns() -> [MenuBarTableColumn] {
         let monitor = SystemMetricsMonitor.shared
         return MenuBarTable.columns(
-            aliyunFiveHour: quota?.usage.fiveHour.percentageInt,
+            aliyunFiveHour: quota?.usage.fiveHour?.percentageInt,
             aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
             kimiConfigured: kimiConfigured, kimiHasError: kimiError != nil,
             kimiFiveHour: kimiQuota?.fiveHour.pctInt, kimiWeekly: kimiQuota?.weekly.pctInt,
@@ -136,6 +175,8 @@ extension TokenPlanModel {
             openCodeRolling: openCodeQuota?.rolling.pct, openCodeWeekly: openCodeQuota?.weekly.pct,
             deepSeekConfigured: deepSeekConfigured, deepSeekHasError: deepSeekError != nil,
             deepSeekTodayCost: deepSeekTodayCost?.cost, deepSeekBalance: deepSeekBalance?.totalBalance,
+            minimaxConfigured: minimaxConfigured, minimaxHasError: minimaxError != nil,
+            minimaxInterval: minimaxQuota?.interval?.pctInt, minimaxWeekly: minimaxQuota?.weekly?.pctInt,
             systemEnabled: systemStatsEnabled,
             cpu: monitor.cpuPercent, memory: monitor.memoryPercent)
     }

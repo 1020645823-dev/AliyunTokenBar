@@ -2,46 +2,77 @@ import SwiftUI
 import AppKit
 import AliyunTokenBarCore
 
-// MARK: - 本机进程(CPU/内存 Top 10 + kill)
+// MARK: - 本机进程 · CPU/内存 双指标 Hero 卡 + Top 10 进程列表
+//
+// v2 视觉语言:
+// - 顶部品牌行(银灰 CPU + 名称 + 立即采样)
+// - **Hero 系统指标卡**:左 CPU / 右 内存,各占半宽,各自一个填充环 + 大数字百分比
+// - 子页签(CPU/内存)做成统一的分段式,激活态用品牌色填充
+// - 进程列表行:app icon + 名称 + 数值 + 迷你进度条 + kill 按钮;行 padding 紧凑但不死
 
-/// 面板「本机」tab:分段显示 CPU/内存占用前 10 进程,可两步确认 kill(SIGKILL)。
-/// 数据源:ProcessListMonitor(libproc,3s 采样,面板关闭即停)。
 struct SystemProcessesCard: View {
     enum SubTab: String, CaseIterable, Identifiable {
         case cpu, memory
         var id: String { rawValue }
-        var title: String { self == .cpu ? "CPU" : "内存" }
+        var title: String { self == .cpu ? "CPU Top" : "内存 Top" }
     }
 
     @State private var subTab: SubTab = .cpu
-    /// 两步确认 kill:确认中的 pid + 到期时间(3 秒未二次点击自动还原)。
     @State private var confirmingPid: Int32?
     @State private var confirmDeadline: Date = .distantPast
 
     @ObservedObject private var monitor = ProcessListMonitor.shared
+    @ObservedObject private var sysMonitor = SystemMetricsMonitor.shared
+
+    private var brand: Color { .atbBrandSystem }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
             header
+            heroMetricsCard
             subTabPicker
             processList
         }
-        .padding(DesignTokens.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { monitor.start() }
+        .onAppear {
+            monitor.start()
+            // Hero 指标卡需要系统采样;菜单栏「显示本机 CPU/内存」关闭时 AppDelegate 不会启动它,
+            // 这里兜底(start 幂等);关闭面板时仅当该开关仍关闭才停采,避免干扰开关驱动的采样
+            sysMonitor.start()
+        }
         .onDisappear {
             monitor.stop()
+            if !TokenPlanModel.shared.systemStatsEnabled {
+                sysMonitor.stop()
+            }
             confirmingPid = nil
         }
     }
 
+    // MARK: 品牌行
+
     private var header: some View {
         HStack(spacing: DesignTokens.spacingS) {
-            Image(systemName: "cpu").font(.system(size: 13, weight: .bold)).foregroundStyle(.green)
-            Text("本机进程").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
-            Spacer()
-            Button { monitor.refreshNow() } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
+            ATBProviderMark(tab: .system, size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("本机监控")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.atbTextPrimary)
+                Text("CPU / 内存 · 进程 Top 10")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.atbTextTertiary)
+                    .tracking(0.3)
+            }
+            Spacer(minLength: DesignTokens.spacingS)
+            Button {
+                monitor.refreshNow()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.atbTextTertiary)
+                    .frame(width: 22, height: 22)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
             .help("立即重新采样")
@@ -49,34 +80,125 @@ struct SystemProcessesCard: View {
         }
     }
 
+    // MARK: Hero 系统指标卡(CPU + 内存并列)
+
+    private var heroMetricsCard: some View {
+        let cpu = sysMonitor.cpuPercent
+        let mem = sysMonitor.memoryPercent
+        return HStack(spacing: DesignTokens.spacingM) {
+            metricBlock(
+                label: "CPU",
+                pct: cpu,
+                subtitle: cpu.map { cpuSubtitle($0) } ?? "采样中…"
+            )
+            metricBlock(
+                label: "内存",
+                pct: mem,
+                subtitle: mem.map { memSubtitle($0) } ?? "采样中…"
+            )
+        }
+    }
+
+    private func metricBlock(label: String, pct: Int?, subtitle: String) -> some View {
+        VStack(spacing: 6) {
+            // 环 + 标签
+            ZStack {
+                ATBFillRing(
+                    percentage: Double(pct ?? 0),
+                    brand: brand,
+                    diameter: 50, lineWidth: 5,
+                    threshold: nil  // 系统指标不按阈值变色(永远品牌色)
+                )
+                VStack(spacing: 0) {
+                    Text(pct.map { "\($0)%" } ?? "—")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.atbTextPrimary)
+                    Text(label)
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(Color.atbTextTertiary)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                }
+            }
+            Text(subtitle)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.atbTextTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, DesignTokens.spacingS)
+        .padding(.horizontal, DesignTokens.spacingS)
+        .background(Color.atbCardBackground)
+        .background(brand.opacity(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2)
+                .strokeBorder(brand.opacity(0.18), lineWidth: DesignTokens.strokeHairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
+    }
+
+    private func cpuSubtitle(_ pct: Int) -> String {
+        switch pct {
+        case 0..<25: return "空闲"
+        case 25..<60: return "轻负载"
+        case 60..<85: return "中等负载"
+        default: return "高负载"
+        }
+    }
+
+    private func memSubtitle(_ pct: Int) -> String {
+        let usedGB = sysMonitor.memoryUsedGB ?? 0
+        let totalGB = sysMonitor.memoryTotalGB ?? 0
+        if totalGB > 0 {
+            return String(format: "%.1f / %.0f GB", usedGB, totalGB)
+        }
+        return pct < 60 ? "宽松" : (pct < 85 ? "中等" : "吃紧")
+    }
+
+    // MARK: 子页签
+
     private var subTabPicker: some View {
-        HStack(spacing: DesignTokens.spacingXS) {
+        HStack(spacing: 0) {
             ForEach(SubTab.allCases) { t in
-                SubTabButton(title: t.title, isSelected: subTab == t) {
-                    withAnimation(.easeInOut(duration: 0.15)) { subTab = t }
+                SubTabButton(title: t.title, isSelected: subTab == t, brand: brand) {
+                    withAnimation(.easeInOut(duration: 0.18)) { subTab = t }
                 }
             }
         }
-        .padding(DesignTokens.spacingXS - 1)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .padding(2.5)
+        .background(Color.primary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    /// 子标签按钮:选中蓝底白字,未选中 hover 轻微高亮(与主面板标签一致的交互)。
     private struct SubTabButton: View {
         let title: String
         let isSelected: Bool
+        let brand: Color
         let action: () -> Void
         @State private var hovering = false
         var body: some View {
             Button(action: action) {
                 Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(isSelected ? .white : (hovering ? .atbTextPrimary : .atbTextSecondary))
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? .white : (hovering ? Color.atbTextPrimary : Color.atbTextSecondary))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
-                    .background(isSelected ? Color.atbBlue : (hovering ? Color.atbTextPrimary.opacity(0.07) : Color.clear))
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS))
+                    .background(
+                        Group {
+                            if isSelected {
+                                ZStack {
+                                    brand
+                                    LinearGradient(colors: [.white.opacity(0.15), .clear],
+                                                   startPoint: .top, endPoint: .bottom)
+                                }
+                            } else {
+                                Color.clear
+                            }
+                        }
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
@@ -84,7 +206,8 @@ struct SystemProcessesCard: View {
         }
     }
 
-    /// 当前子页签的 Top 10 列表。
+    // MARK: 进程列表
+
     private var topList: [ProcessSnapshot] {
         switch subTab {
         case .cpu: return ProcessListMonitor.topByCPU(monitor.snapshots)
@@ -100,13 +223,11 @@ struct SystemProcessesCard: View {
             case .memory: return Double(list.map(\.memoryBytes).max() ?? 1)
             }
         }()
-        return VStack(spacing: DesignTokens.spacingS - 2) {
+        return VStack(spacing: DesignTokens.spacingXS) {
             if list.isEmpty {
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(DesignTokens.spacingL)
-                    .background(Color.atbCardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+                    .frame(height: 60)
+                    .atbCard(alignment: .center)
             } else {
                 ForEach(list) { p in
                     ProcessRow(snapshot: p, subTab: subTab, maxValue: maxValue,
@@ -117,12 +238,11 @@ struct SystemProcessesCard: View {
         }
     }
 
-    /// kill 两步确认:第一次点 → 进入确认态;3 秒内第二次点 → SIGKILL;root 进程不可点。
-    /// 超时还原:asyncAfter 到期后若仍处于确认态则清除(二次点击已杀成功时 confirmingPid 已置 nil,不会误清)。
+    /// kill 两步确认
     private func killTapped(_ p: ProcessSnapshot) {
         guard !p.isRoot else { return }
         if confirmingPid == p.pid, Date() < confirmDeadline {
-            _ = ProcessListMonitor.kill(p.pid)   // 失败静默:下轮刷新该行自然消失
+            _ = ProcessListMonitor.kill(p.pid)
             confirmingPid = nil
         } else {
             confirmingPid = p.pid
@@ -134,7 +254,7 @@ struct SystemProcessesCard: View {
     }
 }
 
-/// 进程行:app 图标 + 名称(副行进程名)+ 数值 + 迷你进度条 + kill 按钮。
+// MARK: - 进程行
 private struct ProcessRow: View {
     let snapshot: ProcessSnapshot
     let subTab: SystemProcessesCard.SubTab
@@ -147,11 +267,13 @@ private struct ProcessRow: View {
             procIcon
             VStack(alignment: .leading, spacing: 1) {
                 Text(snapshot.appName)
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.atbTextPrimary)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.atbTextPrimary)
                     .lineLimit(1)
                 if snapshot.name != snapshot.appName {
                     Text(snapshot.name)
-                        .font(.system(size: 9)).foregroundStyle(.atbTextTertiary)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.atbTextTertiary)
                         .lineLimit(1)
                 }
             }
@@ -159,40 +281,46 @@ private struct ProcessRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: DesignTokens.spacingXS) {
                     Text(valueText)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .foregroundStyle(.atbTextPrimary)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.atbTextPrimary)
                     if snapshot.isRoot {
                         Text("系统")
-                            .font(.system(size: 8, weight: .medium)).foregroundStyle(.atbTextTertiary)
-                            .padding(.horizontal, 3).padding(.vertical, 1)
-                            .background(Color.atbSeparator)
-                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 3))
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Color.atbTextTertiary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.primary.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
                 }
                 miniBar
             }
             killButton
         }
-        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, 7)
+        .padding(.horizontal, DesignTokens.spacingM - 2)
+        .padding(.vertical, DesignTokens.spacingS - 2)
         .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radiusM - 2)
+                .strokeBorder(Color.atbSeparator.opacity(0.4), lineWidth: DesignTokens.strokeHairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM - 2))
     }
 
-    /// app 图标(.app 进程)或齿轮占位。
     @ViewBuilder
     private var procIcon: some View {
         if let appPath = snapshot.appPath {
             Image(nsImage: NSWorkspace.shared.icon(forFile: appPath))
-                .resizable().frame(width: 20, height: 20)
+                .resizable().frame(width: 18, height: 18)
         } else {
             Image(systemName: "gearshape.fill")
-                .font(.system(size: 14)).foregroundStyle(.atbTextTertiary)
-                .frame(width: 20, height: 20)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.atbTextTertiary)
+                .frame(width: 18, height: 18)
         }
     }
 
-    /// 数值:CPU 不钳制可 >100%,首采 nil → 横杠;内存人类可读。
     private var valueText: String {
         switch subTab {
         case .cpu:
@@ -203,7 +331,6 @@ private struct ProcessRow: View {
         }
     }
 
-    /// 迷你进度条:相对本列表最大值(视觉参考,非 100% 上限)。
     private var miniBar: some View {
         let value: Double = {
             switch subTab {
@@ -216,25 +343,26 @@ private struct ProcessRow: View {
             ZStack(alignment: .leading) {
                 Capsule().frame(height: 3).foregroundStyle(Color.primary.opacity(0.10))
                 Capsule().frame(width: proxy.size.width * CGFloat(ratio), height: 3)
-                    .foregroundStyle(Color.atbBlue.opacity(0.7))
+                    .foregroundStyle(Color.atbBrandSystem.opacity(0.7))
             }
         }
-        .frame(width: 64, height: 3)
+        .frame(width: 76, height: 3)
     }
 
-    /// kill 按钮:root 置灰;确认态红色文字"确认?";常态 xmark.circle。
     private var killButton: some View {
         Button(action: onKill) {
             if isConfirming {
                 Text("确认?")
-                    .font(.system(size: 10, weight: .bold)).foregroundStyle(.atbCritical)
-                    .padding(.horizontal, DesignTokens.spacingS - 2).padding(.vertical, 3)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.atbCritical)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
                     .background(Color.atbCritical.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
             } else {
                 Image(systemName: "xmark.circle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(snapshot.isRoot ? Color.atbTextTertiary.opacity(0.35) : .atbTextSecondary)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(snapshot.isRoot ? Color.atbTextTertiary.opacity(0.35) : Color.atbTextSecondary)
             }
         }
         .buttonStyle(.plain)

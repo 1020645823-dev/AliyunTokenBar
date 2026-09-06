@@ -26,6 +26,10 @@ public final class SystemMetricsMonitor: ObservableObject {
     @Published public private(set) var cpuPercent: Int?
     /// 内存已用百分比(0-100,活动监视器口径)。stop() 后为 nil。
     @Published public private(set) var memoryPercent: Int?
+    /// 内存已用 GB(用于面板显示具体值)。stop()/未采样为 nil。
+    @Published public private(set) var memoryUsedGB: Double?
+    /// 内存总量 GB(用于面板显示具体值)。stop() 后为 nil(物理内存恒定但保留语义化)。
+    @Published public private(set) var memoryTotalGB: Double?
 
     /// 采样间隔(秒)
     public static let sampleInterval: TimeInterval = 30
@@ -38,7 +42,15 @@ public final class SystemMetricsMonitor: ObservableObject {
     public func start() {
         guard timer == nil else { return }
         lastTicks = Self.sampleCPUTicks()
-        memoryPercent = Self.sampleMemoryPercent()
+        if let pair = Self.sampleMemoryBytes() {
+            memoryPercent = Self.memoryUsedPercent(active: pair.active,
+                                                   wired: pair.wired,
+                                                   compressed: pair.compressed,
+                                                   pageSize: pair.pageSize,
+                                                   totalBytes: pair.totalBytes)
+            memoryUsedGB = Double(pair.usedBytes) / 1024.0 / 1024.0 / 1024.0
+            memoryTotalGB = Double(pair.totalBytes) / 1024.0 / 1024.0 / 1024.0
+        }
         timer = Timer.publish(every: Self.sampleInterval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.tick() }
@@ -51,6 +63,8 @@ public final class SystemMetricsMonitor: ObservableObject {
         lastTicks = nil
         cpuPercent = nil
         memoryPercent = nil
+        memoryUsedGB = nil
+        memoryTotalGB = nil
     }
 
     private func tick() {
@@ -60,8 +74,14 @@ public final class SystemMetricsMonitor: ObservableObject {
             }
             lastTicks = cur
         }
-        if let mem = Self.sampleMemoryPercent() {
-            memoryPercent = mem
+        if let pair = Self.sampleMemoryBytes() {
+            memoryPercent = Self.memoryUsedPercent(active: pair.active,
+                                                   wired: pair.wired,
+                                                   compressed: pair.compressed,
+                                                   pageSize: pair.pageSize,
+                                                   totalBytes: pair.totalBytes)
+            memoryUsedGB = Double(pair.usedBytes) / 1024.0 / 1024.0 / 1024.0
+            memoryTotalGB = Double(pair.totalBytes) / 1024.0 / 1024.0 / 1024.0
         }
     }
 }
@@ -139,5 +159,36 @@ extension SystemMetricsMonitor {
         let used = (active + wired + compressed) * pageSize
         let pct = Double(used) / Double(totalBytes) * 100
         return min(max(Int(pct.rounded()), 0), 100)
+    }
+
+    /// 一次采样 → 返回原始字节采样。host_statistics64 失败返回 nil。
+    /// totalBytes = 物理内存(ProcessInfo)。
+    /// 用例:面板"已用 / 总量 GB"展示。
+    public struct MemorySample {
+        public let active: UInt64
+        public let wired: UInt64
+        public let compressed: UInt64
+        public let pageSize: UInt64
+        public let totalBytes: UInt64
+        public let usedBytes: UInt64
+    }
+
+    public static func sampleMemoryBytes() -> MemorySample? {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.stride / MemoryLayout<integer_t>.stride)
+        let result = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        let active = UInt64(stats.active_count)
+        let wired = UInt64(stats.wire_count)
+        let compressed = UInt64(stats.compressor_page_count)
+        let pageSize = UInt64(vm_kernel_page_size)
+        let totalBytes = ProcessInfo.processInfo.physicalMemory
+        let usedBytes = (active + wired + compressed) &* pageSize
+        return MemorySample(active: active, wired: wired, compressed: compressed,
+                           pageSize: pageSize, totalBytes: totalBytes, usedBytes: usedBytes)
     }
 }

@@ -77,11 +77,16 @@ public struct AddonSummary: Equatable {
     }
 }
 
-/// 一次 usage 响应同时包含 5 小时和 7 天两个窗口。
+/// 一次 usage 响应的窗口集合。7 天窗口恒存在;5 小时窗口可为 nil。
+///
+/// fiveHour == nil 表示服务端未返回任何 per5Hour 字段 —— 2026-08-15 起 Token Plan
+/// 官方限时取消 5 小时限额,usage RPC 只返回周窗口;若官方恢复该窗口(字段回归),
+/// 解析自动带回非 nil,UI 随之恢复双窗口展示。调用方对 nil 应隐藏对应统计,
+/// 不应显示 0%(0% 会与「窗口存在但零用量」混淆)。
 public struct UsageWindows: Equatable {
-    public let fiveHour: UsageDetail
+    public let fiveHour: UsageDetail?
     public let oneWeek: UsageDetail
-    public init(fiveHour: UsageDetail, oneWeek: UsageDetail) {
+    public init(fiveHour: UsageDetail?, oneWeek: UsageDetail) {
         self.fiveHour = fiveHour; self.oneWeek = oneWeek
     }
 }

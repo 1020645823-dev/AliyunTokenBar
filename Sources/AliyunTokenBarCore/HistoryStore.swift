@@ -18,12 +18,27 @@ public struct UsageSnapshot: Codable, Equatable {
     public let deepSeekBalance: Double?
     /// DeepSeek 当日费用(元;0点→快照时刻累计)
     public let deepSeekTodayCost: Double?
+    /// 智谱 GLM Coding Plan 5h 窗口已用百分比
+    public let zhipuFiveHour: Int?
+    /// 智谱 GLM Coding Plan 周窗口已用百分比
+    public let zhipuWeekly: Int?
+    /// 小米 MiMo 总余额(元/美元,跟随接口币种;未配置/未拉取为 nil)
+    public let mimoBalance: Double?
+    /// 小米 MiMo Token 套餐月度已用百分比
+    public let mimoPlanPct: Int?
+    /// MiniMax Coding Plan 当前计费窗口已用百分比
+    public let minimaxInterval: Int?
+    /// MiniMax Coding Plan 周窗口已用百分比
+    public let minimaxWeekly: Int?
 
     public init(timestamp: Date,
                 aliyunFiveHour: Int?, aliyunOneWeek: Int?,
                 opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?,
                 kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil, kimiMonthly: Int? = nil,
-                deepSeekBalance: Double? = nil, deepSeekTodayCost: Double? = nil) {
+                deepSeekBalance: Double? = nil, deepSeekTodayCost: Double? = nil,
+                zhipuFiveHour: Int? = nil, zhipuWeekly: Int? = nil,
+                mimoBalance: Double? = nil, mimoPlanPct: Int? = nil,
+                minimaxInterval: Int? = nil, minimaxWeekly: Int? = nil) {
         self.timestamp = timestamp
         self.aliyunFiveHour = aliyunFiveHour
         self.aliyunOneWeek = aliyunOneWeek
@@ -35,6 +50,12 @@ public struct UsageSnapshot: Codable, Equatable {
         self.kimiMonthly = kimiMonthly
         self.deepSeekBalance = deepSeekBalance
         self.deepSeekTodayCost = deepSeekTodayCost
+        self.zhipuFiveHour = zhipuFiveHour
+        self.zhipuWeekly = zhipuWeekly
+        self.mimoBalance = mimoBalance
+        self.mimoPlanPct = mimoPlanPct
+        self.minimaxInterval = minimaxInterval
+        self.minimaxWeekly = minimaxWeekly
     }
 }
 
@@ -213,6 +234,11 @@ public final class HistoryStore {
             case ("kimi", "5h"): return snap.kimiFiveHour
             case ("kimi", "weekly"): return snap.kimiWeekly
             case ("kimi", "monthly"): return snap.kimiMonthly
+            case ("zhipu", "5h"): return snap.zhipuFiveHour
+            case ("zhipu", "weekly"): return snap.zhipuWeekly
+            case ("mimo", "plan"): return snap.mimoPlanPct
+            case ("minimax", "interval"): return snap.minimaxInterval
+            case ("minimax", "weekly"): return snap.minimaxWeekly
             default: return nil
             }
         }
@@ -246,8 +272,9 @@ public final class HistoryStore {
     }
 
     /// 快照序列 → CSV(P2-B5)。首行表头,ISO8601 时间戳,空值留空。
+    /// 新列只追加在行尾,保证旧表头前缀兼容(CI testHistoryCSV 断言 prefix)。
     public static func csv(_ snapshots: [UsageSnapshot]) -> String {
-        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost"
+        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost,zhipu5h,zhipuWeekly,mimoBalance,mimoPlanPct,minimaxInterval,minimaxWeekly"
         let fmt = ISO8601DateFormatter()
         var rows: [String] = [header]
         for s in snapshots {
@@ -259,6 +286,9 @@ public final class HistoryStore {
                 cell(s.opencodeRolling), cell(s.opencodeWeekly), cell(s.opencodeMonthly),
                 cell(s.kimiFiveHour), cell(s.kimiWeekly), cell(s.kimiMonthly),
                 moneyCell(s.deepSeekBalance), moneyCell(s.deepSeekTodayCost),
+                cell(s.zhipuFiveHour), cell(s.zhipuWeekly),
+                moneyCell(s.mimoBalance), cell(s.mimoPlanPct),
+                cell(s.minimaxInterval), cell(s.minimaxWeekly),
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n")

@@ -214,7 +214,7 @@ private struct NotificationSettingsPage: View {
                 Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
                 Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)
                 if model.dailyDigestEnabled {
-                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi / DeepSeek 用量发送一条通知。")
+                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi / DeepSeek / 智谱 / MiMo / MiniMax 用量发送一条通知。")
                         .font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
                 }
                 if model.notificationsEnabled {
@@ -249,6 +249,12 @@ private struct ServicesSettingsPage: View {
     @State private var manualWorkspaceError: String?
     @State private var deepSeekDraftKey = ""
     @State private var deepSeekSaveError: String?
+    @State private var zhipuDraftKey = ""
+    @State private var zhipuSaveError: String?
+    @State private var mimoDraftCookie = ""
+    @State private var mimoSaveError: String?
+    @State private var minimaxDraftKey = ""
+    @State private var minimaxSaveError: String?
 
     var body: some View {
         ScrollView {
@@ -257,6 +263,9 @@ private struct ServicesSettingsPage: View {
                 kimiCard
                 openCodeCard
                 deepSeekCard
+                zhipuCard
+                mimoCard
+                minimaxCard
             }
             .padding(DesignTokens.spacingL)
         }
@@ -402,6 +411,139 @@ private struct ServicesSettingsPage: View {
         Task { await model.refreshDeepSeek() }
     }
 
+    // MARK: 智谱 GLM
+
+    private var zhipuCard: some View {
+        cardContainer(icon: "atom", iconColor: .atbBrandZhipu, title: "智谱 GLM Coding Plan") {
+            if model.zhipuConfigured {
+                if model.zhipuAPIKey.isEmpty {
+                    statusRow("已自动发现(opencode 配置 zhipuai-coding-plan)")
+                    caption("在 ~/.config/opencode/opencode.json 检测到 Coding Plan API Key,直接使用,不复制存储。")
+                } else {
+                    statusRow("已配置 (…\(model.zhipuAPIKey.suffix(4)))")
+                    Button("移除 API Key") { model.clearZhipu() }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+                Button("立即刷新") { Task { await model.refreshZhipu() } }
+                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+            } else {
+                HStack(spacing: DesignTokens.spacingS) {
+                    SecureField("API Key(可选)", text: $zhipuDraftKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Button("保存并查询") { saveZhipuKey() }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .font(.system(size: 11, weight: .medium))
+                }
+                if let zhipuSaveError {
+                    Text(zhipuSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                }
+                caption("无需手动配置:本机安装 opencode 并配置智谱 Coding Plan 后自动发现。也可在 bigmodel.cn → API Keys 创建后粘贴;Key 只存系统钥匙串。")
+            }
+        }
+    }
+
+    private func saveZhipuKey() {
+        let k = zhipuDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else {
+            zhipuSaveError = "请输入 API Key"
+            return
+        }
+        zhipuSaveError = nil
+        model.zhipuAPIKey = k
+        zhipuDraftKey = ""
+        Task { await model.refreshZhipu() }
+    }
+
+    // MARK: 小米 MiMo
+
+    private var mimoCard: some View {
+        cardContainer(icon: "waveform", iconColor: .atbBrandMiMo, title: "小米 MiMo 开放平台") {
+            if model.mimoConfigured {
+                statusRow("已配置平台 Cookie")
+                HStack(spacing: DesignTokens.spacingM) {
+                    Button("立即刷新") { Task { await model.refreshMiMo() } }
+                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+                    Button("移除 Cookie") { model.clearMiMo() }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+                    SecureField("Cookie: api-platform_serviceToken=…; userId=…",
+                                text: $mimoDraftCookie)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Button("保存并查询") { saveMiMoCookie() }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .font(.system(size: 11, weight: .medium))
+                    if let mimoSaveError {
+                        Text(mimoSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                    }
+                }
+                caption("MiMo 未开放 API Key 余额接口:登录 platform.xiaomimimo.com 后,从浏览器开发者工具复制任一 api/v1 请求的整段 Cookie 请求头。Cookie 只存系统钥匙串,过期后重新粘贴。")
+            }
+        }
+    }
+
+    private func saveMiMoCookie() {
+        let c = mimoDraftCookie.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !c.isEmpty else {
+            mimoSaveError = "请粘贴 Cookie 请求头"
+            return
+        }
+        guard MiMoUsageService.normalizedCookie(from: c) != nil else {
+            mimoSaveError = "缺少必需 cookie(api-platform_serviceToken / userId)"
+            return
+        }
+        mimoSaveError = nil
+        model.mimoCookie = c
+        mimoDraftCookie = ""
+        Task { await model.refreshMiMo() }
+    }
+
+    // MARK: MiniMax
+
+    private var minimaxCard: some View {
+        cardContainer(icon: "infinity", iconColor: .atbBrandMiniMax, title: "MiniMax Coding Plan") {
+            if model.minimaxConfigured {
+                statusRow("已配置 (…\(model.minimaxAPIKey.suffix(4)))")
+                HStack(spacing: DesignTokens.spacingM) {
+                    Button("立即刷新") { Task { await model.refreshMiniMax() } }
+                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+                    Button("移除 API Key") { model.clearMiniMax() }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+                    HStack(spacing: DesignTokens.spacingS) {
+                        SecureField("API Key(eyJ…)", text: $minimaxDraftKey)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11, design: .monospaced))
+                        Button("保存并查询") { saveMiniMaxKey() }
+                            .buttonStyle(ATBPrimaryButtonStyle())
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    if let minimaxSaveError {
+                        Text(minimaxSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                    }
+                }
+                caption("在 platform.minimaxi.com → 账户管理 → API Key 创建 Coding Plan Key 后粘贴(国际版为 platform.minimax.io)。Key 只存系统钥匙串;国内/国际端点自动尝试。")
+            }
+        }
+    }
+
+    private func saveMiniMaxKey() {
+        let k = minimaxDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else {
+            minimaxSaveError = "请输入 API Key"
+            return
+        }
+        minimaxSaveError = nil
+        model.minimaxAPIKey = k
+        minimaxDraftKey = ""
+        Task { await model.refreshMiniMax() }
+    }
+
     // MARK: 卡片零件
 
     /// 卡片容器:头部(图标+标题)+ 内容,视觉 token 与弹层卡片一致。
@@ -462,7 +604,10 @@ private struct HistorySettingsPage: View {
 
     private var trendSection: some View {
         historyCard(icon: "chart.xyaxis.line", iconColor: .atbBlue, title: "用量趋势(近 40 个采样点)") {
-            trendRow("阿里云 · 5小时", color: .atbBlue, provider: "aliyun", window: "5h")
+            // 5h 窗口被官方取消(现 quota 可证)时隐藏该趋势行;无 quota(未登录等)保留。
+            if model.quota?.usage.fiveHour != nil || model.quota == nil {
+                trendRow("阿里云 · 5小时", color: .atbBlue, provider: "aliyun", window: "5h")
+            }
             trendRow("阿里云 · 7天", color: .orange, provider: "aliyun", window: "7d")
             if model.openCodeConfigured {
                 trendRow("OpenCode · 滚动", color: .purple, provider: "opencode", window: "rolling")
@@ -483,7 +628,7 @@ private struct HistorySettingsPage: View {
                 Spacer()
                 LimitEstimateLabel(provider: provider, window: window)
             }
-            UsageSparkline(provider: provider, window: window, color: color, height: 22)
+            UsageSparkline(provider: provider, window: window, brand: color, height: 22)
         }
     }
 

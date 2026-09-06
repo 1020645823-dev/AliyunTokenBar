@@ -3,50 +3,81 @@ import AppKit
 import AliyunTokenBarCore
 
 // MARK: - Kimi Code 用量卡
+//
+// v3 视觉语言:与 OpenCodeCard 对称(品牌行 + 三窗口一组环卡 + 订阅池条 + 加油包条)。
+// 仅在检测到本机 KimiCodeBar / Kimi CLI 凭证后显示。
 
-/// Kimi Code 套餐用量(5h/周/月度总额 + 加油包)。
-/// 与阿里云/OpenCode 共用 UsageCard——同一套设计 token(2 位小数/带刻度进度条)。
-/// 仅在检测到本机 KimiCodeBar / Kimi CLI 凭证后显示。
 struct KimiCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var showKimiLogin = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
-            // 品牌头部行:青色闪电 + 刷新(Kimi 专属)
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: "sparkles").font(.system(size: 13, weight: .bold)).foregroundStyle(.teal)
-                Text("Kimi Code").font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
-                if let level = model.kimiQuota?.membershipLevel {
-                    Text(levelDisplay(level)).font(.system(size: 9, weight: .medium)).foregroundStyle(.teal)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Color.teal.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusS - 2))
+            providerHeader
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: 品牌行
+
+    private var providerHeader: some View {
+        HStack(spacing: DesignTokens.spacingS) {
+            ATBProviderMark(tab: .kimi, size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text("Kimi Code")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.atbTextPrimary)
+                    if let level = model.kimiQuota?.membershipLevel {
+                        Text(levelDisplay(level))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color.atbBrandKimi)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(Color.atbBrandKimi.opacity(0.14))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
                 }
-                Spacer()
-                Button { Task { await model.refreshKimi() } } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 12)).foregroundStyle(.atbTextTertiary)
-                }
-                .buttonStyle(.plain)
-                .help("刷新 Kimi 用量")
-                .accessibilityLabel("刷新 Kimi 用量")
+                Text("Moonshot · 三窗口共用")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.atbTextTertiary)
+                    .tracking(0.3)
             }
-            if let q = model.kimiQuota {
-                // 三窗口各一张卡片,视觉 token 与阿里云 5h/7d 完全一致
-                UsageCard(title: "5小时限额",
-                          percentage: q.fiveHour.pct, resetText: q.fiveHour.slidingResetText,
-                          color: .teal, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
-                          showSparkline: model.sparklineEnabled,
-                          sparklineProvider: "kimi", sparklineWindow: "5h")
-                UsageCard(title: "每周限额",
-                          percentage: q.weekly.pct, resetText: q.weekly.resetTimeDisplay,
-                          color: .indigo, isLoading: model.isLoading, thresholdConfig: model.thresholdConfig,
-                          showSparkline: model.sparklineEnabled,
-                          sparklineProvider: "kimi", sparklineWindow: "weekly")
+            Spacer(minLength: DesignTokens.spacingS)
+            refreshButton
+        }
+    }
+
+    private var refreshButton: some View {
+        Button {
+            Task { await model.refreshKimi() }
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.atbTextTertiary)
+                .frame(width: 22, height: 22)
+                .background(Color.primary.opacity(0.06))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("刷新 Kimi 用量")
+        .accessibilityLabel("刷新 Kimi 用量")
+    }
+
+    // MARK: 内容
+
+    @ViewBuilder
+    private var content: some View {
+        if let q = model.kimiQuota {
+            VStack(spacing: DesignTokens.spacingM) {
+                multiRingSection(q: q)
                 if let balance = q.subscriptionBalance {
                     KimiSubscriptionCard(balance: balance)
                 } else if model.kimiWebLoggedIn {
                     UsageCard(title: "总使用量", percentage: nil, resetText: nil,
-                              color: .orange, isLoading: false, thresholdConfig: model.thresholdConfig,
-                              dataUnavailable: true)
+                              brand: .atbBrandKimi, isLoading: false,
+                              threshold: model.thresholdConfig, dataUnavailable: true)
                 }
                 if let booster = q.booster, booster.enabled {
                     KimiBoosterRow(booster: booster)
@@ -54,58 +85,135 @@ struct KimiCodeCard: View {
                 if !model.kimiWebLoggedIn {
                     kimiWebLoginHint
                 }
-            } else if let err = model.kimiError {
-                // 网络/服务故障:卡片显示横杠(—),表示数值不可用
-                let isNetworkError = err.contains("网络") || err.contains("响应") || err.contains("解析")
-                if isNetworkError {
-                    UsageCard(title: "5小时限额", percentage: nil, resetText: nil,
-                              color: .teal, isLoading: false, thresholdConfig: model.thresholdConfig,
-                              dataUnavailable: true)
-                    UsageCard(title: "每周限额", percentage: nil, resetText: nil,
-                              color: .indigo, isLoading: false, thresholdConfig: model.thresholdConfig,
-                              dataUnavailable: true)
-                    UsageCard(title: "月度总额度", percentage: nil, resetText: nil,
-                              color: .orange, isLoading: false, thresholdConfig: model.thresholdConfig,
-                              dataUnavailable: true)
-                } else {
-                    Text(err).font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(DesignTokens.spacingL)
-                        .background(Color.atbCardBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
-                        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+            }
+        } else if let err = model.kimiError {
+            let isNetwork = err.contains("网络") || err.contains("响应") || err.contains("解析")
+            if isNetwork {
+                VStack(spacing: DesignTokens.spacingS) {
+                    dashCard("5小时限额")
+                    dashCard("每周限额")
+                    dashCard("月度总额度")
                 }
             } else {
-                // 加载态:与阿里云一致的加载环
-                HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                    .padding(DesignTokens.spacingL)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.atbCardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
-                    .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+                errorHint(err)
             }
+        } else {
+            HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
+                .frame(height: 64)
+                .atbCard(corner: DesignTokens.radiusL, paddingH: DesignTokens.spacingL,
+                         paddingV: DesignTokens.spacingL, alignment: .center)
         }
-        .padding(DesignTokens.spacingL)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 登录网页控制台引导行(未登录时显示,用于获取订阅总额度)。
+    private func multiRingSection(q: KimiQuota) -> some View {
+        let brand = ProviderBrand.color(for: .kimi)
+        return ATBMultiRingCard(slots: [
+            ATBMultiRingCard.Slot(id: "5h",
+                                  title: "5h",
+                                  subtitle: q.fiveHour.slidingResetText ?? "—",
+                                  percentage: q.fiveHour.pct,
+                                  bandColor: thresholdBrand(Int(q.fiveHour.pct.rounded()),
+                                                            config: model.thresholdConfig,
+                                                            brand: brand),
+                                  threshold: model.thresholdConfig),
+            ATBMultiRingCard.Slot(id: "weekly",
+                                  title: "本周",
+                                  subtitle: relativeReset(q.weekly) ?? "—",
+                                  percentage: q.weekly.pct,
+                                  bandColor: thresholdBrand(Int(q.weekly.pct.rounded()),
+                                                            config: model.thresholdConfig,
+                                                            brand: brand),
+                                  threshold: model.thresholdConfig),
+            ATBMultiRingCard.Slot(id: "monthly",
+                                  title: "本月",
+                                  subtitle: q.monthly.map { relativeReset($0) ?? "—" } ?? "—",
+                                  percentage: q.monthly?.pct ?? 0,
+                                  bandColor: thresholdBrand(
+                                    Int((q.monthly?.pct ?? 0).rounded()),
+                                    config: model.thresholdConfig, brand: brand),
+                                  threshold: model.thresholdConfig)
+        ])
+        .padding(.horizontal, DesignTokens.spacingM)
+        .padding(.vertical, DesignTokens.spacingS)
+        .frame(maxWidth: .infinity)
+        .background(Color.atbCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radiusM)
+                .strokeBorder(Color.atbSeparator.opacity(0.5), lineWidth: DesignTokens.strokeHairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+        .overlay(alignment: .leading) {
+            Rectangle().fill(brand)
+                .frame(width: DesignTokens.stripeWidth)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+                .padding(.vertical, 1)
+        }
+    }
+
+    private func dashCard(_ title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.atbTextSecondary)
+            Spacer()
+            Text("—")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.atbTextTertiary)
+        }
+        .atbCard(paddingV: DesignTokens.spacingS - 2)
+    }
+
+    private func errorHint(_ err: String) -> some View {
+        HStack(alignment: .top, spacing: DesignTokens.spacingS) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("配置异常")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.atbTextPrimary)
+                Text(err)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.atbTextSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .atbCard(corner: DesignTokens.radiusL)
+    }
+
+    /// 登录网页控制台引导行
     private var kimiWebLoginHint: some View {
         HStack(spacing: DesignTokens.spacingS) {
-            Image(systemName: "lock.open").font(.system(size: 11)).foregroundStyle(.atbTextTertiary)
-            Text("登录 Kimi 网页控制台查看订阅总额度").font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+            Image(systemName: "lock.open")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.atbTextTertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("登录 Kimi 网页控制台")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.atbTextPrimary)
+                Text("查看订阅总额度明细")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.atbTextTertiary)
+            }
             Spacer()
             Button("登录") { showKimiLogin = true }
-                .buttonStyle(ATBTextButtonStyle(color: .teal)).font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.atbBrandKimi)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.atbBrandKimi.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .buttonStyle(.plain)
         }
-        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+        .atbCard()
         .sheet(isPresented: $showKimiLogin) { KimiLoginView() }
     }
 
-    /// 会员等级映射:LEVEL_* → 官方名称(未知等级去前缀美化)。
+    private func relativeReset(_ w: KimiWindow) -> String? {
+        w.resetTimeMs != nil ? w.timeUntilReset : nil
+    }
+
     private func levelDisplay(_ level: String) -> String {
         switch level.uppercased() {
         case "LEVEL_FREE": return "Free"
@@ -122,75 +230,80 @@ struct KimiCodeCard: View {
     }
 }
 
-/// Kimi 共享订阅池:Work/Kimi 与 Code 分段显示,总量只使用共享池分母。
+// MARK: - Kimi 共享订阅池(Work/Code 分段 + 总量)
 struct KimiSubscriptionCard: View {
     let balance: KimiSubscriptionBalance
-
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.spacingS + 1) {
-            HStack {
-                Text("总使用量")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.atbTextPrimary)
-                Spacer()
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+            // 行 1:大数字 + 重置时间
+            HStack(alignment: .firstTextBaseline) {
+                Text("订阅池总量")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.atbTextPrimary)
+                Spacer(minLength: DesignTokens.spacingS)
                 Text(String(format: "%.2f%%", balance.totalUsedPercent))
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(.atbTextPrimary)
+                    .foregroundStyle(Color.atbBrandKimi)
             }
-
+            // 行 2:Work/Code 分段条
             GeometryReader { proxy in
-                HStack(spacing: 0) {
+                let w = proxy.size.width
+                HStack(spacing: 1) {
                     if let work = balance.workUsedPercent,
                        let code = balance.codeUsedPercent {
-                        Rectangle()
-                            .fill(Color.primary)
-                            .frame(width: proxy.size.width * CGFloat(work / 100))
-                        Rectangle()
-                            .fill(Color.atbBlue)
-                            .frame(width: proxy.size.width * CGFloat(code / 100))
+                        Rectangle().fill(Color.atbBrandKimi)
+                            .frame(width: max(0, w * CGFloat(work / 100) - 0.5))
+                        Rectangle().fill(Color.atbBrandKimi.opacity(0.55))
+                            .frame(width: max(0, w * CGFloat(code / 100)))
                     } else {
-                        Rectangle()
-                            .fill(Color.atbBlue)
-                            .frame(width: proxy.size.width * CGFloat(balance.totalUsedPercent / 100))
+                        Rectangle().fill(Color.atbBrandKimi.opacity(0.55))
+                            .frame(width: max(0, w * CGFloat(balance.totalUsedPercent / 100)))
                     }
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.10))
+                    Rectangle().fill(Color.primary.opacity(0.08))
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
             }
-            .frame(height: 8)
-
+            .frame(height: 7)
+            // 行 3:图例 + 重置时间
             HStack(spacing: 12) {
                 if let work = balance.workUsedPercent,
                    let code = balance.codeUsedPercent {
-                    KimiSubscriptionLegend(color: .primary, title: "Kimi/Work", percent: work)
-                    KimiSubscriptionLegend(color: .atbBlue, title: "Code", percent: code)
+                    KimiSubscriptionLegend(color: .atbBrandKimi, title: "Kimi/Work", percent: work)
+                    KimiSubscriptionLegend(color: Color.atbBrandKimi.opacity(0.55), title: "Code", percent: code)
                 } else {
                     Text("Work/Code 分项暂不可用")
                         .font(.system(size: 10))
-                        .foregroundStyle(.atbTextTertiary)
+                        .foregroundStyle(Color.atbTextTertiary)
                 }
                 Spacer(minLength: 0)
-            }
-
-            if let ms = balance.expireTimeMs {
-                Text("重置时间 \(Self.dateText(ms))")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.atbTextTertiary)
+                if let ms = balance.expireTimeMs {
+                    Text("重置 \(Self.dateText(ms))")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.atbTextTertiary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.horizontal, DesignTokens.spacingM)
-        .padding(.vertical, DesignTokens.spacingS + 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, DesignTokens.spacingS)
         .background(Color.atbCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radiusM)
+                .strokeBorder(Color.atbSeparator.opacity(0.5), lineWidth: DesignTokens.strokeHairline)
+        )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.atbBrandKimi)
+                .frame(width: DesignTokens.stripeWidth)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
+                .padding(.vertical, 1)
+        }
     }
 
     private static func dateText(_ ms: Int64) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.dateFormat = "MM-dd HH:mm"
         return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))
     }
 }
@@ -201,36 +314,41 @@ struct KimiSubscriptionLegend: View {
     let percent: Double
 
     var body: some View {
-        HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text("\(title) \(String(format: "%.2f%%", percent))")
-                .font(.system(size: 10))
-                .foregroundStyle(.atbTextSecondary)
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
+            Text("\(title)")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.atbTextSecondary)
+            Text(String(format: "%.2f%%", percent))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.atbTextPrimary)
                 .monospacedDigit()
         }
     }
 }
 
-/// 加油包余额行:余额 + 本月消费/上限。
+// MARK: - 加油包余额行
 struct KimiBoosterRow: View {
     let booster: KimiBooster
     var body: some View {
         HStack(spacing: DesignTokens.spacingS) {
-            Image(systemName: "wallet.pass.fill").font(.system(size: 12)).foregroundStyle(.orange)
-            Text("加油包余额").font(.system(size: 11, weight: .medium)).foregroundStyle(.atbTextPrimary)
-            Text(String(format: "¥%.2f", booster.balanceYuan))
-                .font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
-                .foregroundStyle(.atbTextPrimary)
+            Image(systemName: "wallet.pass.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.orange)
+            Text("加油包")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.atbTextPrimary)
             Spacer()
-            Text(String(format: "本月消费 ¥%.2f", booster.monthlyUsedYuan))
-                .font(.system(size: 10)).foregroundStyle(.atbTextTertiary)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(String(format: "¥%.2f", booster.balanceYuan))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.atbTextPrimary)
+                Text(String(format: "本月消费 ¥%.2f", booster.monthlyUsedYuan))
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.atbTextTertiary)
+            }
         }
-        .padding(.horizontal, DesignTokens.spacingM).padding(.vertical, DesignTokens.spacingS)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+        .atbCard(paddingV: DesignTokens.spacingS)
     }
 }
-

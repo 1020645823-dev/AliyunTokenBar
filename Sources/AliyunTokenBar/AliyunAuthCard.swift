@@ -51,11 +51,8 @@ struct AliyunAuthCard: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(DesignTokens.spacingL)
-            .background(Color.atbCardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
-            .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+            .atbCard(corner: DesignTokens.radiusL, paddingH: DesignTokens.spacingL,
+                     paddingV: DesignTokens.spacingL, alignment: .center)
         }
     }
 

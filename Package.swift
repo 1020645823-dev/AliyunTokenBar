@@ -10,6 +10,10 @@ import PackageDescription
 let package = Package(
     name: "AliyunTokenBar",
     platforms: [.macOS(.v13)],
+    // 显式 library product:外部工具/临时探针包可按路径依赖复用 Core(不影响现有 target 构建)
+    products: [
+        .library(name: "AliyunTokenBarCore", targets: ["AliyunTokenBarCore"])
+    ],
     targets: [
         .target(
             name: "AliyunTokenBarCore",

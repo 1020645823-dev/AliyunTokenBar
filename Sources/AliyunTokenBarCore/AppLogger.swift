@@ -17,6 +17,9 @@ public enum AppLog {
         case opencode
         case kimi
         case deepseek
+        case zhipu
+        case mimo
+        case minimax
         case keychain
         case history
         case process

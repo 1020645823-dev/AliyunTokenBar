@@ -7,8 +7,21 @@ final class CoreSmokeTests: XCTestCase {
     func testUsageParsing() throws {
         let fixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per5HourPercentage":0.349956963,"per1WeekResetTime":1785687360000,"per5HourResetTime":1785560220000,"per1WeekPercentage":0.61428294255},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
         let usage = try BlUsageService.parseUsage(Data(fixture.utf8))
-        XCTAssertEqual(usage.fiveHour.percentage, 35.0)
+        XCTAssertEqual(usage.fiveHour?.percentage, 35.0)
         XCTAssertEqual(usage.oneWeek.percentage, 61.43)
+    }
+
+    func testUsageParsingWithout5hWindow() throws {
+        // 2026-08-15 起官方限时取消 5h 限额,usage RPC 只返回周窗口(per5Hour* 字段整体缺失)
+        let fixture = #"{"code":"200","data":{"DataV2":{"ret":["SUCCESS::接口调用成功"],"data":{"msg":"Success.","code":"SUCCESS","data":{"per1WeekResetTime":1787149800000,"per1WeekPercentage":0.1107448506},"requestId":"x","success":true}},"success":true,"httpStatus":200,"errorCode":"","api":"x","errorMsg":""},"httpStatusCode":"200","requestId":"x","successResponse":true}"#
+        let usage = try BlUsageService.parseUsage(Data(fixture.utf8))
+        XCTAssertNil(usage.fiveHour)
+        XCTAssertEqual(usage.oneWeek.percentage, 11.07)
+        // 字段存在但为 0(窗口存在零用量)≠ 无窗口
+        let zeroWindow = #"{"data":{"DataV2":{"data":{"data":{"per5HourPercentage":0,"per5HourResetTime":1785560220000,"per1WeekPercentage":0.5}}}}}"#
+        let zw = try BlUsageService.parseUsage(Data(zeroWindow.utf8))
+        XCTAssertNotNil(zw.fiveHour)
+        XCTAssertEqual(zw.fiveHour?.percentage, 0.0)
     }
 
     func testThresholdBand() {

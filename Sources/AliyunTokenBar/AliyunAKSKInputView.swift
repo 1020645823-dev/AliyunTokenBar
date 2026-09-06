@@ -40,7 +40,7 @@ struct AliyunAKSKInputView: View {
     private let accessKeyURL = URL(string: "https://ram.console.aliyun.com/manage/ak")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.spacingXL - DesignTokens.spacingXS) {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingXXL - DesignTokens.spacingXS) {
             header
             intro
             credentialFields
@@ -54,7 +54,7 @@ struct AliyunAKSKInputView: View {
             }
             actions
         }
-        .padding(DesignTokens.spacingXL)
+        .padding(DesignTokens.spacingXXL)
         .frame(width: 420, height: 390)
         .background(Color.atbPanelBackground)
     }
