@@ -176,7 +176,21 @@ private struct AppearanceSettingsPage: View {
                         Text(s.displayName).tag(s)
                     }
                 }
-                Toggle("显示本机 CPU/内存", isOn: $model.systemStatsEnabled)
+            }
+            Section {
+                ForEach(ProviderKind.allCases) { kind in
+                    Toggle(isOn: Binding(
+                        get: { model.isEnabled(kind) },
+                        set: { model.setEnabled(kind, $0) }
+                    )) {
+                        Label(kind.displayName, systemImage: kind.settingsIconName)
+                    }
+                }
+            } header: {
+                Text("数据源")
+            } footer: {
+                Text("关闭后:菜单栏不出列、面板不出标签页、停止该数据源的后台刷新,并不再参与告警与每日摘要。全部关闭时菜单栏降级为仅图标。")
+                    .font(.system(size: 10))
             }
             Section("面板") {
                 Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)

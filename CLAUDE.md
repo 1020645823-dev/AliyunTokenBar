@@ -23,6 +23,10 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 | `AliyunTokenBar` | executable | SwiftUI UI + `@main` 入口(不可直接测试) |
 | `Verify` | executable | 断言测试(替代 XCTest,`check()` 函数,非 XCTest API) |
 
+### 数据源 Registry(⚠️ 唯一权威)
+
+「有哪些数据源」由 `ProviderRegistry.swift` 的 `ProviderKind`(8 case:aliyun/openCode/kimi/deepSeek/zhipu/mimo/minimax/system)统一驱动:显示开关(全面停用语义:菜单栏不出列、面板不出 tab、停止轮询、不参与告警/摘要)、面板 tab 顺序、刷新调度 `refresh(provider:)`、configured 判定 `isConfigured(_:)` 均由它收口。**新增数据源必须挂进 registry**,不要再加平行的枚举/布尔标志。停用集合存 `disabledProviders` 键;`systemStatsEnabled` 仅作本机开关的兼容代理(真值在停用集合)。智谱/MiMo 暂无菜单栏列(`menuBarColumnKind == nil`,roadmap)。
+
 ### 数据契约(⚠️ 重要)
 
 `BlUsageService.swift` 的 JSON 解析与 `Verify/main.swift` 的 fixture 字符串**必须保持同步**:
@@ -36,6 +40,8 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 - `DeepSeekMoneyFormat` ↔ `ds money` 系列断言(紧凑格式 ≤7 字符契约)
 - `MiMoUsageService.parseBalance/parsePlanDetail/parsePlanUsage/normalizedCookie/classifyHTTP/classifyEnvelope` ↔ `mimo` 系列断言(platform.xiaomimimo.com 控制台私有 API)
 - `MiniMaxUsageService.parseQuota/envelopeError/epochMs/resetTimeMs` ↔ `minimax` 系列断言(token_plan/remains;⚠️ `*_usage_count` 实际是剩余次数,`*_remaining_percent` 是剩余百分比)
+- `MenuBarTable.columns(disabled:)` ↔ `mt` 系列断言(列过滤/横杠/顺序/tooltip/字符宽度契约/停用集过滤)
+- `ProviderKind` registry 元数据(tab 顺序/列映射/恒在项)+ `ProviderVisibilityMigration.initialDisabledSet` ↔ `registry`/`迁移` 系列断言
 
 **修改以上服务的 JSON 键名/结构或金额格式契约时,必须同步更新 `Verify/main.swift` 中对应 fixture/断言,然后运行 `swift run Verify` 确认通过。**
 
@@ -47,7 +53,7 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 |------|------|------|
 | 凭据存储 | `CredentialStore.swift` | Keychain 读写 OpenCode auth cookie(account: `opencode-auth-cookie`)、阿里云 AK/SK(`aliyun-ak-sk`)、Kimi web JWT(`kimi-web-token`)、DeepSeek API Key(`deepseek-api-key`)、智谱 API Key(`zhipu-api-key`)、小米 MiMo 控制台 Cookie(`mimo-console-cookie`)、MiniMax API Key(`minimax-api-key`) |
 | 当日费用账本 | `DeepSeekDailyLedger.swift` | 写入 `~/Library/Application Support/AliyunTokenBar/deepseek-daily.json`(v1 JSON:32 天余额快照,当日费用=基线余额−当前余额) |
-| 配置持久化 | `TokenPlanModel.swift` | UserDefaults 键(常量收口于 `AppConstants.swift` 的 `UserDefaultsKeys`): `refreshIntervalMinutes`, `thresholdWarning`, `thresholdCritical`, `sparklineEnabled`, `notificationsEnabled`, `appTheme`, `menuBarScheme`, `openCodeWorkspaceID`, `systemStatsEnabled`, `subscriptionExpiryWarnedDay`, `dailyDigestEnabled` |
+| 配置持久化 | `TokenPlanModel.swift` | UserDefaults 键(常量收口于 `AppConstants.swift` 的 `UserDefaultsKeys`): `refreshIntervalMinutes`, `thresholdWarning`, `thresholdCritical`, `sparklineEnabled`, `notificationsEnabled`, `appTheme`, `menuBarScheme`, `openCodeWorkspaceID`, `disabledProviders`(数据源停用集合,真值), `systemStatsEnabled`(兼容代理:本机开关,真值已并入 `disabledProviders`), `subscriptionExpiryWarnedDay`, `dailyDigestEnabled` |
 | 历史文件 | `HistoryStore.swift` | 写入 `~/Library/Application Support/AliyunTokenBar/history.json`(v1 JSONL:首行 schemaVersion 注释 + 每行一条快照;旧 JSON 数组透明读取) |
 | 子进程 | `BlExecutable.swift` | 生成 `bl` CLI 子进程(需 PATH 包含 `/opt/homebrew/bin`) |
 | macOS 通知 | `NotificationManager.swift` | UNUserNotificationCenter 推送用量告警 |

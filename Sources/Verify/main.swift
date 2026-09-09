@@ -959,14 +959,16 @@ func mtCols(
     oConf: Bool = true, oErr: Bool = false, oR: Int? = 3, oW: Int? = 2,
     dConf: Bool = true, dErr: Bool = false, dCost: Double? = 1.5, dBal: Double? = 110.0,
     mmConf: Bool = true, mmErr: Bool = false, mmI: Int? = 1, mmW: Int? = 1,
-    sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25
+    sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25,
+    dis: Set<String> = []
 ) -> [MenuBarTableColumn] {
     MenuBarTable.columns(aliyunFiveHour: a5, aliyunOneWeek: a7,
         kimiConfigured: kConf, kimiHasError: kErr, kimiFiveHour: k5, kimiWeekly: kW,
         openCodeConfigured: oConf, openCodeHasError: oErr, openCodeRolling: oR, openCodeWeekly: oW,
         deepSeekConfigured: dConf, deepSeekHasError: dErr, deepSeekTodayCost: dCost, deepSeekBalance: dBal,
         minimaxConfigured: mmConf, minimaxHasError: mmErr, minimaxInterval: mmI, minimaxWeekly: mmW,
-        systemEnabled: sysOn, cpu: cpu, memory: mem)
+        systemEnabled: sysOn, cpu: cpu, memory: mem,
+        disabled: dis)
 }
 
 let mtAll = mtCols()
@@ -995,7 +997,7 @@ check("mt MiniMax 出错→横杠列", mmErrCols[4].primary.text == "—" && mmE
       && mmErrCols[4].primary.pct == nil)
 check("mt MiniMax 已配置无数据无错→隐藏", !mtCols(mmI: nil, mmW: nil).map(\.kind).contains(.minimax))
 check("mt 本机未采样→横杠(仍在末位)", mtCols(cpu: nil, mem: nil)[5].primary.text == "—")
-check("mt 阿里云恒显示(nil→横杠)", mtCols(a5: nil, a7: nil)[0].primary.text == "—")
+check("mt 阿里云启用+无数据→横杠列", mtCols(a5: nil, a7: nil)[0].primary.text == "—")
 // 5h 窗口取消形态:单值列(主行 7d,次行横杠对齐网格,tooltip 省略次段)
 let mtNo5h = mtCols(a5: nil, a7: 11)
 check("mt 5h无窗口→主行显7d", mtNo5h[0].primary.text == "11%" && mtNo5h[0].primary.pct == 11)
@@ -1014,6 +1016,39 @@ check("mt DeepSeek 金额列≤7字符", mtCols(dCost: 0.01, dBal: 123456.78)[3]
       && mtCols(dCost: 0.01, dBal: 123456.78)[3].secondary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].primary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].secondary.text.count <= 7)
+
+// --- 数据源停用开关(disabledProviders,全面停用语义的菜单栏列过滤) ---
+check("mt 停用阿里云→列隐藏(不再恒显示)", mtCols(dis: ["aliyun"]).map(\.kind) == [.kimi, .openCode, .deepSeek, .minimax, .system])
+check("mt 停用Kimi→已配置有数据也隐藏", !mtCols(dis: ["kimi"]).map(\.kind).contains(.kimi))
+check("mt 停用DeepSeek→列隐藏", mtCols(dis: ["deepSeek"]).map(\.kind) == [.aliyun, .kimi, .openCode, .minimax, .system])
+check("mt 停用本机→列隐藏(同 systemEnabled=false)", mtCols(dis: ["system"]).map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .minimax])
+check("mt 停用不影响其余列顺序", mtCols(dis: ["openCode", "minimax"]).map(\.kind) == [.aliyun, .kimi, .deepSeek, .system])
+check("mt 停用集含未知rawValue→忽略", mtCols(dis: ["bogus"]).map(\.kind) == mtCols().map(\.kind))
+check("mt 全部停用→空列(渲染层降级仅图标)", mtCols(dis: Set(ProviderKind.allCases.map(\.rawValue))).isEmpty)
+check("mt 停用列不进 tooltip", !MenuBarTable.tooltip(columns: mtCols(dis: ["kimi"])).contains("Kimi"))
+
+// --- ProviderKind 统一 registry ---
+check("registry 8 个数据源(7 订阅商+本机)", ProviderKind.allCases.count == 8
+      && ProviderKind.allCases.map(\.rawValue) == ["aliyun", "openCode", "kimi", "deepSeek", "zhipu", "mimo", "minimax", "system"])
+check("registry 面板 tab 顺序=旧 ProviderTab 顺序", ProviderKind.allCases.map(\.displayName)
+      == ["阿里云", "OpenCode", "Kimi", "DeepSeek", "智谱 GLM", "MiMo", "MiniMax", "本机"])
+check("registry 菜单栏列映射(智谱/MiMo 暂无列)", ProviderKind.allCases.compactMap(\.menuBarColumnKind)
+      == [.aliyun, .openCode, .kimi, .deepSeek, .minimax, .system])
+check("registry 列→provider 反向映射全覆盖", MenuBarColumnKind.allCases.allSatisfy {
+    ProviderKind.from(menuBarColumnKind: $0).menuBarColumnKind == $0
+})
+check("registry 面板恒在项=阿里云/DeepSeek/本机", ProviderKind.allCases.filter(\.panelTabAlwaysListed)
+      == [.aliyun, .deepSeek, .system])
+
+// --- 停用集一次性迁移(纯函数) ---
+check("迁移 新键缺失+旧键false→system停用", ProviderVisibilityMigration.initialDisabledSet(
+    existing: nil, legacySystemStatsEnabled: false) == ["system"])
+check("迁移 新键缺失+旧键true→空集", ProviderVisibilityMigration.initialDisabledSet(
+    existing: nil, legacySystemStatsEnabled: true).isEmpty)
+check("迁移 新键缺失+旧键缺失→空集", ProviderVisibilityMigration.initialDisabledSet(
+    existing: nil, legacySystemStatsEnabled: nil).isEmpty)
+check("迁移 新键存在→旧键不参与", ProviderVisibilityMigration.initialDisabledSet(
+    existing: ["kimi"], legacySystemStatsEnabled: false) == ["kimi"])
 
 // --- ZhipuUsageService:智谱 GLM Coding Plan 解析 ---
 // fixture = 2026-08-14 真实响应(双 TOKENS_LIMIT + TIME_LIMIT + level max)

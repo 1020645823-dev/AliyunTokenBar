@@ -184,21 +184,25 @@ enum MenuBarTextRenderer {
     /// kimiFiveHour/kimiWeekly 为 nil 时不显示 Kimi 部分。
     /// cpu/memory 均为 nil(开关关闭)时各样式整段隐藏、systemStats 回退云朵;仅一个为 nil(采样未就绪)时该数值显示横杠(—)。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
+    /// aliyunVisible:阿里云数据源开关;关闭时云朵/单行样式不渲染云朵图标与阿里云段。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                       kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
                       cpu: Int? = nil, memory: Int? = nil,
                       columns: [MenuBarTableColumn]? = nil, isDark: Bool = false,
-                      thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
+                      thresholdConfig: ThresholdConfig = ThresholdConfig(),
+                      aliyunVisible: Bool = true) -> NSImage {
         switch scheme {
         case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
                                                       openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
                                                       kimiWeekly: kimiWeekly, cpu: cpu, memory: memory,
-                                                      thresholdConfig: thresholdConfig)
+                                                      thresholdConfig: thresholdConfig,
+                                                      aliyunVisible: aliyunVisible)
         case .compact: return miniTableImage(columns: columns ?? [], isDark: isDark,
                                              thresholdConfig: thresholdConfig)
-        case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory)
+        case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory,
+                                                 aliyunVisible: aliyunVisible)
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
                                               thresholdConfig: thresholdConfig)
         case .systemStats: return systemStatsImage(cpu: cpu, memory: memory)
@@ -221,24 +225,27 @@ enum MenuBarTextRenderer {
                                           openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                                           kimiWeekly: Int? = nil,
                                           cpu: Int? = nil, memory: Int? = nil,
-                                          thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
+                                          thresholdConfig: ThresholdConfig = ThresholdConfig(),
+                                          aliyunVisible: Bool = true) -> NSImage {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
         let content = HStack(spacing: 4) {
-            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显 7d 段)
-            cloudShape.fill(Color.black).frame(width: 14, height: 11)
-            if fiveHour != nil || oneWeek == nil {
-                Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
-                Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(fiveHour.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
-                Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显 7d 段;数据源停用时整段隐藏)
+            if aliyunVisible {
+                cloudShape.fill(Color.black).frame(width: 14, height: 11)
+                if fiveHour != nil || oneWeek == nil {
+                    Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                    Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(fiveHour.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
+                    Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
+                }
+                Text("7d").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(oneWeek)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(oneWeek.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
-            Text("7d").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
-            Text(pctText(oneWeek)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(oneWeek.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             // OpenCode:闪电 + 双百分比(配置了才显示;服务不可用时也显示横杠)
             if openCodeRolling != nil || openCodeWeekly != nil {
-                Spacer().frame(width: 6)
+                if aliyunVisible { Spacer().frame(width: 6) }
                 Image(systemName: "bolt.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(.black)
                 Text(pctText(openCodeRolling)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(openCodeRolling.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
@@ -326,18 +333,24 @@ enum MenuBarTextRenderer {
         return render(content, isTemplate: false)
     }
 
-    /// 单行:35%·61%(nil 时显示横杠;5h 窗口取消时只显 7d 段);尾部追加 C/M 段
+    /// 单行:35%·61%(nil 时显示横杠;5h 窗口取消时只显 7d 段);尾部追加 C/M 段。
+    /// aliyunVisible=false(数据源停用)时不渲染阿里云段与多余分隔点。
     @MainActor
     private static func singleLineImage(fiveHour: Int?, oneWeek: Int?,
-                                        cpu: Int? = nil, memory: Int? = nil) -> NSImage {
+                                        cpu: Int? = nil, memory: Int? = nil,
+                                        aliyunVisible: Bool = true) -> NSImage {
         let content = HStack(spacing: 3) {
-            if fiveHour != nil || oneWeek == nil {
-                Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
-                Text("·").font(.system(size: 12, weight: .medium))
+            if aliyunVisible {
+                if fiveHour != nil || oneWeek == nil {
+                    Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                    Text("·").font(.system(size: 12, weight: .medium))
+                }
+                Text(pctText(oneWeek)).font(.system(size: 12, weight: .medium)).monospacedDigit()
             }
-            Text(pctText(oneWeek)).font(.system(size: 12, weight: .medium)).monospacedDigit()
             if cpu != nil || memory != nil {
-                Text("·").font(.system(size: 12, weight: .medium))
+                if aliyunVisible {
+                    Text("·").font(.system(size: 12, weight: .medium))
+                }
                 Text("C").font(.system(size: 10, weight: .medium)).monospacedDigit()
                 Text(pctText(cpu)).font(.system(size: 12, weight: .medium)).monospacedDigit()
                 Text("M").font(.system(size: 10, weight: .medium)).monospacedDigit()
@@ -390,7 +403,8 @@ enum MenuBarTextRenderer {
     private static func systemStatsImage(cpu: Int?, memory: Int?) -> NSImage {
         let content = HStack(spacing: 4) {
             if cpu == nil && memory == nil {
-                cloudShape.fill(Color.black).frame(width: 14, height: 11)
+                // 采样未就绪:占位图标用本机语义(不再用云朵——阿里云数据源可能已停用)
+                Image(systemName: "desktopcomputer").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
             } else {
                 Text("C").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
                 Text(pctText(cpu)).font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
@@ -441,31 +455,54 @@ struct AliyunTokenBarApp: App {
         // 注入图标渲染闭包:数据更新时 Core 预渲染缓存,NSStatusItem 按钮只读缓存
         // (避免每次渲染都走 ImageRenderer,保持菜单栏响应)。
         TokenPlanModel.shared.renderIconSink = { model in
+            // 当前可见的菜单栏列(已统一过滤停用/未配置/无数据);
+            // 非 compact 样式同样遵循「数据源停用」语义,以可见列集合为准。
+            let columns = model.menuBarColumns()
+            let visible = Set(columns.map(\.kind))
+            let aliyunOn = visible.contains(.aliyun)
+            let ocOn = visible.contains(.openCode)
+            let kimiOn = visible.contains(.kimi)
+            let sysOn = visible.contains(.system)
+            // 全部数据源停用 → 降级仅图标(进度环),避免菜单栏空白
+            // (iconOnly 读阿里云双窗口,停用时按 0 渲染空环)。
+            var scheme = MenuBarStyleManager.shared.scheme
+            if visible.isEmpty {
+                scheme = .iconOnly
+            } else if scheme == .systemStats && !sysOn {
+                scheme = .cloudPercent   // 本机列停用 → 云朵样式回退(阿里云段自行按开关显隐)
+            }
+            let fiveHour: Int? = aliyunOn ? model.quota?.usage.fiveHour?.percentageInt : nil
+            let oneWeek: Int? = aliyunOn ? model.quota?.usage.oneWeek.percentageInt : nil
             // OpenCode:已配置但出错时传 Optional(nil) → 菜单栏显示横杠;
-            // 未配置时整个 OpenCode 部分不显示。
-            let ocRolling: Int?? = model.openCodeQuota.map { .some($0.rolling.pct) }
-                ?? (model.openCodeConfigured && model.openCodeError != nil ? .some(nil) : nil)
-            let ocWeekly: Int?? = model.openCodeQuota.map { .some($0.weekly.pct) }
-                ?? (model.openCodeConfigured && model.openCodeError != nil ? .some(nil) : nil)
-            // Kimi:已配置但出错时显示横杠;未配置时整个 Kimi 部分不显示。
-            let kimiFiveHour: Int?? = model.kimiQuota.map { .some($0.fiveHour.pctInt) }
-                ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
-            let kimiWeekly: Int?? = model.kimiQuota.map { .some($0.weekly.pctInt) }
-                ?? (model.kimiConfigured && model.kimiError != nil ? .some(nil) : nil)
+            // 未配置/停用(不可见)时整个 OpenCode 部分不显示。
+            let ocRolling: Int?? = ocOn
+                ? (model.openCodeQuota.map { .some($0.rolling.pct) } ?? .some(nil))
+                : nil
+            let ocWeekly: Int?? = ocOn
+                ? (model.openCodeQuota.map { .some($0.weekly.pct) } ?? .some(nil))
+                : nil
+            // Kimi:已配置但出错时显示横杠;未配置/停用(不可见)时整个 Kimi 部分不显示。
+            let kimiFiveHour: Int?? = kimiOn
+                ? (model.kimiQuota.map { .some($0.fiveHour.pctInt) } ?? .some(nil))
+                : nil
+            let kimiWeekly: Int?? = kimiOn
+                ? (model.kimiQuota.map { .some($0.weekly.pctInt) } ?? .some(nil))
+                : nil
             let monitor = SystemMetricsMonitor.shared
             return MenuBarTextRenderer.image(
-                scheme: MenuBarStyleManager.shared.scheme,
-                fiveHour: model.quota?.usage.fiveHour?.percentageInt,
-                oneWeek: model.quota?.usage.oneWeek.percentageInt,
+                scheme: scheme,
+                fiveHour: fiveHour,
+                oneWeek: oneWeek,
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,
                 kimiFiveHour: kimiFiveHour ?? nil,
                 kimiWeekly: kimiWeekly ?? nil,
-                cpu: model.systemStatsEnabled ? monitor.cpuPercent : nil,
-                memory: model.systemStatsEnabled ? monitor.memoryPercent : nil,
-                columns: model.menuBarColumns(),
+                cpu: sysOn ? monitor.cpuPercent : nil,
+                memory: sysOn ? monitor.memoryPercent : nil,
+                columns: columns,
                 isDark: MenuBarAppearance.shared.isDark,
-                thresholdConfig: model.thresholdConfig
+                thresholdConfig: model.thresholdConfig,
+                aliyunVisible: aliyunOn
             )
         }
         TokenPlanModel.shared.renderTooltipSink = { model in

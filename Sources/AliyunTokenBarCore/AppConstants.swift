@@ -15,7 +15,12 @@ public enum UserDefaultsKeys {
     public static let appTheme = "appTheme"
     public static let menuBarScheme = "menuBarScheme"
     public static let openCodeWorkspaceID = "openCodeWorkspaceID"
+    /// 兼容代理键:本机列开关。真值已并入 `disabledProviders`("system" 条目),
+    /// 此键仍同步写入,供旧读取路径(AppDelegate 订阅等)无感过渡。
     public static let systemStatsEnabled = "systemStatsEnabled"
+    /// 已停用数据源(ProviderKind.rawValue 数组)。停用语义 = 全面停用:
+    /// 菜单栏不出列、面板不出 tab、停止轮询刷新、不参与告警与每日摘要。
+    public static let disabledProviders = "disabledProviders"
     /// 阿里云套餐到期提醒"今日已提醒"标记(P1-B2)
     public static let subscriptionExpiryWarnedDay = "subscriptionExpiryWarnedDay"
     /// 每日用量摘要开关(P2-B7)

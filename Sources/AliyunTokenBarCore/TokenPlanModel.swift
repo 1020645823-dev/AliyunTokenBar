@@ -155,9 +155,63 @@ public final class TokenPlanModel: ObservableObject {
             scheduleDailyDigest()
         }
     }
+    // MARK: - 数据源显示开关(全面停用语义)
+
+    /// 已停用的数据源(ProviderKind.rawValue 集合)。停用 = 菜单栏不出列、
+    /// 面板不出 tab、停止轮询刷新、不参与告警与每日摘要。
+    @Published public private(set) var disabledProviders: Set<String> = []
+
+    /// 某数据源是否启用(未停用)。
+    public func isEnabled(_ kind: ProviderKind) -> Bool {
+        !disabledProviders.contains(kind.rawValue)
+    }
+
+    /// 启停某数据源。写库后:本机采样联动 systemStatsEnabled 代理
+    /// (AppDelegate 订阅它启停 SystemMetricsMonitor),并立即重渲染菜单栏图标。
+    public func setEnabled(_ kind: ProviderKind, _ enabled: Bool) {
+        if enabled {
+            disabledProviders.remove(kind.rawValue)
+        } else {
+            disabledProviders.insert(kind.rawValue)
+        }
+        UserDefaults.standard.set(Array(disabledProviders).sorted(), forKey: UserDefaultsKeys.disabledProviders)
+        if kind == .system {
+            systemStatsEnabled = enabled   // didSet 同步兼容键,触发采样启停订阅
+        }
+        prerenderIcon()
+        if enabled {
+            // 重新启用立即拉一次数据(否则要等下一个 timer tick 才出列)
+            Task { await refresh(provider: kind) }
+        }
+    }
+
+    /// 某数据源是否已配置凭据(阿里云 = bl 登录态、本机 = 无凭据概念,均恒 true)。
+    public func isConfigured(_ kind: ProviderKind) -> Bool {
+        switch kind {
+        case .aliyun, .system: return true
+        case .openCode: return openCodeConfigured
+        case .kimi: return kimiConfigured
+        case .deepSeek: return deepSeekConfigured
+        case .zhipu: return zhipuConfigured
+        case .mimo: return mimoConfigured
+        case .minimax: return minimaxConfigured
+        }
+    }
+
     /// 菜单栏是否显示本机 CPU/内存(默认开)。
+    /// 兼容代理:真值在 disabledProviders("system" 条目),didSet 同步写旧键,
+    /// 保持 AppDelegate 的 `$systemStatsEnabled` 订阅链路不变。
     @Published public var systemStatsEnabled: Bool = true {
-        didSet { UserDefaults.standard.set(systemStatsEnabled, forKey: UserDefaultsKeys.systemStatsEnabled) }
+        didSet {
+            guard systemStatsEnabled != oldValue else { return }
+            UserDefaults.standard.set(systemStatsEnabled, forKey: UserDefaultsKeys.systemStatsEnabled)
+            if systemStatsEnabled {
+                disabledProviders.remove(ProviderKind.system.rawValue)
+            } else {
+                disabledProviders.insert(ProviderKind.system.rawValue)
+            }
+            UserDefaults.standard.set(Array(disabledProviders).sorted(), forKey: UserDefaultsKeys.disabledProviders)
+        }
     }
     /// 重新登录轮询是否在跑(面板显示"等待浏览器登录完成…")。
     @Published public var isReloginWatching = false
@@ -247,9 +301,16 @@ public final class TokenPlanModel: ObservableObject {
         if defaults.object(forKey: UserDefaultsKeys.sparklineEnabled) != nil {
             sparklineEnabled = defaults.bool(forKey: UserDefaultsKeys.sparklineEnabled)
         }
-        if defaults.object(forKey: UserDefaultsKeys.systemStatsEnabled) != nil {
-            systemStatsEnabled = defaults.bool(forKey: UserDefaultsKeys.systemStatsEnabled)
+        // 数据源停用集合 + 一次性迁移(旧 systemStatsEnabled=false → "system" 进停用集;纯函数见 ProviderVisibilityMigration)
+        let disabled = ProviderVisibilityMigration.initialDisabledSet(
+            existing: defaults.stringArray(forKey: UserDefaultsKeys.disabledProviders),
+            legacySystemStatsEnabled: defaults.object(forKey: UserDefaultsKeys.systemStatsEnabled) != nil
+                ? defaults.bool(forKey: UserDefaultsKeys.systemStatsEnabled) : nil)
+        if defaults.object(forKey: UserDefaultsKeys.disabledProviders) == nil {
+            defaults.set(Array(disabled).sorted(), forKey: UserDefaultsKeys.disabledProviders)
         }
+        disabledProviders = disabled
+        systemStatsEnabled = !disabled.contains(ProviderKind.system.rawValue)
         if defaults.object(forKey: UserDefaultsKeys.dailyDigestEnabled) != nil {
             dailyDigestEnabled = defaults.bool(forKey: UserDefaultsKeys.dailyDigestEnabled)
         }
@@ -383,15 +444,33 @@ public final class TokenPlanModel: ObservableObject {
         resetTimer()
     }
 
-    /// 一次拉齐全部 Provider(定时器 tick / 唤醒 / 网络恢复共用)。
+    /// 一次拉齐全部**已启用** Provider(定时器 tick / 唤醒 / 网络恢复共用)。
+    /// registry 驱动:新增数据源只需在 refresh(provider:) 补一个 case,此处零改动。
     public func refreshAll() async {
+        for kind in ProviderKind.allCases where isEnabled(kind) {
+            await refresh(provider: kind)
+        }
+    }
+
+    /// 单 provider 刷新调度表(system 无网络刷新,本机采样由开关启停)。
+    /// Verify 断言此表覆盖全部 ProviderKind,防"漏数"。
+    public func refresh(provider kind: ProviderKind) async {
+        switch kind {
+        case .aliyun: await refreshAliyun()
+        case .openCode: await refreshOpenCode()
+        case .kimi: await refreshKimi()
+        case .deepSeek: await refreshDeepSeek()
+        case .zhipu: await refreshZhipu()
+        case .mimo: await refreshMiMo()
+        case .minimax: await refreshMiniMax()
+        case .system: break
+        }
+    }
+
+    /// 阿里云自动路径刷新(走 refresh() 的 30s 节流);停用时空转。
+    public func refreshAliyun() async {
+        guard isEnabled(.aliyun) else { return }
         await refresh()
-        await refreshOpenCode()
-        await refreshKimi()
-        await refreshDeepSeek()
-        await refreshZhipu()
-        await refreshMiMo()
-        await refreshMiniMax()
     }
 
     /// P1-C1:查 GitHub Releases 最新版本(启动一次 + 手动)。
@@ -422,7 +501,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 拉一次 OpenCode Go 用量(cookie + workspace 配置后)
     public func refreshOpenCode() async {
         ensureCredentialLoaded()
-        guard openCodeConfigured else { return }
+        guard isEnabled(.openCode), openCodeConfigured else { return }
         let result = await OpenCodeUsageService.fetchQuota(cookie: openCodeCookie, workspaceID: openCodeWorkspaceID)
         switch result {
         case .success(let q):
@@ -446,7 +525,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 拉取 Kimi Code 套餐用量(读本机 KimiCodeBar/Kimi CLI 凭证 + web 控制台登录)。
     /// 凭证不存在时静默跳过(设置页有引导)。
     public func refreshKimi() async {
-        guard kimiConfigured else { return }
+        guard isEnabled(.kimi), kimiConfigured else { return }
         let result = await KimiUsageService.fetchQuota()
         switch result {
         case .success(let q):
@@ -478,6 +557,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 拉取智谱 Coding Plan 用量。未配置(无手动 key 且未发现 opencode 配置)时静默跳过。
     public func refreshZhipu() async {
         ensureCredentialLoaded()
+        guard isEnabled(.zhipu) else { return }
         guard let key = zhipuEffectiveAPIKey else { return }
         let result = await ZhipuUsageService.fetchQuota(apiKey: key)
         switch result {
@@ -513,7 +593,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 未配置 API Key 时静默跳过(设置页/面板有引导)。
     public func refreshDeepSeek() async {
         ensureCredentialLoaded()
-        guard deepSeekConfigured else { return }
+        guard isEnabled(.deepSeek), deepSeekConfigured else { return }
         guard !deepSeekLoading else { return }
         deepSeekLoading = true
         defer { deepSeekLoading = false }
@@ -554,7 +634,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 未配置 Cookie 时静默跳过;失败保留旧数据 + 状态行报错(DeepSeek 同语义)。
     public func refreshMiMo() async {
         ensureCredentialLoaded()
-        guard mimoConfigured else { return }
+        guard isEnabled(.mimo), mimoConfigured else { return }
         guard !mimoLoading else { return }
         mimoLoading = true
         defer { mimoLoading = false }
@@ -593,7 +673,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 拉取 MiniMax Coding Plan 用量(国内→国际→旧端点依次尝试)。
     public func refreshMiniMax() async {
         ensureCredentialLoaded()
-        guard minimaxConfigured else { return }
+        guard isEnabled(.minimax), minimaxConfigured else { return }
         let result = await MiniMaxUsageService.fetchQuota(apiKey: minimaxAPIKey)
         switch result {
         case .success(let q):
@@ -767,25 +847,26 @@ public final class TokenPlanModel: ObservableObject {
         checkSubscriptionExpiry()
 
         guard notificationsEnabled else { return }
+        // 停用的数据源不参与阈值告警(全面停用语义)
         var entries: [(WatchKey, Int)] = []
-        if let q = quota {
+        if isEnabled(.aliyun), let q = quota {
             if let f = q.usage.fiveHour {
                 entries.append((WatchKey(provider: "aliyun", window: "5h"), f.percentageInt))
             }
             entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentageInt))
         }
-        if let oc = openCodeQuota {
+        if isEnabled(.openCode), let oc = openCodeQuota {
             entries.append((WatchKey(provider: "opencode", window: "rolling"), oc.rolling.pct))
             entries.append((WatchKey(provider: "opencode", window: "weekly"), oc.weekly.pct))
         }
-        if let k = kimiQuota {
+        if isEnabled(.kimi), let k = kimiQuota {
             entries.append((WatchKey(provider: "kimi", window: "5h"), k.fiveHour.pctInt))
             entries.append((WatchKey(provider: "kimi", window: "weekly"), k.weekly.pctInt))
             if let m = k.monthly {
                 entries.append((WatchKey(provider: "kimi", window: "monthly"), m.pctInt))
             }
         }
-        if let z = zhipuQuota {
+        if isEnabled(.zhipu), let z = zhipuQuota {
             if let f = z.fiveHour {
                 entries.append((WatchKey(provider: "zhipu", window: "5h"), f.pctInt))
             }
@@ -794,7 +875,7 @@ public final class TokenPlanModel: ObservableObject {
             }
         }
         // MiMo 为余额型(同 DeepSeek),不参与阈值告警;MiniMax 双窗口参与。
-        if let mm = minimaxQuota {
+        if isEnabled(.minimax), let mm = minimaxQuota {
             if let i = mm.interval {
                 entries.append((WatchKey(provider: "minimax", window: "interval"), i.pctInt))
             }
@@ -827,39 +908,40 @@ public final class TokenPlanModel: ObservableObject {
     }
 
     private func sendDailyDigest() {
+        // 停用的数据源不进摘要(全面停用语义)
         var parts: [String] = []
-        if let q = quota {
+        if isEnabled(.aliyun), let q = quota {
             var line = "阿里云"
             if let f = q.usage.fiveHour { line += " 5h \(f.percentageInt)%" }
             line += " 7d \(q.usage.oneWeek.percentageInt)%"
             parts.append(line)
         }
-        if let o = openCodeQuota {
+        if isEnabled(.openCode), let o = openCodeQuota {
             parts.append("OpenCode 滚动 \(o.rolling.pct)% · 周 \(o.weekly.pct)% · 月 \(o.monthly.pct)%")
         }
-        if let k = kimiQuota {
+        if isEnabled(.kimi), let k = kimiQuota {
             var line = "Kimi 5h \(k.fiveHour.pctInt)% · 周 \(k.weekly.pctInt)%"
             if let m = k.monthly { line += " · 月 \(m.pctInt)%" }
             parts.append(line)
         }
-        if let b = deepSeekBalance {
+        if isEnabled(.deepSeek), let b = deepSeekBalance {
             var line = "DeepSeek 余额 \(DeepSeekMoneyFormat.full(b.totalBalance))"
             if let c = deepSeekTodayCost { line += " · 今日 \(DeepSeekMoneyFormat.full(c.cost))" }
             parts.append(line)
         }
-        if let z = zhipuQuota {
+        if isEnabled(.zhipu), let z = zhipuQuota {
             var line = "智谱 GLM"
             if let f = z.fiveHour { line += " 5h \(f.pctInt)%" }
             if let w = z.weekly { line += " · 周 \(w.pctInt)%" }
             if let m = z.mcp { line += " · MCP \(Int(m.percentage.rounded()))%" }
             parts.append(line)
         }
-        if let m = mimoUsage {
+        if isEnabled(.mimo), let m = mimoUsage {
             var line = "MiMo 余额 \(MiMoMoneyFormat.full(m.balance.balance, currency: m.balance.currency))"
             if let p = m.plan { line += " · 套餐 \(Int(p.usedPct.rounded()))%" }
             parts.append(line)
         }
-        if let mm = minimaxQuota {
+        if isEnabled(.minimax), let mm = minimaxQuota {
             var line = "MiniMax"
             if let i = mm.interval { line += " 本窗 \(i.pctInt)%" }
             if let w = mm.weekly { line += " · 周 \(w.pctInt)%" }
@@ -873,6 +955,7 @@ public final class TokenPlanModel: ObservableObject {
     /// 订阅到期预警(P1-B2):剩余 ≤7 天时每天最多温和提醒一次。
     /// 用独立 UserDefaults 键记"今日已提醒",避免每次刷新重复轰炸。
     private func checkSubscriptionExpiry() {
+        guard isEnabled(.aliyun) else { return }
         guard let sub = quota?.subscription,
               (0...7).contains(sub.remainingDays) else { return }
         let key = UserDefaultsKeys.subscriptionExpiryWarnedDay
@@ -919,7 +1002,9 @@ public final class TokenPlanModel: ObservableObject {
     }
 
     /// 先查环境；默认 bl session 无效时，若已有 AK/SK 则走一次短期 token 恢复。
+    /// 阿里云停用(全面停用语义)时整段跳过:不查登录态、不自动弹浏览器重登。
     public func checkAuthAndRefresh() async {
+        guard isEnabled(.aliyun) else { return }
         authState = await BlAuthManager.currentAuthState()
         if authState == .ok {
             await refresh()

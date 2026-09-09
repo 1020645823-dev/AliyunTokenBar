@@ -99,36 +99,43 @@ public enum MenuBarTable {
     }
 
     /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→∞→▣,与配置无关;本机恒最后)。
-    /// 阿里云恒显示;Kimi/OpenCode/DeepSeek/MiniMax 已配置且(有数据或出错)时显示,出错→横杠;
-    /// 本机开关开时显示,采样未就绪→横杠。
+    /// disabled(ProviderKind.rawValue 集合,设置页「数据源」开关)中的列一律不出,
+    /// 含阿里云(不再恒显示);全部停用时返回空数组,渲染层降级仅图标。
+    /// 启用列中:阿里云直接出列;Kimi/OpenCode/DeepSeek/MiniMax 已配置且(有数据或出错)时显示,
+    /// 出错→横杠;本机启用时显示,采样未就绪→横杠。
     public static func columns(
         aliyunFiveHour: Int?, aliyunOneWeek: Int?,
         kimiConfigured: Bool, kimiHasError: Bool, kimiFiveHour: Int?, kimiWeekly: Int?,
         openCodeConfigured: Bool, openCodeHasError: Bool, openCodeRolling: Int?, openCodeWeekly: Int?,
         deepSeekConfigured: Bool, deepSeekHasError: Bool, deepSeekTodayCost: Double?, deepSeekBalance: Double?,
         minimaxConfigured: Bool, minimaxHasError: Bool, minimaxInterval: Int?, minimaxWeekly: Int?,
-        systemEnabled: Bool, cpu: Int?, memory: Int?
+        systemEnabled: Bool, cpu: Int?, memory: Int?,
+        disabled: Set<String> = []
     ) -> [MenuBarTableColumn] {
-        var cols: [MenuBarTableColumn] = [
-            aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek)
-        ]
-        if kimiConfigured && (kimiHasError || kimiFiveHour != nil || kimiWeekly != nil) {
+        func off(_ kind: MenuBarColumnKind) -> Bool {
+            disabled.contains(ProviderKind.from(menuBarColumnKind: kind).rawValue)
+        }
+        var cols: [MenuBarTableColumn] = []
+        if !off(.aliyun) {
+            cols.append(aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek))
+        }
+        if !off(.kimi) && kimiConfigured && (kimiHasError || kimiFiveHour != nil || kimiWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .kimi,
                                            primary: value(kimiFiveHour), secondary: value(kimiWeekly)))
         }
-        if openCodeConfigured && (openCodeHasError || openCodeRolling != nil || openCodeWeekly != nil) {
+        if !off(.openCode) && openCodeConfigured && (openCodeHasError || openCodeRolling != nil || openCodeWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .openCode,
                                            primary: value(openCodeRolling), secondary: value(openCodeWeekly)))
         }
-        if deepSeekConfigured && (deepSeekHasError || deepSeekTodayCost != nil || deepSeekBalance != nil) {
+        if !off(.deepSeek) && deepSeekConfigured && (deepSeekHasError || deepSeekTodayCost != nil || deepSeekBalance != nil) {
             cols.append(MenuBarTableColumn(kind: .deepSeek,
                                            primary: moneyValue(deepSeekTodayCost), secondary: moneyValue(deepSeekBalance)))
         }
-        if minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
+        if !off(.minimax) && minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .minimax,
                                            primary: value(minimaxInterval), secondary: value(minimaxWeekly)))
         }
-        if systemEnabled {
+        if !off(.system) && systemEnabled {
             cols.append(MenuBarTableColumn(kind: .system,
                                            primary: value(cpu), secondary: value(memory)))
         }
@@ -177,7 +184,8 @@ extension TokenPlanModel {
             deepSeekTodayCost: deepSeekTodayCost?.cost, deepSeekBalance: deepSeekBalance?.totalBalance,
             minimaxConfigured: minimaxConfigured, minimaxHasError: minimaxError != nil,
             minimaxInterval: minimaxQuota?.interval?.pctInt, minimaxWeekly: minimaxQuota?.weekly?.pctInt,
-            systemEnabled: systemStatsEnabled,
-            cpu: monitor.cpuPercent, memory: monitor.memoryPercent)
+            systemEnabled: systemStatsEnabled && isEnabled(.system),
+            cpu: monitor.cpuPercent, memory: monitor.memoryPercent,
+            disabled: disabledProviders)
     }
 }

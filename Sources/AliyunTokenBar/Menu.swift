@@ -14,6 +14,33 @@ enum ProviderTab: String, CaseIterable, Identifiable {
     case minimax
     case system
     var id: String { rawValue }
+
+    /// 对应的统一 registry 身份(Core 层 ProviderKind)。
+    var kind: ProviderKind {
+        switch self {
+        case .aliyun: return .aliyun
+        case .opencode: return .openCode
+        case .kimi: return .kimi
+        case .deepSeek: return .deepSeek
+        case .zhipu: return .zhipu
+        case .mimo: return .mimo
+        case .minimax: return .minimax
+        case .system: return .system
+        }
+    }
+    /// registry → tab 反向映射(rawValue 仅 openCode/opencode 大小写不同,故走显式 switch)。
+    init?(kind: ProviderKind) {
+        switch kind {
+        case .aliyun: self = .aliyun
+        case .openCode: self = .opencode
+        case .kimi: self = .kimi
+        case .deepSeek: self = .deepSeek
+        case .zhipu: self = .zhipu
+        case .mimo: self = .mimo
+        case .minimax: self = .minimax
+        case .system: self = .system
+        }
+    }
     var title: String {
         switch self {
         case .aliyun: return "百炼"
@@ -74,31 +101,34 @@ struct TokenPlanMenuContent: View {
     @State private var updatingBl = false
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
-    /// 当前可用的标签
+    /// 当前可用的标签(统一 registry 驱动:停用的数据源不出 tab;
+    /// 恒在项 = 阿里云/DeepSeek/本机(卡内自带引导),其余需已配置)。
     private var availableTabs: [ProviderTab] {
-        var tabs: [ProviderTab] = [.aliyun]
-        if model.openCodeConfigured { tabs.append(.opencode) }
-        if model.kimiConfigured { tabs.append(.kimi) }
-        tabs.append(.deepSeek)
-        if model.zhipuConfigured { tabs.append(.zhipu) }
-        if model.mimoConfigured { tabs.append(.mimo) }
-        if model.minimaxConfigured { tabs.append(.minimax) }
-        tabs.append(.system)
-        return tabs
+        ProviderKind.allCases.compactMap { kind -> ProviderTab? in
+            guard model.isEnabled(kind) else { return nil }
+            guard kind.panelTabAlwaysListed || model.isConfigured(kind) else { return nil }
+            return ProviderTab(kind: kind)
+        }
     }
 
-    /// 实际生效的标签
-    private var effectiveTab: ProviderTab {
-        availableTabs.contains(selectedTab) ? selectedTab : .aliyun
+    /// 实际生效的标签(选中项被隐藏/停用时回退到第一个可用项;全部停用为 nil)
+    private var effectiveTab: ProviderTab? {
+        availableTabs.contains(selectedTab) ? selectedTab : availableTabs.first
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            tabBar
+            if !availableTabs.isEmpty {
+                tabBar
+            }
             Divider().opacity(0.4).padding(.horizontal, DesignTokens.spacingM)
             VStack(spacing: DesignTokens.spacingM) {
-                selectedContent
+                if let tab = effectiveTab {
+                    selectedContent(for: tab)
+                } else {
+                    allSourcesDisabledPlaceholder
+                }
                 footerBar
             }
             .padding(.horizontal, DesignTokens.spacingM)
@@ -231,9 +261,9 @@ struct TokenPlanMenuContent: View {
     // MARK: 内容切换
 
     @ViewBuilder
-    private var selectedContent: some View {
+    private func selectedContent(for tab: ProviderTab) -> some View {
         VStack(spacing: DesignTokens.spacingM) {
-            switch effectiveTab {
+            switch tab {
             case .aliyun: aliyunContent
             case .opencode: OpenCodeCard()
             case .kimi: KimiCodeCard()
@@ -245,6 +275,25 @@ struct TokenPlanMenuContent: View {
             }
         }
         .transition(.opacity.combined(with: .scale(scale: 0.99)))
+    }
+
+    /// 全部数据源停用时的占位卡(引导去设置重新启用)。
+    private var allSourcesDisabledPlaceholder: some View {
+        VStack(spacing: DesignTokens.spacingS) {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(Color.atbTextTertiary)
+            Text("所有数据源已关闭")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.atbTextSecondary)
+            Button("在 设置 → 外观 → 数据源 中启用") {
+                SettingsWindowManager.shared.show()
+            }
+            .buttonStyle(ATBTextButtonStyle())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, DesignTokens.spacingXL)
+        .atbCard(alignment: .center)
     }
 
     // MARK: 阿里云内容
@@ -438,14 +487,15 @@ struct TokenPlanMenuContent: View {
     private var footerBar: some View {
         HStack(spacing: 6) {
             footerButton("刷新", icon: "arrow.clockwise", isLoading: model.isLoading) {
+                // registry 驱动:只刷已启用的数据源;阿里云手动刷新走全量(无视 24h 缓存)
                 Task {
-                    await model.refreshFull()
-                    await model.refreshOpenCode()
-                    await model.refreshKimi()
-                    await model.refreshDeepSeek()
-                    await model.refreshZhipu()
-                    await model.refreshMiMo()
-                    await model.refreshMiniMax()
+                    for kind in ProviderKind.allCases where model.isEnabled(kind) {
+                        if kind == .aliyun {
+                            await model.refreshFull()
+                        } else {
+                            await model.refresh(provider: kind)
+                        }
+                    }
                 }
             }
             footerButton("控制台", icon: "globe") {
