@@ -25,7 +25,7 @@ VERSION=x.y.z ./packaging/build-package.sh  # 打包 .app + .dmg
 
 ### 数据源 Registry(⚠️ 唯一权威)
 
-「有哪些数据源」由 `ProviderRegistry.swift` 的 `ProviderKind`(8 case:aliyun/openCode/kimi/deepSeek/zhipu/mimo/minimax/system)统一驱动:显示开关(全面停用语义:菜单栏不出列、面板不出 tab、停止轮询、不参与告警/摘要)、面板 tab 顺序、刷新调度 `refresh(provider:)`、configured 判定 `isConfigured(_:)` 均由它收口。**新增数据源必须挂进 registry**,不要再加平行的枚举/布尔标志。停用集合存 `disabledProviders` 键;`systemStatsEnabled` 仅作本机开关的兼容代理(真值在停用集合)。智谱/MiMo 暂无菜单栏列(`menuBarColumnKind == nil`,roadmap)。
+「有哪些数据源」由 `ProviderRegistry.swift` 的 `ProviderKind`(8 case:aliyun/openCode/kimi/deepSeek/zhipu/mimo/minimax/system)统一驱动:显示开关(全面停用语义:菜单栏不出列、面板不出 tab、停止轮询、不参与告警/摘要)、面板 tab 顺序、刷新调度 `refresh(provider:)`、configured 判定 `isConfigured(_:)` 均由它收口。**新增数据源必须挂进 registry**,不要再加平行的枚举/布尔标志。停用集合存 `disabledProviders` 键;`systemStatsEnabled` 仅作本机开关的兼容代理(真值在停用集合)。菜单栏 8 列(v1.0.47 起智谱/MiMo 有列:智谱=5h/周,MiMo=套餐%/余额紧凑金额 48pt 宽;列序= `MenuBarColumnKind` 声明序,与面板 tab 序刻意不同)。
 
 ### 数据契约(⚠️ 重要)
 

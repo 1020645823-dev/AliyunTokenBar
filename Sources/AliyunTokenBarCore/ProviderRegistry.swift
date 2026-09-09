@@ -45,7 +45,7 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// 菜单栏列身份映射;智谱/MiMo 暂无菜单栏列(nil,见 roadmap)。
+    /// 菜单栏列身份映射。
     /// 注意:本属性只做身份映射,列的可见顺序仍由 MenuBarColumnKind.allCases 决定。
     public var menuBarColumnKind: MenuBarColumnKind? {
         switch self {
@@ -53,8 +53,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .openCode: return .openCode
         case .kimi: return .kimi
         case .deepSeek: return .deepSeek
-        case .zhipu: return nil
-        case .mimo: return nil
+        case .zhipu: return .zhipu
+        case .mimo: return .mimo
         case .minimax: return .minimax
         case .system: return .system
         }
@@ -67,6 +67,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .kimi: return .kimi
         case .openCode: return .openCode
         case .deepSeek: return .deepSeek
+        case .zhipu: return .zhipu
+        case .mimo: return .mimo
         case .minimax: return .minimax
         case .system: return .system
         }

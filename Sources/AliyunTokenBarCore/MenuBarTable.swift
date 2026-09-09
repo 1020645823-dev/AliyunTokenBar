@@ -15,9 +15,9 @@ public struct MenuBarTableValue: Equatable {
     }
 }
 
-/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→🧠→∞→▣(本机恒最后)。
+/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→→⚛→〜→∞→▣(本机恒最后)。
 public enum MenuBarColumnKind: String, CaseIterable, Equatable {
-    case aliyun, kimi, openCode, deepSeek, minimax, system
+    case aliyun, kimi, openCode, deepSeek, zhipu, mimo, minimax, system
 
     public var symbolName: String {
         switch self {
@@ -25,6 +25,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .kimi: return "sparkles"
         case .openCode: return "bolt.fill"
         case .deepSeek: return "brain.head.profile"
+        case .zhipu: return "atom"
+        case .mimo: return "waveform"
         case .minimax: return "infinity"
         case .system: return "desktopcomputer"
         }
@@ -35,6 +37,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .kimi: return "Kimi"
         case .openCode: return "OpenCode"
         case .deepSeek: return "DeepSeek"
+        case .zhipu: return "智谱"
+        case .mimo: return "MiMo"
         case .minimax: return "MiniMax"
         case .system: return "本机"
         }
@@ -42,10 +46,11 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
     /// 上行(主窗口)tooltip 标签
     public var primaryLabel: String {
         switch self {
-        case .aliyun, .kimi: return "5小时"
+        case .aliyun, .kimi, .zhipu: return "5小时"
         case .openCode: return "滚动"
         case .deepSeek: return "今日"
         case .minimax: return "本窗"
+        case .mimo: return "套餐"
         case .system: return "CPU"
         }
     }
@@ -53,8 +58,9 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
     public var secondaryLabel: String {
         switch self {
         case .aliyun: return "7天"
-        case .kimi, .openCode, .minimax: return "周"
+        case .kimi, .openCode, .minimax, .zhipu: return "周"
         case .deepSeek: return "余额"
+        case .mimo: return "余额"
         case .system: return "内存"
         }
     }
@@ -98,16 +104,23 @@ public enum MenuBarTable {
         MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compact($0) } ?? "—", pct: nil)
     }
 
+    /// 金额 → 展示文本(MiMo 余额行专用):nil → 横杠;紧凑格式 ≤7 字符(同 DeepSeek 契约)。
+    static func mimoMoney(_ v: Double?, currency: String) -> MenuBarTableValue {
+        MenuBarTableValue(text: v.map { MiMoMoneyFormat.compact($0, currency: currency) } ?? "—", pct: nil)
+    }
+
     /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→∞→▣,与配置无关;本机恒最后)。
     /// disabled(ProviderKind.rawValue 集合,设置页「数据源」开关)中的列一律不出,
     /// 含阿里云(不再恒显示);全部停用时返回空数组,渲染层降级仅图标。
-    /// 启用列中:阿里云直接出列;Kimi/OpenCode/DeepSeek/MiniMax 已配置且(有数据或出错)时显示,
-    /// 出错→横杠;本机启用时显示,采样未就绪→横杠。
+    /// 启用列中:阿里云直接出列;Kimi/OpenCode/DeepSeek/智谱/MiniMax 已配置且(有数据或出错)时显示,
+    /// 出错→横杠;MiMo 同规则(主行套餐% 可为横杠,次行余额);本机启用时显示,采样未就绪→横杠。
     public static func columns(
         aliyunFiveHour: Int?, aliyunOneWeek: Int?,
         kimiConfigured: Bool, kimiHasError: Bool, kimiFiveHour: Int?, kimiWeekly: Int?,
         openCodeConfigured: Bool, openCodeHasError: Bool, openCodeRolling: Int?, openCodeWeekly: Int?,
         deepSeekConfigured: Bool, deepSeekHasError: Bool, deepSeekTodayCost: Double?, deepSeekBalance: Double?,
+        zhipuConfigured: Bool, zhipuHasError: Bool, zhipuFiveHour: Int?, zhipuWeekly: Int?,
+        mimoConfigured: Bool, mimoHasError: Bool, mimoPlanPct: Int?, mimoBalance: Double?, mimoCurrency: String,
         minimaxConfigured: Bool, minimaxHasError: Bool, minimaxInterval: Int?, minimaxWeekly: Int?,
         systemEnabled: Bool, cpu: Int?, memory: Int?,
         disabled: Set<String> = []
@@ -130,6 +143,16 @@ public enum MenuBarTable {
         if !off(.deepSeek) && deepSeekConfigured && (deepSeekHasError || deepSeekTodayCost != nil || deepSeekBalance != nil) {
             cols.append(MenuBarTableColumn(kind: .deepSeek,
                                            primary: moneyValue(deepSeekTodayCost), secondary: moneyValue(deepSeekBalance)))
+        }
+        if !off(.zhipu) && zhipuConfigured && (zhipuHasError || zhipuFiveHour != nil || zhipuWeekly != nil) {
+            cols.append(MenuBarTableColumn(kind: .zhipu,
+                                           primary: value(zhipuFiveHour), secondary: value(zhipuWeekly)))
+        }
+        // MiMo:主行=Token 套餐已用%(无套餐→横杠),次行=余额紧凑金额(同 DeepSeek 金额列宽度契约)。
+        if !off(.mimo) && mimoConfigured && (mimoHasError || mimoPlanPct != nil || mimoBalance != nil) {
+            cols.append(MenuBarTableColumn(kind: .mimo,
+                                           primary: value(mimoPlanPct),
+                                           secondary: mimoMoney(mimoBalance, currency: mimoCurrency)))
         }
         if !off(.minimax) && minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .minimax,
@@ -182,6 +205,12 @@ extension TokenPlanModel {
             openCodeRolling: openCodeQuota?.rolling.pct, openCodeWeekly: openCodeQuota?.weekly.pct,
             deepSeekConfigured: deepSeekConfigured, deepSeekHasError: deepSeekError != nil,
             deepSeekTodayCost: deepSeekTodayCost?.cost, deepSeekBalance: deepSeekBalance?.totalBalance,
+            zhipuConfigured: zhipuConfigured, zhipuHasError: zhipuError != nil,
+            zhipuFiveHour: zhipuQuota?.fiveHour?.pctInt, zhipuWeekly: zhipuQuota?.weekly?.pctInt,
+            mimoConfigured: mimoConfigured, mimoHasError: mimoError != nil,
+            mimoPlanPct: mimoUsage?.plan.map { Int($0.usedPct.rounded()) },
+            mimoBalance: mimoUsage?.balance.balance,
+            mimoCurrency: mimoUsage?.balance.currency ?? "CNY",
             minimaxConfigured: minimaxConfigured, minimaxHasError: minimaxError != nil,
             minimaxInterval: minimaxQuota?.interval?.pctInt, minimaxWeekly: minimaxQuota?.weekly?.pctInt,
             systemEnabled: systemStatsEnabled && isEnabled(.system),

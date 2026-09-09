@@ -958,6 +958,8 @@ func mtCols(
     kConf: Bool = true, kErr: Bool = false, k5: Int? = 0, kW: Int? = 58,
     oConf: Bool = true, oErr: Bool = false, oR: Int? = 3, oW: Int? = 2,
     dConf: Bool = true, dErr: Bool = false, dCost: Double? = 1.5, dBal: Double? = 110.0,
+    zConf: Bool = false, zErr: Bool = false, z5: Int? = 11, zW: Int? = 2,
+    miConf: Bool = false, miErr: Bool = false, miPlan: Int? = 37, miBal: Double? = 25.5, miCur: String = "CNY",
     mmConf: Bool = true, mmErr: Bool = false, mmI: Int? = 1, mmW: Int? = 1,
     sysOn: Bool = true, cpu: Int? = 12, mem: Int? = 25,
     dis: Set<String> = []
@@ -966,13 +968,34 @@ func mtCols(
         kimiConfigured: kConf, kimiHasError: kErr, kimiFiveHour: k5, kimiWeekly: kW,
         openCodeConfigured: oConf, openCodeHasError: oErr, openCodeRolling: oR, openCodeWeekly: oW,
         deepSeekConfigured: dConf, deepSeekHasError: dErr, deepSeekTodayCost: dCost, deepSeekBalance: dBal,
+        zhipuConfigured: zConf, zhipuHasError: zErr, zhipuFiveHour: z5, zhipuWeekly: zW,
+        mimoConfigured: miConf, mimoHasError: miErr, mimoPlanPct: miPlan, mimoBalance: miBal, mimoCurrency: miCur,
         minimaxConfigured: mmConf, minimaxHasError: mmErr, minimaxInterval: mmI, minimaxWeekly: mmW,
         systemEnabled: sysOn, cpu: cpu, memory: mem,
         disabled: dis)
 }
 
 let mtAll = mtCols()
-check("mt 6列全显示且固定顺序(本机恒最后)", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .minimax, .system])
+check("mt 6列全显示且固定顺序(智谱/MiMo 未配置;本机恒最后)", mtAll.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .minimax, .system])
+let mtAll8 = mtCols(zConf: true, miConf: true)
+check("mt 8列全显示且固定顺序(☁✨⚡🧠〜∞)", mtAll8.map(\.kind) == [.aliyun, .kimi, .openCode, .deepSeek, .zhipu, .mimo, .minimax, .system])
+check("mt 智谱主次值+标签", mtAll8[4].primary.text == "11%" && mtAll8[4].secondary.text == "2%"
+      && mtAll8[4].primaryLabel == "5小时" && mtAll8[4].secondaryLabel == "周")
+check("mt MiMo 主=套餐% 次=余额紧凑金额", mtAll8[5].primary.text == "37%" && mtAll8[5].secondary.text == "¥25.50"
+      && mtAll8[5].primaryLabel == "套餐" && mtAll8[5].secondaryLabel == "余额"
+      && mtAll8[5].secondary.pct == nil)
+check("mt MiMo 无套餐→主行横杠次行余额仍显", mtCols(miConf: true, miPlan: nil).map(\.kind).contains(.mimo)
+      && mtCols(miConf: true, miPlan: nil).first { $0.kind == .mimo }!.primary.text == "—")
+check("mt MiMo USD 币种符号", mtCols(miConf: true, miBal: 9.5, miCur: "USD").first { $0.kind == .mimo }!.secondary.text == "$9.50")
+check("mt 未配置智谱→隐藏", !mtCols().map(\.kind).contains(.zhipu))
+check("mt 未配置MiMo→隐藏", !mtCols().map(\.kind).contains(.mimo))
+let mtZErr = mtCols(zConf: true, zErr: true, z5: nil, zW: nil)
+check("mt 智谱出错→横杠列", mtZErr.first { $0.kind == .zhipu }!.primary.text == "—")
+let mtMiErr = mtCols(miConf: true, miErr: true, miPlan: nil, miBal: nil)
+check("mt MiMo 出错→横杠列", mtMiErr.first { $0.kind == .mimo }!.primary.text == "—"
+      && mtMiErr.first { $0.kind == .mimo }!.secondary.text == "—")
+check("mt 停用智谱/MiMo→列隐藏", mtCols(zConf: true, miConf: true, dis: ["zhipu", "mimo"]).map(\.kind) == mtAll.map(\.kind))
+check("mt 8列 tooltip 全文", MenuBarTable.tooltip(columns: mtAll8) == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | DeepSeek 今日 ¥1.50 · 余额 ¥110 | 智谱 5小时 11% · 周 2% | MiMo 套餐 37% · 余额 ¥25.50 | MiniMax 本窗 1% · 周 1% | 本机 CPU 12% · 内存 25%")
 check("mt 阿里云主次值", mtAll[0].primary.text == "40%" && mtAll[0].secondary.text == "18%")
 check("mt 0% 不省略", mtAll[1].primary.text == "0%" && mtAll[1].primary.pct == 0)
 check("mt DeepSeek 金额主次值", mtAll[3].primary.text == "¥1.50" && mtAll[3].secondary.text == "¥110"
@@ -1008,14 +1031,19 @@ let mtTip = MenuBarTable.tooltip(columns: mtAll)
 check("mt tooltip 全文", mtTip == "阿里云 5小时 40% · 7天 18% | Kimi 5小时 0% · 周 58% | OpenCode 滚动 3% · 周 2% | DeepSeek 今日 ¥1.50 · 余额 ¥110 | MiniMax 本窗 1% · 周 1% | 本机 CPU 12% · 内存 25%")
 check("mt tooltip 横杠形态", MenuBarTable.tooltip(columns: mtErr).contains("Kimi 5小时 — · 周 —"))
 
-// 渲染契约:百分比列值文本最长 4 字符("100%");DeepSeek 金额列最长 7 字符
-check("mt 百分比列≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100, mmI: 100, mmW: 100, cpu: 100, mem: 100)
-    .filter { $0.kind != .deepSeek }
+// 渲染契约:百分比列值文本最长 4 字符("100%");DeepSeek/MiMo 金额列最长 7 字符
+check("mt 百分比列≤4字符", mtCols(a5: 100, a7: 100, k5: 100, kW: 100, oR: 100, oW: 100,
+                                    zConf: true, z5: 100, zW: 100, miConf: true, miPlan: 100,
+                                    mmI: 100, mmW: 100, cpu: 100, mem: 100)
+    .filter { $0.kind != .deepSeek && $0.kind != .mimo }
     .allSatisfy { $0.primary.text.count <= 4 && $0.secondary.text.count <= 4 })
 check("mt DeepSeek 金额列≤7字符", mtCols(dCost: 0.01, dBal: 123456.78)[3].primary.text.count <= 7
       && mtCols(dCost: 0.01, dBal: 123456.78)[3].secondary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].primary.text.count <= 7
       && mtCols(dCost: 9999.9, dBal: 100_000_000)[3].secondary.text.count <= 7)
+check("mt MiMo 金额列≤7字符", mtCols(miConf: true, miBal: 0.01).first { $0.kind == .mimo }!.secondary.text.count <= 7
+      && mtCols(miConf: true, miBal: 123456.78).first { $0.kind == .mimo }!.secondary.text.count <= 7
+      && mtCols(miConf: true, miBal: 100_000_000).first { $0.kind == .mimo }!.secondary.text.count <= 7)
 
 // --- 数据源停用开关(disabledProviders,全面停用语义的菜单栏列过滤) ---
 check("mt 停用阿里云→列隐藏(不再恒显示)", mtCols(dis: ["aliyun"]).map(\.kind) == [.kimi, .openCode, .deepSeek, .minimax, .system])
@@ -1032,8 +1060,7 @@ check("registry 8 个数据源(7 订阅商+本机)", ProviderKind.allCases.count
       && ProviderKind.allCases.map(\.rawValue) == ["aliyun", "openCode", "kimi", "deepSeek", "zhipu", "mimo", "minimax", "system"])
 check("registry 面板 tab 顺序=旧 ProviderTab 顺序", ProviderKind.allCases.map(\.displayName)
       == ["阿里云", "OpenCode", "Kimi", "DeepSeek", "智谱 GLM", "MiMo", "MiniMax", "本机"])
-check("registry 菜单栏列映射(智谱/MiMo 暂无列)", ProviderKind.allCases.compactMap(\.menuBarColumnKind)
-      == [.aliyun, .openCode, .kimi, .deepSeek, .minimax, .system])
+check("registry 菜单栏列映射全覆盖(8 列;列序由 MenuBarColumnKind 决定)", Set(ProviderKind.allCases.compactMap(\.menuBarColumnKind)) == Set(MenuBarColumnKind.allCases))
 check("registry 列→provider 反向映射全覆盖", MenuBarColumnKind.allCases.allSatisfy {
     ProviderKind.from(menuBarColumnKind: $0).menuBarColumnKind == $0
 })

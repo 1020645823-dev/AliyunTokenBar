@@ -309,8 +309,8 @@ enum MenuBarTextRenderer {
         let iconWidth: CGFloat = 10
         let content = HStack(alignment: .top, spacing: 7) {
             ForEach(columns, id: \.kind) { col in
-                // DeepSeek 金额列值域更宽(¥99.99 / ¥9999 / ¥12.3万,契约 ≤7 字符)
-                let valueWidth: CGFloat = col.kind == .deepSeek ? 48 : 34
+                // DeepSeek/MiMo 金额列值域更宽(¥99.99 / ¥9999 / ¥12.3万,契约 ≤7 字符)
+                let valueWidth: CGFloat = (col.kind == .deepSeek || col.kind == .mimo) ? 48 : 34
                 VStack(spacing: -1) {
                     HStack(spacing: 2) {
                         Image(systemName: col.kind.symbolName)
