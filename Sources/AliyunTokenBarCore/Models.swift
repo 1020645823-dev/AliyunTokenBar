@@ -77,17 +77,30 @@ public struct AddonSummary: Equatable {
     }
 }
 
-/// 一次 usage 响应的窗口集合。7 天窗口恒存在;5 小时窗口可为 nil。
+/// 一次 usage 响应的窗口集合。三个窗口全部可选,「来什么字段归什么窗」。
 ///
-/// fiveHour == nil 表示服务端未返回任何 per5Hour 字段 —— 2026-08-15 起 Token Plan
-/// 官方限时取消 5 小时限额,usage RPC 只返回周窗口;若官方恢复该窗口(字段回归),
-/// 解析自动带回非 nil,UI 随之恢复双窗口展示。调用方对 nil 应隐藏对应统计,
-/// 不应显示 0%(0% 会与「窗口存在但零用量」混淆)。
+/// - fiveHour == nil:服务端未返回任何 per5Hour 字段 —— 2026-08-15 起 Token Plan
+///   官方限时取消 5 小时限额;若官方恢复该窗口(字段回归),解析自动带回非 nil。
+/// - oneWeek == nil:服务端未返回任何 per1Week 字段 —— 2026-09 起官方取消周限额,
+///   个人版改为月限额(Credits 单位,订阅日起每 30 天重置,见官方 Token Plan FAQ)。
+/// - oneMonth == nil:未返回 per1Month 字段(旧契约响应;周→月切换的过渡期形状)。
+///
+/// 调用方对 nil 应隐藏对应统计,不应显示 0%(0% 会与「窗口存在但零用量」混淆)。
 public struct UsageWindows: Equatable {
     public let fiveHour: UsageDetail?
-    public let oneWeek: UsageDetail
-    public init(fiveHour: UsageDetail?, oneWeek: UsageDetail) {
-        self.fiveHour = fiveHour; self.oneWeek = oneWeek
+    public let oneWeek: UsageDetail?
+    public let oneMonth: UsageDetail?
+    public init(fiveHour: UsageDetail?, oneWeek: UsageDetail?, oneMonth: UsageDetail? = nil) {
+        self.fiveHour = fiveHour; self.oneWeek = oneWeek; self.oneMonth = oneMonth
+    }
+
+    /// 当前响应里实际存在的窗口(展示/告警/日志遍历用;顺序=展示优先级)。
+    public var activeWindows: [(name: String, detail: UsageDetail)] {
+        var result: [(String, UsageDetail)] = []
+        if let f = fiveHour { result.append(("5h", f)) }
+        if let w = oneWeek { result.append(("7d", w)) }
+        if let m = oneMonth { result.append(("30d", m)) }
+        return result
     }
 }
 
@@ -164,6 +177,20 @@ public struct OpenCodeWindow: Equatable {
         return timeUntilReset
     }
 
+    /// 滚动窗口重置提示(紧凑版,供细条行尾注):空窗隐藏语义同 rollingResetText,
+    /// 小时分支去「钟」字("2小时10分后重置")——细条行内容仅 312pt,
+    /// 完整版"X小时Y分钟后重置"必被截断出省略号(2026-10-17 实测)。
+    public var rollingResetCompactText: String? {
+        guard resetInSec > 0, resetInSec < Self.rollingWindowSec else { return nil }
+        let hrs = resetInSec / 3600
+        let mins = (resetInSec % 3600) / 60
+        let days = hrs / 24
+        if days > 0 { return "\(days)天\(hrs % 24)小时后重置" }
+        if hrs > 0 { return "\(hrs)小时\(mins)分后重置" }
+        if mins > 0 { return "\(mins)分钟后重置" }
+        return "即将重置"
+    }
+
     /// "X小时Y分钟后重置" 等
     public var timeUntilReset: String {
         guard resetInSec > 0 else { return "未知" }
@@ -184,5 +211,47 @@ public struct OpenCodeQuota: Equatable {
     public let monthly: OpenCodeWindow    // 每月
     public init(rolling: OpenCodeWindow, weekly: OpenCodeWindow, monthly: OpenCodeWindow) {
         self.rolling = rolling; self.weekly = weekly; self.monthly = monthly
+    }
+}
+
+// MARK: - 多 workspace(2026-10-17:一个 opencode.ai 账户下有多个 workspace,
+// 每个 workspace 是独立订阅/独立配额;登录 cookie 全账户共享一份)
+
+/// 一个受监控的 OpenCode Go workspace。id 即 workspace ID(wrk_xxx/org_xxx),
+/// 同时是 SSR 抓取路径段;label 默认取 workspace 名,可重命名。
+public struct OpenCodeWorkspace: Codable, Equatable, Identifiable {
+    public var id: String
+    public var label: String
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// 单 workspace 用量快照(模型层聚合后按 workspace 展示/告警)。
+public struct OpenCodeWorkspaceSnapshot: Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let quota: OpenCodeQuota
+    public init(id: String, label: String, quota: OpenCodeQuota) {
+        self.id = id
+        self.label = label
+        self.quota = quota
+    }
+}
+
+extension OpenCodeQuota {
+    /// 多 workspace 聚合(纯函数,Verify 断言覆盖):三窗口都是独立订阅池的
+    /// 百分比,**取 max**(风险保守口径——最险的 workspace 决定会不会被限流)。
+    /// 单 workspace 原样返回;空数组 nil。
+    public static func aggregate(_ quotas: [OpenCodeQuota]) -> OpenCodeQuota? {
+        guard !quotas.isEmpty else { return nil }
+        guard quotas.count > 1 else { return quotas[0] }
+        func maxWindow(_ keyPath: (OpenCodeQuota) -> OpenCodeWindow) -> OpenCodeWindow {
+            quotas.map(keyPath).max(by: { $0.pct < $1.pct })!
+        }
+        return OpenCodeQuota(rolling: maxWindow(\.rolling),
+                             weekly: maxWindow(\.weekly),
+                             monthly: maxWindow(\.monthly))
     }
 }

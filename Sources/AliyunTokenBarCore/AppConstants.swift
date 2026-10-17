@@ -25,11 +25,31 @@ public enum UserDefaultsKeys {
     public static let subscriptionExpiryWarnedDay = "subscriptionExpiryWarnedDay"
     /// 每日用量摘要开关(P2-B7)
     public static let dailyDigestEnabled = "dailyDigestEnabled"
+    /// 阶跃 web_id(platform.stepfun.com 登录窗从 localStorage 抓取;
+    /// 非敏感随机设备标识,SPA 的 Oasis-Webid 请求头同源;UserDefaults 足够)
+    public static let stepfunWebId = "stepfunWebId"
+    /// 阶跃会话是否验证通过(常驻 WebView 会话的持久标记;
+    /// 决定冷启动是否预载会话页与 tab 可见性)
+    public static let stepfunSessionActive = "stepfunSessionActive"
+    /// 阶跃已登录账户列表(JSON:[{id,label}];id 同时是会话仓库标识,
+    /// 首账户固定 "main" 沿用默认仓库,其余为 UUID+命名仓库)
+    public static let stepfunAccounts = "stepfunAccounts"
+    /// 智谱已配置账户列表(JSON:[{id,label}];Key 按 id 分槽:
+    /// main 复用 `zhipu-api-key` 槽,其余 `zhipu-api-key-<id>`)
+    public static let zhipuAccounts = "zhipuAccounts"
+    /// Kimi 已登录账户列表(JSON:[{id,label}];web JWT 按 id 分槽:
+    /// main 复用 `kimi-web-token` 槽,其余 `kimi-web-token-<id>`)
+    public static let kimiAccounts = "kimiAccounts"
+    /// OpenCode Go 受监控 workspace 列表(JSON:[{id,label}];id = workspace ID
+    /// (wrk_xxx/org_xxx),登录 cookie 全账户共享一份,见 KeychainAccounts.openCodeCookie)
+    public static let openCodeWorkspaces = "openCodeWorkspaces"
 }
 
 public enum KeychainAccounts {
     /// 所有凭据共用同一 Keychain service(bundle id 连续性要求,勿改)。
     public static let service = "com.aliyuntokenbar"
+    /// OpenCode Go 网页登录 auth cookie(整段 Cookie 头;一个 opencode.ai 账户一份,
+    /// 该账户下全部 workspace 共用此 cookie,配额按 workspace ID 分别抓取)
     public static let openCodeCookie = "opencode-auth-cookie"
     public static let aliyunAKSK = "aliyun-ak-sk"
     public static let kimiWebToken = "kimi-web-token"
@@ -37,8 +57,15 @@ public enum KeychainAccounts {
     public static let deepSeekAPIKey = "deepseek-api-key"
     /// 智谱 GLM Coding Plan API Key(自动发现 opencode 配置时无需此项)
     public static let zhipuAPIKey = "zhipu-api-key"
-    /// 小米 MiMo 开放平台控制台 Cookie(整段 Cookie 请求头)
+    /// 小米 MiMo 开放平台控制台 Cookie(整段 Cookie 请求头;旧版单键,保留兼容与回滚)
     public static let mimoCookie = "mimo-console-cookie"
+    /// 小米 MiMo 两域 Cookie jar(JSON:platform 段 + account 段 passToken,用于静默续期)
+    public static let mimoCookieJar = "mimo-cookie-jar"
     /// MiniMax Coding Plan API Key
     public static let minimaxAPIKey = "minimax-api-key"
+    /// Ollama Cloud API Key(ollama.com/settings/keys 创建;不过期可吊销)
+    public static let ollamaAPIKey = "ollama-api-key"
+    /// 阶跃星辰 Step Plan 控制台登录态(platform.stepfun.com 的 Oasis-Token;
+    /// 网页登录 Cookie,会过期;API Key 查不了额度,见 StepFunUsageService)
+    public static let stepfunConsoleToken = "stepfun-console-token"
 }

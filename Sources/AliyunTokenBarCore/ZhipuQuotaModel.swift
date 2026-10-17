@@ -97,3 +97,65 @@ public struct ZhipuQuota: Equatable {
         self.level = level
     }
 }
+
+// MARK: - 多账户(2026-10-04:用户有多个智谱 Coding Plan 订阅账户)
+
+/// 一个已配置的智谱账户(Keychain 按 id 分槽存 Key;持久化到 UserDefaults)。
+/// 首账户固定 id="main"——沿用 v1.0.35 起的 `zhipu-api-key` Keychain 槽位(零迁移),
+/// 且只有 main 账户享受「opencode 配置自动发现」的兜底(其余账户只认手动 Key)。
+public struct ZhipuAccount: Codable, Equatable, Identifiable {
+    public let id: String
+    public var label: String
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// 单账户用量快照(模型层聚合后按账户展示/告警)。
+public struct ZhipuAccountSnapshot: Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let quota: ZhipuQuota
+    public init(id: String, label: String, quota: ZhipuQuota) {
+        self.id = id
+        self.label = label
+        self.quota = quota
+    }
+}
+
+extension ZhipuQuota {
+    /// 多账户聚合(纯函数,Verify 断言覆盖):
+    /// - 5h/周窗口是**百分比**:取 max(风险保守口径——最紧的账户决定会不会被限流);
+    /// - MCP 月度**按次**配额:各账户独立计数,usage/currentValue/remaining 求和后重算百分比,
+    ///   details 按 modelCode 归并求和,重置取最早;
+    /// - level 取首个非空(展示用,不影响数据)。
+    public static func aggregate(_ quotas: [ZhipuQuota]) -> ZhipuQuota? {
+        guard !quotas.isEmpty else { return nil }
+        guard quotas.count > 1 else { return quotas[0] }
+
+        func maxWindow(_ keyPath: (ZhipuQuota) -> ZhipuWindow?) -> ZhipuWindow? {
+            quotas.compactMap(keyPath).max(by: { $0.pct < $1.pct })
+        }
+
+        let mcps = quotas.compactMap(\.mcp)
+        var mcp: ZhipuMCPQuota?
+        if !mcps.isEmpty {
+            let usage = mcps.compactMap(\.usage).reduce(0, +)
+            let currentValue = mcps.compactMap(\.currentValue).reduce(0, +)
+            let remaining = mcps.compactMap(\.remaining).reduce(0, +)
+            let pct: Double = usage > 0 ? min(100, Double(currentValue) / Double(usage) * 100) : 0
+            var details: [String: Int] = [:]
+            for m in mcps {
+                for d in m.details { details[d.modelCode, default: 0] += d.usage }
+            }
+            let resetTimeMs = mcps.compactMap(\.resetTimeMs).min()
+            mcp = ZhipuMCPQuota(usage: usage, currentValue: currentValue, remaining: remaining,
+                                percentage: pct, resetTimeMs: resetTimeMs,
+                                details: details.map { ZhipuMCPQuota.Detail(modelCode: $0.key, usage: $0.value) })
+        }
+        let level = quotas.compactMap(\.level).first { !$0.isEmpty }
+        return ZhipuQuota(fiveHour: maxWindow(\.fiveHour), weekly: maxWindow(\.weekly),
+                          mcp: mcp, level: level)
+    }
+}

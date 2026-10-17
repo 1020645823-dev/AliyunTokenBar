@@ -4,9 +4,15 @@ import AliyunTokenBarCore
 
 /// Kimi Code 网页控制台登录窗口:内嵌 WKWebView 让用户登录 www.kimi.com,
 /// 登录后从 localStorage 抓 web JWT(access_token + refresh_token),用于月度总额度。
+/// 2026-10-04 多账户:`accountID` 决定 JWT 写入哪个 Keychain 槽;
+/// 新账户(nonMain)登录成功后由调用方负责登记账户列表。
 @MainActor
 struct KimiLoginView: View {
     @StateObject private var model = TokenPlanModel.shared
+    /// 目标账户槽:"main"=旧单账户槽;UUID=新账户专属槽
+    var accountID: String = "main"
+    /// 新账户的展示名(仅 accountID != "main" 时用于登记账户列表)
+    var newAccountLabel: String? = nil
     @State private var loading = false
     @State private var message = ""
     @Environment(\.dismiss) private var dismiss
@@ -16,7 +22,8 @@ struct KimiLoginView: View {
             // 顶栏
             HStack(spacing: DesignTokens.spacingS) {
                 Image(systemName: "sparkles").foregroundStyle(.teal)
-                Text("登录 Kimi 网页控制台").font(.system(size: 14, weight: .semibold))
+                Text(accountID == "main" ? "登录 Kimi 网页控制台" : "登录 Kimi 新账户")
+                    .font(.system(size: 14, weight: .semibold))
                 Spacer()
                 Button("取消") { dismiss() }
                     .buttonStyle(ATBTextButtonStyle(color: .atbTextSecondary))
@@ -46,13 +53,20 @@ struct KimiLoginView: View {
         .background(Color.atbPanelBackground)
     }
 
-    /// 登录成功(web JWT 拿到)后:存 Keychain,刷新数据,关闭窗口。
+    /// 登录成功(web JWT 拿到)后:写该账户的 Keychain 槽,刷新数据,关闭窗口。
     private func handleLoginSuccess(accessToken: String, refreshToken: String) async {
         loading = true
         message = "正在获取用量配置..."
         let token = KimiUsageService.KimiWebToken(accessToken: accessToken, refreshToken: refreshToken, expiresAt: Date().timeIntervalSince1970 + 900)
-        KimiUsageService.saveWebToken(token)
-        await model.refreshKimi()
+        KimiUsageService.saveWebToken(token, accountID: accountID)
+        if accountID != "main", let label = newAccountLabel {
+            model.addKimiAccount(KimiAccount(id: accountID, label: label))
+        } else if !model.kimiAccounts.contains(where: { $0.id == "main" }) {
+            // main 曾被移除 → 本次登录重新登记(addKimiAccount 自带刷新)
+            model.addKimiAccount(KimiAccount(id: "main", label: "账户1"))
+        } else {
+            await model.refreshKimi(force: true)
+        }
         if model.kimiQuota != nil {
             message = "登录成功!月度额度已同步"
         } else {

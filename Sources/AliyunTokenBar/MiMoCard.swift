@@ -2,21 +2,21 @@ import SwiftUI
 import AppKit
 import AliyunTokenBarCore
 
-// MARK: - 小米 MiMo API 余额卡
+// MARK: - 小米 MiMo API 余额卡(余额 + Token 套餐 · 双预测)
 //
-// 视觉语言与 DeepSeekCard 对称(余额型 provider):
-// - 品牌行 + 总余额 Hero 卡(现金/赠送拆分)
-// - Token 套餐月度用量卡(有套餐数据时)
-// - 状态行(时间/错误)
-// - 未配置引导:粘贴平台控制台 Cookie(平台未开放 API Key 查余额)
-//
-// 认证:浏览器登录 platform.xiaomimimo.com 后整段复制 Cookie 请求头
-// (必需 api-platform_serviceToken 与 userId 两个 cookie)。
+// v1.0.66 视觉语言(StepFun v1.0.65 设计范式泛化 + MiMo 特色):
+// - 品牌行带数据更新时间;
+// - 总余额 Hero(现金/赠送拆分)保留,新增**余额 runway 行**:
+//   按近 7 日余额下降速度预估"还能撑几天"(余额回升/数据不足时隐藏,不猜);
+// - Token 套餐卡重设计:mini-ring + 次数主口径(本月已用 X/Y Credits)
+//   + 周期到期 + **周期末预测**(按近 3 日速度,回答"这个周期会不会用完");
+// - 自动续期状态行 + 本机 CLI 账本行保留(零凭据的活动量参考)。
 
 struct MiMoCard: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var draftCookie = ""
     @State private var saveError: String?
+    @State private var showLogin = false
     private let consoleURL = URL(string: "https://platform.xiaomimimo.com/#/console/balance")!
 
     private var brand: Color { .atbBrandMiMo }
@@ -31,17 +31,22 @@ struct MiMoCard: View {
                     statusRow
                 } else if let err = model.mimoError, isAuthError(err) {
                     cookieErrorCard(err)
+                    fallbackCards
                 } else if model.mimoLoading {
                     loadingCard
                 } else {
                     unavailableCards
+                    fallbackCards
                     statusRow
                 }
             } else {
                 setupCard
             }
+            autoRenewRow
+            localLedgerRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $showLogin) { MiMoLoginView() }
     }
 
     // MARK: 品牌行
@@ -53,31 +58,24 @@ struct MiMoCard: View {
                 Text("小米 MiMo")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.atbTextPrimary)
-                Text("开放平台 · 余额与套餐用量")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(Color.atbTextTertiary)
-                    .tracking(0.3)
+                ATBSubtitleText(text: subtitleText)
             }
             Spacer(minLength: DesignTokens.spacingS)
             if model.mimoConfigured {
-                Button {
-                    Task { await model.refreshMiMo() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.atbTextTertiary)
-                        .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.06))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("刷新余额与套餐用量")
-                .accessibilityLabel("刷新 MiMo 余额")
+                ATBRefreshButton(action: { Task { await model.refreshMiMo(force: true) } },
+                                 help: "刷新余额与套餐用量")
             }
         }
     }
 
-    // MARK: 总余额卡(Hero)
+    private var subtitleText: String {
+        var base = "开放平台 · 余额与套餐用量"
+        let t = ATBTimeFormat.updated(model.mimoLastUpdated ?? ATBTimeFormat.latestData(model))
+        if !t.isEmpty { base += " · \(t) 更新" }
+        return base
+    }
+
+    // MARK: 总余额卡(Hero:¥ 主口径 + 现金/赠送拆分)
 
     private func balanceCard(_ b: MiMoUsageService.MiMoBalance) -> some View {
         VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
@@ -115,26 +113,29 @@ struct MiMoCard: View {
                 }
                 Spacer(minLength: 0)
             }
+            // 余额 runway:按近 7 日下降速度预估可用天数(回升/不足数据时隐藏)
+            if let runway = balanceRunway(b) {
+                ATBForecastRow(icon: "calendar.badge.clock", text: runway,
+                               tint: runway.starts(with: "⚠") ? Color(red: 0.95, green: 0.55, blue: 0.10) : Color.atbTextTertiary,
+                               help: "按近 7 日余额下降速度线性外推;仅反映余额消耗,不含新充值。")
+            }
         }
-        .padding(.horizontal, DesignTokens.spacingM + 2)
-        .padding(.vertical, DesignTokens.spacingS + 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbCardBackground)
-        .background(brand.opacity(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2)
-                .strokeBorder(brand.opacity(0.18), lineWidth: DesignTokens.strokeHairline)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
-        .overlay(alignment: .leading) {
-            Rectangle().fill(brand)
-                .frame(width: DesignTokens.stripeWidth)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
-                .padding(.vertical, 1)
-        }
+        .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM + 2, paddingV: DesignTokens.spacingS + 2, hero: true)
     }
 
-    // MARK: Token 套餐卡
+    /// "按近 7 日速度(日均 ¥X),余额约可支撑 N 天";N<14 加 ⚠。
+    private func balanceRunway(_ b: MiMoUsageService.MiMoBalance) -> String? {
+        let samples = ATBHistory.valueSamples(model, provider: "mimo")
+        guard let burn = UsageForecast.burnPerDay(samples: samples), burn > 0 else { return nil }
+        guard let days = UsageForecast.runwayDays(remaining: b.balance, burnPerDay: burn) else { return nil }
+        let perDay = MiMoMoneyFormat.full(burn, currency: b.currency)
+        if days < 14 {
+            return "⚠ 按近 7 日速度(日均 \(perDay)),余额约可支撑 \(Int(days.rounded())) 天"
+        }
+        return "按近 7 日速度(日均 \(perDay)),余额约可支撑 \(Int(days.rounded())) 天"
+    }
+
+    // MARK: Token 套餐卡(mini-ring + 次数主口径 + 周期预测)
 
     private func planCard(_ p: MiMoUsageService.MiMoTokenPlan) -> some View {
         VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
@@ -143,26 +144,31 @@ struct MiMoCard: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.atbTextPrimary)
                 if let code = p.planCode, !code.isEmpty {
-                    Text(code)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(brand)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(brand.opacity(0.14))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    ATBBrandTag(text: code, brand: brand)
                 }
-                if p.expired {
-                    Text("已过期")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.atbCritical)
+                if p.expired == true {
+                    ATBBrandTag(text: "已过期", brand: Color.atbCritical)
                 }
                 Spacer()
-                if p.limit > 0 {
-                    ATBHeroNumber(percentage: p.usedPct, brand: brand,
-                                  threshold: model.thresholdConfig, size: 18)
-                }
             }
             if p.limit > 0 {
+                HStack(spacing: DesignTokens.spacingM) {
+                    ATBMiniRing(pct: Int(p.usedPct.rounded()),
+                                color: thresholdBrand(Int(p.usedPct.rounded()),
+                                                      config: model.thresholdConfig, brand: brand),
+                                diameter: 46)
+                        .help("套餐本月已用 \(Int(p.usedPct.rounded()))%")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("本月已用 \(Self.countText(p.used)) / \(Self.countText(p.limit)) \(MiMoUsageService.planQuotaUnit)")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.atbTextPrimary)
+                        Text(planForecast(p))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Color.atbTextSecondary)
+                    }
+                    Spacer(minLength: 0)
+                }
                 // 已用进度条(刻度风格与 UsageCard 一致:品牌底 + 阈值色填充)
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -175,16 +181,12 @@ struct MiMoCard: View {
                 }
                 .frame(height: 5)
                 HStack(spacing: DesignTokens.spacingM) {
-                    Text("本月已用 \(Self.countText(p.used)) / \(Self.countText(p.limit)) tokens")
-                        .font(.system(size: 10, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.atbTextSecondary)
-                    Spacer(minLength: 0)
                     if let end = p.periodEnd {
                         Text("周期至 \(Self.dateText(end))")
                             .font(.system(size: 9))
                             .foregroundStyle(Color.atbTextTertiary)
                     }
+                    Spacer(minLength: 0)
                 }
             } else {
                 Text(p.periodEnd.map { "套餐周期至 \(Self.dateText($0))" } ?? "暂无用量数据")
@@ -192,21 +194,22 @@ struct MiMoCard: View {
                     .foregroundStyle(Color.atbTextTertiary)
             }
         }
-        .padding(.horizontal, DesignTokens.spacingM + 2)
-        .padding(.vertical, DesignTokens.spacingS + 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbCardBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2)
-                .strokeBorder(Color.atbSeparator.opacity(0.5), lineWidth: DesignTokens.strokeHairline)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
-        .overlay(alignment: .leading) {
-            Rectangle().fill(brand)
-                .frame(width: DesignTokens.stripeWidth)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
-                .padding(.vertical, 1)
+        .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM + 2, paddingV: DesignTokens.spacingS + 2)
+    }
+
+    /// 周期末预测:按近 3 日套餐用量速度外推到周期结束;
+    /// 数据不足/无周期结束时间 → 诚实说明,不猜数字。
+    private func planForecast(_ p: MiMoUsageService.MiMoTokenPlan) -> String {
+        guard let end = p.periodEnd else { return "按周期发放,不结转" }
+        let resetMs = Int64(end.timeIntervalSince1970 * 1000)
+        let samples = ATBHistory.pctSamples(model, provider: "mimo", window: "plan")
+        let forecast = UsageForecast.monthEndPct(samples: samples, now: Date(), resetMs: resetMs)
+        if let forecast {
+            let perDay = UsageForecast.pctPerDay(samples: samples)
+            let extra = perDay.map { " · 日均 +\(String(format: "%.1f", abs($0)))%" } ?? ""
+            return "按近 3 日速度,预计周期末用到 \(Int(forecast.rounded()))%\(extra)"
         }
+        return "趋势积累中(约 6 小时数据后给出周期预测)"
     }
 
     // MARK: 状态行
@@ -241,30 +244,14 @@ struct MiMoCard: View {
     // MARK: Loading / unavailable
 
     private var loadingCard: some View {
-        HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-            .frame(height: 56)
-            .atbCard(corner: DesignTokens.radiusL, paddingH: DesignTokens.spacingL,
-                     paddingV: DesignTokens.spacingL, alignment: .center)
+        ATBLoadingCard(height: 56)
     }
 
     private var unavailableCards: some View {
         VStack(spacing: DesignTokens.spacingS) {
-            dashCard(title: "总余额")
-            dashCard(title: "Token 套餐")
+            ATBUnavailableRow(title: "总余额")
+            ATBUnavailableRow(title: "Token 套餐")
         }
-    }
-
-    private func dashCard(title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.atbTextSecondary)
-            Spacer()
-            Text("—")
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.atbTextTertiary)
-        }
-        .atbCard(paddingV: DesignTokens.spacingS - 2)
     }
 
     // MARK: Cookie 过期重登
@@ -279,9 +266,18 @@ struct MiMoCard: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.atbCritical)
             }
-            Text("平台登录态已失效。请重新登录 platform.xiaomimimo.com,复制新的 Cookie 请求头粘贴到下方。")
+            Text("平台登录态已失效。点下方「登录平台」在窗内重新登录即可(自动续期失败时才需要);"
+                 + "也可以手工粘贴新的 Cookie 请求头。")
                 .font(.system(size: 10))
                 .foregroundStyle(Color.atbTextSecondary)
+            HStack(spacing: DesignTokens.spacingS) {
+                Button("登录平台") { showLogin = true }
+                    .buttonStyle(ATBPrimaryButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
+                Button("打开平台网页") { NSWorkspace.shared.open(consoleURL) }
+                    .buttonStyle(ATBTextButtonStyle(color: brand))
+                    .font(.system(size: 11, weight: .medium))
+            }
             cookieInputRow
         }
         .atbCard()
@@ -295,37 +291,111 @@ struct MiMoCard: View {
                 Image(systemName: "key.fill")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(brand)
-                Text("未配置平台 Cookie")
+                Text("未配置平台凭据")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.atbTextPrimary)
                 Spacer()
-                Button {
-                    NSWorkspace.shared.open(consoleURL)
-                } label: {
-                    HStack(spacing: 3) {
-                        Text("打开平台")
-                            .font(.system(size: 10, weight: .semibold))
-                        Image(systemName: "arrow.up.right.square")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .foregroundStyle(brand)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(brand.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                }
-                .buttonStyle(.plain)
-                .help("打开小米 MiMo 开放平台余额页")
+                ATBBrandActionButton(title: "登录平台", symbol: "person.badge.key", brand: brand,
+                                     action: { showLogin = true },
+                                     help: "在窗内登录 platform.xiaomimimo.com,自动保存两域 Cookie")
+                ATBBrandActionButton(title: "打开平台", symbol: "arrow.up.right.square", brand: brand,
+                                     action: { NSWorkspace.shared.open(consoleURL) },
+                                     help: "打开小米 MiMo 开放平台余额页")
             }
-            Text("MiMo 未开放 API Key 余额接口。在平台网页登录后,打开浏览器开发者工具 → 网络 → 任一 api/v1 请求,复制整段 Cookie 请求头粘贴到下方,即可显示总余额(现金/赠送)与 Token 套餐月度用量。")
+            Text("MiMo 未开放 API Key 余额接口。**推荐点「登录平台」**:在窗内登录一次即可,"
+                 + "App 会自动保存平台与小米账号两域 Cookie,并在登录态过期时静默续期。")
                 .font(.system(size: 10))
                 .foregroundStyle(Color.atbTextSecondary)
+            Text("也可以手工粘贴:浏览器开发者工具 → 网络 → 任一 api/v1 请求,复制整段 Cookie 请求头。"
+                 + "手工粘贴只含平台段,过期后需重新粘贴(不启用自动续期)。")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.atbTextTertiary)
             cookieInputRow
-            Text("Cookie 仅保存在系统钥匙串,本机其他应用不可读;过期后在面板重新粘贴即可。")
+            Text("Cookie 仅保存在系统钥匙串,本机其他应用不可读。")
                 .font(.system(size: 9))
                 .foregroundStyle(Color.atbTextTertiary)
         }
         .atbCard()
+    }
+
+    // MARK: 本地兜底(上次成功快照 + 本机 CLI 口径)
+
+    /// 控制台不可用时的兜底卡片:上次成功快照(含时间)。
+    @ViewBuilder
+    private var fallbackCards: some View {
+        if let snap = model.mimoLastSnapshot {
+            VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+                HStack {
+                    Text("上次成功查询")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.atbTextSecondary)
+                    Spacer()
+                    Text(Self.timeText(snap.capturedAt))
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.atbTextTertiary)
+                }
+                HStack(spacing: DesignTokens.spacingM) {
+                    Text("余额 \(MiMoMoneyFormat.full(snap.usage.balance.balance, currency: snap.usage.balance.currency))")
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.atbTextSecondary)
+                    if let p = snap.usage.plan, p.limit > 0 {
+                        Text("套餐 \(Int(p.usedPct.rounded()))%")
+                            .font(.system(size: 10, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.atbTextSecondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .atbCard(paddingV: DesignTokens.spacingS - 2)
+        }
+    }
+
+    /// 本机 CLI 用量账本(零凭据)。
+    ///
+    /// ⚠️ **不要把它当成控制台数字的上/下界**:控制台计费单位是 **Credits**(1 token = 2 Credits),
+    /// 而这里统计的是本机 mimocode/opencode 的**原始 token**;两者单位不同、覆盖范围也完全不同
+    /// (实测控制台月用量 ≈ 10 亿 tokens 量级,本机 4 天仅 52 万 tokens)。
+    /// 它的价值是"本机活动量 + 趋势",与套餐余量无关。
+    @ViewBuilder
+    private var localLedgerRow: some View {
+        if let local = model.mimoLocalUsage, !local.days.isEmpty {
+            HStack(spacing: 5) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.atbTextTertiary)
+                Text("本机 CLI 消耗(与控制台 Credits 不同口径)\(local.days.count) 天累计 "
+                     + "\(Self.countText(MiMoLocalLedger.totalTokens(in: local))) tokens,"
+                     + "今日 \(Self.countText(MiMoLocalLedger.todayTokens(in: local, now: Date())))")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.atbTextTertiary)
+                Spacer(minLength: 0)
+            }
+            .help("读取本机 mimocode / opencode 数据库统计的原始 token 消耗。"
+                  + "控制台套餐用量计费单位是 Credits(1 token = 2 Credits)且覆盖所有客户端,"
+                  + "两者口径不同、不可比较,此处仅反映本机 CLI 的活动量。")
+        }
+    }
+
+    // MARK: 自动续期状态行
+    private var autoRenewRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: model.mimoAutoRenewEnabled ? "arrow.triangle.2.circlepath" : "exclamationmark.circle")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(model.mimoAutoRenewEnabled ? Color.atbTextTertiary : .orange)
+            Text(model.mimoAutoRenewEnabled
+                 ? "自动续期已启用(已保存小米账号 passToken)"
+                 : "自动续期未启用 —— 登录态过期后需重新登录")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(model.mimoAutoRenewEnabled ? Color.atbTextTertiary : .orange)
+            Spacer(minLength: 0)
+            if !model.mimoAutoRenewEnabled {
+                Button("登录以启用") { showLogin = true }
+                    .buttonStyle(ATBTextButtonStyle(color: brand))
+                    .font(.system(size: 9, weight: .semibold))
+            }
+        }
     }
 
     private var cookieInputRow: some View {
@@ -342,7 +412,7 @@ struct MiMoCard: View {
             if let saveError {
                 Text(saveError)
                     .font(.system(size: 10))
-                    .foregroundStyle(Color.atbCritical)
+                    .foregroundStyle(.atbCritical)
             }
         }
     }
@@ -360,7 +430,7 @@ struct MiMoCard: View {
         saveError = nil
         model.mimoCookie = trimmed
         draftCookie = ""
-        Task { await model.refreshMiMo() }
+        Task { await model.refreshMiMo(force: true) }
     }
 
     // MARK: helpers

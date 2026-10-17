@@ -12,9 +12,9 @@ import Foundation
 // - 面板 tab 顺序 = ProviderKind.allCases 声明顺序(同旧 ProviderTab);
 // - 菜单栏列顺序 = MenuBarColumnKind 声明顺序(☁→✨→⚡→🧠→∞→▣,本机恒最后)。
 
-/// 全部数据源(7 个订阅商 + 本机伪 provider)。
+/// 全部数据源(9 个订阅商 + 本机伪 provider)。
 public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
-    case aliyun, openCode, kimi, deepSeek, zhipu, mimo, minimax, system
+    case aliyun, openCode, kimi, deepSeek, zhipu, mimo, minimax, ollama, stepfun, system
     public var id: String { rawValue }
 
     /// 设置页/摘要用展示名。
@@ -27,6 +27,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .zhipu: return "智谱 GLM"
         case .mimo: return "MiMo"
         case .minimax: return "MiniMax"
+        case .ollama: return "Ollama"
+        case .stepfun: return "阶跃 Step"
         case .system: return "本机"
         }
     }
@@ -41,6 +43,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .zhipu: return "atom"
         case .mimo: return "waveform"
         case .minimax: return "infinity"
+        case .ollama: return "hare.fill"
+        case .stepfun: return "stairs"
         case .system: return "cpu"
         }
     }
@@ -56,6 +60,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .zhipu: return .zhipu
         case .mimo: return .mimo
         case .minimax: return .minimax
+        case .ollama: return .ollama
+        case .stepfun: return .stepfun
         case .system: return .system
         }
     }
@@ -70,15 +76,17 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Codable {
         case .zhipu: return .zhipu
         case .mimo: return .mimo
         case .minimax: return .minimax
+        case .ollama: return .ollama
+        case .stepfun: return .stepfun
         case .system: return .system
         }
     }
 
     /// 面板 tab 是否恒在(未配置也显示,卡内自带引导/重登):
-    /// 阿里云(登录态卡)、DeepSeek(配置引导卡)、本机(恒在)。
+    /// 阿里云(登录态卡)、DeepSeek(配置引导卡)、Ollama(配置引导卡)、本机(恒在)。
     public var panelTabAlwaysListed: Bool {
         switch self {
-        case .aliyun, .deepSeek, .system: return true
+        case .aliyun, .deepSeek, .ollama, .system: return true
         default: return false
         }
     }

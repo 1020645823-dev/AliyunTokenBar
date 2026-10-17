@@ -12,6 +12,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
     case zhipu
     case mimo
     case minimax
+    case ollama
+    case stepfun
     case system
     var id: String { rawValue }
 
@@ -25,6 +27,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .zhipu: return .zhipu
         case .mimo: return .mimo
         case .minimax: return .minimax
+        case .ollama: return .ollama
+        case .stepfun: return .stepfun
         case .system: return .system
         }
     }
@@ -38,6 +42,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .zhipu: self = .zhipu
         case .mimo: self = .mimo
         case .minimax: self = .minimax
+        case .ollama: self = .ollama
+        case .stepfun: self = .stepfun
         case .system: self = .system
         }
     }
@@ -50,6 +56,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .zhipu: return "GLM"
         case .mimo: return "MiMo"
         case .minimax: return "MiniMax"
+        case .ollama: return "Ollama"
+        case .stepfun: return "阶跃"
         case .system: return "本机"
         }
     }
@@ -62,6 +70,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .zhipu: return "atom"
         case .mimo: return "waveform"
         case .minimax: return "infinity"
+        case .ollama: return "hare.fill"
+        case .stepfun: return "stairs"
         case .system: return "cpu"
         }
     }
@@ -74,6 +84,8 @@ enum ProviderTab: String, CaseIterable, Identifiable {
         case .zhipu: return "G"
         case .mimo: return "M"
         case .minimax: return "X"
+        case .ollama: return "O"
+        case .stepfun: return "阶"
         case .system: return "机"
         }
     }
@@ -271,6 +283,8 @@ struct TokenPlanMenuContent: View {
             case .zhipu: ZhipuCodeCard()
             case .mimo: MiMoCard()
             case .minimax: MiniMaxCodeCard()
+            case .ollama: OllamaCard()
+            case .stepfun: StepFunCard()
             case .system: SystemProcessesCard()
             }
         }
@@ -303,18 +317,119 @@ struct TokenPlanMenuContent: View {
             if model.authState == .blNotInstalled || model.authState == .notLoggedIn || model.authState == .expired {
                 AliyunAuthCard()
             } else {
+                aliyunHeader
                 aliyunStatusRow
                 usageSection
+                aliyunForecastSection
                 planCard
             }
+        }
+    }
+
+    /// 阿里云品牌行(v1.0.66:与其他订阅卡统一的 header 形态——此前阿里云 tab 无 header)。
+    private var aliyunHeader: some View {
+        HStack(spacing: DesignTokens.spacingS) {
+            ATBProviderMark(tab: .aliyun, size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text("阿里云百炼")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.atbTextPrimary)
+                    if let sub = model.quota?.subscription {
+                        ATBBrandTag(text: sub.specDisplay, brand: .atbBrandAliyun)
+                    }
+                }
+                ATBSubtitleText(text: aliyunSubtitleText)
+            }
+            Spacer(minLength: DesignTokens.spacingS)
+            ATBRefreshButton(action: { Task { await model.refreshFull() } }, help: "刷新阿里云用量")
+        }
+    }
+
+    private var aliyunSubtitleText: String {
+        var base = "Token Plan · 窗口用量"
+        let t = ATBTimeFormat.updated(model.lastUpdated ?? ATBTimeFormat.latestData(model))
+        if !t.isEmpty { base += " · \(t) 更新" }
+        return base
+    }
+
+    // MARK: 阿里云窗口预测(v1.0.66:5h 触顶 + 7d/月重置时预判)
+
+    private struct AliyunForecastItem: Identifiable {
+        let id: String
+        let icon: String
+        let text: String
+        let tint: Color
+    }
+
+    /// 5h 是滚动窗口 → 速率触顶预测;7d/月是固定边界 → 重置时刻百分比外推。
+    /// 速率非正(刚重置归零)/数据不足/重置时间在过去 → 不出行(不猜)。
+    private var aliyunForecastItems: [AliyunForecastItem] {
+        guard let q = model.quota else { return [] }
+        let urgent = Color(red: 0.95, green: 0.55, blue: 0.10)
+        var items: [AliyunForecastItem] = []
+
+        if let five = q.usage.fiveHour {
+            let samples = ATBHistory.pctSamples(model, provider: "aliyun", window: "5h")
+            if let rate = UsageForecast.pctPerHour(samples: samples), rate > 0, let last = samples.last {
+                let hoursToReset = Date(timeIntervalSince1970: TimeInterval(five.resetTimeMs) / 1000)
+                    .timeIntervalSinceNow / 3600
+                if hoursToReset > 0 {
+                    let projected = min(100, last.pct + rate * hoursToReset)
+                    if projected >= 99.5 {
+                        let mins = UsageForecast.minutesToLimit(samples: samples) ?? 0
+                        items.append(AliyunForecastItem(
+                            id: "5h",
+                            icon: "exclamationmark.triangle.fill",
+                            text: "5小时窗口 · 按当前速度约 \(UsageForecast.durationText(minutes: mins)) 后触顶",
+                            tint: urgent))
+                    } else {
+                        items.append(AliyunForecastItem(
+                            id: "5h",
+                            icon: "chart.line.uptrend.xyaxis",
+                            text: "5小时窗口 · 预计重置时用到 \(Int(projected.rounded()))%",
+                            tint: Color.atbTextTertiary))
+                    }
+                }
+            }
+        }
+
+        for (id, label, detail) in [("7d", "7天窗口", q.usage.oneWeek), ("monthly", "月度窗口", q.usage.oneMonth)] {
+            guard let d = detail else { continue }
+            let samples = ATBHistory.pctSamples(model, provider: "aliyun", window: id)
+            guard let projected = UsageForecast.monthEndPct(samples: samples, now: Date(), resetMs: d.resetTimeMs),
+                  let perDay = UsageForecast.pctPerDay(samples: samples), abs(perDay) > 0.05 else { continue }
+            let willHit = projected >= 99.5
+            items.append(AliyunForecastItem(
+                id: id,
+                icon: willHit ? "exclamationmark.triangle.fill" : "chart.line.uptrend.xyaxis",
+                text: "\(label) · 预计重置时用到 \(Int(projected.rounded()))% · 日均 +\(String(format: "%.1f", abs(perDay)))%",
+                tint: willHit ? urgent : Color.atbTextTertiary))
+        }
+        return items
+    }
+
+    @ViewBuilder
+    private var aliyunForecastSection: some View {
+        let items = aliyunForecastItems
+        if !items.isEmpty {
+            VStack(spacing: 4) {
+                ForEach(items) { item in
+                    ATBForecastRow(icon: item.icon, text: item.text, tint: item.tint)
+                }
+            }
+        } else if model.quota != nil {
+            ATBForecastRow(text: "趋势积累中(约 6 小时数据后给出触顶预测)",
+                           help: "按历史用量速率线性外推;至少需要 6 小时跨度的两个有效采样点。")
         }
     }
 
     private var usageSection: some View {
         VStack(spacing: DesignTokens.spacingM) {
             if let q = model.quota {
-                // 5h 窗口可能不存在(2026-08-15 官方限时取消 5h 限额,服务端不再返回
-                // per5Hour 字段):缺失时隐藏 5h 卡,7d 卡升为 hero(唯一主指标)。
+                // 窗口按存在性动态出卡(官方窗口形态多次调整:2026-08-15 取消 5h 限额、
+                // 2026-09 取消周限额改月限额):缺失的窗口不显示,存在的窗口里第一个为 hero。
+                let heroExists = q.usage.fiveHour != nil || q.usage.oneWeek != nil
                 if let fiveHour = q.usage.fiveHour {
                     UsageCard(title: "5小时限额",
                               percentage: fiveHour.percentage,
@@ -326,22 +441,35 @@ struct TokenPlanMenuContent: View {
                               resetTooltip: absoluteReset(fiveHour),
                               hero: true)
                 }
-                UsageCard(title: "7天限额",
-                          percentage: q.usage.oneWeek.percentage,
-                          resetText: relativeReset(q.usage.oneWeek),
-                          brand: .atbBrandAliyun, isLoading: model.isLoading,
-                          threshold: model.thresholdConfig,
-                          showSparkline: model.sparklineEnabled,
-                          sparklineProvider: "aliyun", sparklineWindow: "7d",
-                          resetTooltip: absoluteReset(q.usage.oneWeek),
-                          hero: q.usage.fiveHour == nil)
+                if let oneWeek = q.usage.oneWeek {
+                    UsageCard(title: "7天限额",
+                              percentage: oneWeek.percentage,
+                              resetText: relativeReset(oneWeek),
+                              brand: .atbBrandAliyun, isLoading: model.isLoading,
+                              threshold: model.thresholdConfig,
+                              showSparkline: model.sparklineEnabled,
+                              sparklineProvider: "aliyun", sparklineWindow: "7d",
+                              resetTooltip: absoluteReset(oneWeek),
+                              hero: !heroExists)
+                }
+                if let oneMonth = q.usage.oneMonth {
+                    UsageCard(title: "月度限额",
+                              percentage: oneMonth.percentage,
+                              resetText: relativeReset(oneMonth),
+                              brand: .atbBrandAliyun, isLoading: model.isLoading,
+                              threshold: model.thresholdConfig,
+                              showSparkline: model.sparklineEnabled,
+                              sparklineProvider: "aliyun", sparklineWindow: "monthly",
+                              resetTooltip: absoluteReset(oneMonth),
+                              hero: !heroExists)
+                }
             } else if model.isLoading {
                 HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
                     .frame(height: 48)
                     .atbCard(corner: DesignTokens.radiusL, paddingH: DesignTokens.spacingL,
                              paddingV: DesignTokens.spacingL, alignment: .center)
             } else if model.lastError != nil {
-                UsageCard(title: "7天限额", percentage: nil, resetText: nil,
+                UsageCard(title: "月度限额", percentage: nil, resetText: nil,
                           brand: .atbBrandAliyun, isLoading: false,
                           threshold: model.thresholdConfig, dataUnavailable: true, hero: true)
             } else {

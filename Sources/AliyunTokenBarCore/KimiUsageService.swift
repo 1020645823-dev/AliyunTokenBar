@@ -202,9 +202,51 @@ public enum KimiUsageService {
         public var isValid: Bool { expiresAt > Date().timeIntervalSince1970 + 300 }
     }
 
-    /// 从 Keychain 读 web JWT(JSON 字符串)。
-    public static func loadWebToken() -> KimiWebToken? {
-        guard let store = KeychainCredentialStore(service: KeychainAccounts.service).read(account: webTokenAccount),
+    /// web JWT 的 Keychain 槽位。main 复用旧槽(零迁移),其余账户按 id 分槽
+    /// (2026-10-04 多账户:每个 Kimi 账户 = 一次独立的 www.kimi.com 网页登录)。
+    public static func webTokenAccount(accountID: String) -> String {
+        accountID == "main" ? KeychainAccounts.kimiWebToken : "\(KeychainAccounts.kimiWebToken)-\(accountID)"
+    }
+
+    // MARK: - 账户身份标识(多账户区分用)
+
+    /// 从 JWT payload 提取账户标识(sub / user_id / abstract_user_id,取首个非空)。
+    /// 纯函数:仅本地 base64 解码,不网络、不落日志(Verify 覆盖)。
+    public static func jwtSubject(_ jwt: String) -> String? {
+        let parts = jwt.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 2 else { return nil }
+        var payload = String(parts[1])
+        let pad = payload.count % 4
+        if pad > 0 { payload += String(repeating: "=", count: 4 - pad) }
+        // JWT 用 base64url(-/_),Data(base64Encoded:) 要标准 base64(+/)
+        let standard = payload
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        guard let data = Data(base64Encoded: standard) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        for key in ["sub", "user_id", "userId", "abstract_user_id"] {
+            if let v = root[key] as? String, !v.isEmpty { return v }
+            if let v = root[key] as? Int { return String(v) }
+        }
+        return nil
+    }
+
+    /// 某账户的身份标识(用于多账户在 UI 上区分):
+    /// web JWT 的 sub 优先;main 无网页登录时回退本机 coding token 的 user_id。
+    public static func accountSubject(accountID: String = "main") -> String? {
+        if let token = loadWebToken(accountID: accountID), let sub = jwtSubject(token.accessToken) {
+            return sub
+        }
+        if accountID == "main", let token = loadToken(), let sub = jwtSubject(token.accessToken) {
+            return sub
+        }
+        return nil
+    }
+
+    /// 从凭证文件读 web JWT(JSON 字符串)。accountID="main" = 旧单账户槽。
+    public static func loadWebToken(accountID: String = "main") -> KimiWebToken? {
+        guard let store = AppFileCredentialStore.shared
+                .read(account: webTokenAccount(accountID: accountID)),
               let data = store.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let access = root["accessToken"] as? String, !access.isEmpty,
@@ -213,26 +255,28 @@ public enum KimiUsageService {
         return KimiWebToken(accessToken: access, refreshToken: refresh, expiresAt: expires)
     }
 
-    /// 保存 web JWT 到 Keychain。
-    public static func saveWebToken(_ token: KimiWebToken) {
+    /// 保存 web JWT 到凭证文件(默认写 main 槽)。
+    public static func saveWebToken(_ token: KimiWebToken, accountID: String = "main") {
         let dict: [String: Any] = [
             "accessToken": token.accessToken,
             "refreshToken": token.refreshToken,
             "expiresAt": token.expiresAt,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: dict) {
-            KeychainCredentialStore(service: KeychainAccounts.service).write(String(data: data, encoding: .utf8) ?? "", account: webTokenAccount)
+            AppFileCredentialStore.shared
+                .write(String(data: data, encoding: .utf8) ?? "", account: webTokenAccount(accountID: accountID))
         }
     }
 
-    /// 清除 web JWT(登出)。
-    public static func clearWebToken() {
-        KeychainCredentialStore(service: KeychainAccounts.service).delete(account: webTokenAccount)
+    /// 清除 web JWT(登出)。默认清 main 槽。
+    public static func clearWebToken(accountID: String = "main") {
+        AppFileCredentialStore.shared
+            .delete(account: webTokenAccount(accountID: accountID))
     }
 
     /// 用 web refresh_token 换新 JWT(access_token 15 分钟过期,refresh_token 90 天)。
-    /// 成功则写回 Keychain。
-    public static func refreshWebToken(_ refreshToken: String) async -> KimiWebToken? {
+    /// 成功则写回**该账户**的 Keychain 槽。
+    public static func refreshWebToken(_ refreshToken: String, accountID: String = "main") async -> KimiWebToken? {
         var request = URLRequest(url: webRefreshURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -249,7 +293,7 @@ public enum KimiUsageService {
             // 响应无 expiresAt,按 15 分钟估算
             let expires = Date().timeIntervalSince1970 + 900
             let token = KimiWebToken(accessToken: access, refreshToken: refresh, expiresAt: expires)
-            saveWebToken(token)
+            saveWebToken(token, accountID: accountID)
             return token
         } catch {
             return nil
@@ -276,21 +320,36 @@ public enum KimiUsageService {
     }
 
     /// 拉取 Web 控制台用量(需要 web JWT)。失败语义同 coding API。
-    public static func fetchWebQuota() async -> Result<KimiWebQuota, UsageError> {
-        guard let token = loadWebToken() else {
-            return .failure(.unknown("未登录 Kimi 网页控制台"))
-        }
-        let useToken = token.isValid ? token : (await refreshWebToken(token.refreshToken) ?? token)
+    /// 拉取 Web 控制台用量(需要 web JWT)。accountID 决定刷新后写回哪个 Keychain 槽。
+    /// 失败语义同 coding API。
+    public static func fetchWebQuota(token: KimiWebToken, accountID: String = "main") async -> Result<KimiWebQuota, UsageError> {
+        let useToken = token.isValid ? token : (await refreshWebToken(token.refreshToken, accountID: accountID) ?? token)
         let result = await fetchWebWithToken(useToken)
         switch result {
         case .success(let q):
             return .success(q)
         case .failure(let e):
-            if e == .authExpired, let refreshed = await refreshWebToken(useToken.refreshToken) {
+            if e == .authExpired, let refreshed = await refreshWebToken(useToken.refreshToken, accountID: accountID) {
                 return await fetchWebWithToken(refreshed)
             }
             return .failure(e)
         }
+    }
+
+    /// 兼容包装:拉 main 账户(旧单账户槽)的 Web 用量。
+    public static func fetchWebQuota() async -> Result<KimiWebQuota, UsageError> {
+        guard let token = loadWebToken() else {
+            return .failure(.unknown("未登录 Kimi 网页控制台"))
+        }
+        return await fetchWebQuota(token: token, accountID: "main")
+    }
+
+    /// Web 用量 → KimiQuota(web 通道无加油包/等级字段,与旧行为一致)。
+    private static func webToQuota(_ wq: KimiWebQuota) -> KimiQuota {
+        KimiQuota(fiveHour: wq.fiveHour, weekly: wq.weekly, monthly: wq.monthly,
+                  booster: nil, membershipLevel: nil,
+                  subscriptionExpireMs: wq.subscriptionExpireMs,
+                  subscriptionBalance: wq.subscriptionBalance)
     }
 
     private static func fetchWebWithToken(_ token: KimiWebToken) async -> Result<KimiWebQuota, UsageError> {
@@ -372,27 +431,26 @@ public enum KimiUsageService {
 
     /// 拉取 Kimi Code 套餐用量。失败语义同 BlUsageService(authExpired/network/parse/invalidResponse/unknown)。
     /// 有 web 控制台登录时优先走 web API(含月度总额);否则用 coding API(5h/周)。
-    public static func fetchQuota() async -> Result<KimiQuota, UsageError> {
+    /// 拉取 Kimi Code 套餐用量。失败语义同 BlUsageService(authExpired/network/parse/invalidResponse/unknown)。
+    /// 有 web 控制台登录时优先走 web API(含月度总额);否则用 coding API(5h/周)。
+    /// - accountID="main"(默认):旧单账户路径——本机 KimiCodeBar/Kimi CLI 凭证 + legacy web 槽;
+    ///   其余账户(2026-10-04 多账户):仅认该账户自己的 web JWT 槽,无本机 coding 凭证回退。
+    public static func fetchQuota(accountID: String = "main") async -> Result<KimiQuota, UsageError> {
         // 1) web 控制台登录存在 → 用它(含月度总额)
-        if loadWebToken() != nil {
-            let webResult = await fetchWebQuota()
-            switch webResult {
+        if let token = loadWebToken(accountID: accountID) {
+            switch await fetchWebQuota(token: token, accountID: accountID) {
             case .success(let wq):
-                return .success(KimiQuota(
-                    fiveHour: wq.fiveHour,
-                    weekly: wq.weekly,
-                    monthly: wq.monthly,
-                    booster: nil,
-                    membershipLevel: nil,
-                    subscriptionExpireMs: wq.subscriptionExpireMs,
-                    subscriptionBalance: wq.subscriptionBalance
-                ))
-            case .failure:
-                // web 失败(网络/过期)→ 回退 coding API,月度缺失
-                return await fetchCodingQuota()
+                return .success(webToQuota(wq))
+            case .failure(let e):
+                // web 失败(网络/过期)→ 仅 main 可回退 coding API(月度缺失)
+                if accountID == "main" { return await fetchCodingQuota() }
+                return .failure(e)
             }
         }
-        // 2) 无 web 登录 → coding API
+        // 2) 无 web 登录 → coding API(仅 main:本机凭证)
+        guard accountID == "main" else {
+            return .failure(.unknown("该账户未登录 Kimi 网页控制台"))
+        }
         return await fetchCodingQuota()
     }
 

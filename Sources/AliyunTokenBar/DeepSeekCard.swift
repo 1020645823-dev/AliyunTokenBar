@@ -25,6 +25,7 @@ struct DeepSeekCard: View {
             if model.deepSeekConfigured {
                 if let b = model.deepSeekBalance {
                     balanceCard(b)
+                    if let runway = runwayRow { runway }
                     if let c = model.deepSeekTodayCost { todayCostCard(c) }
                     weekTrendCard
                     statusRow
@@ -45,6 +46,14 @@ struct DeepSeekCard: View {
 
     // MARK: 品牌行
 
+    /// 副标题:静态描述 + 数据更新时间(v1.0.66:与其余订阅卡统一)。
+    private var subtitleText: String {
+        var base = "OpenAI 兼容 · 余额与日花费"
+        let t = ATBTimeFormat.updated(model.deepSeekLastUpdated ?? ATBTimeFormat.latestData(model))
+        if !t.isEmpty { base += " · \(t) 更新" }
+        return base
+    }
+
     private var header: some View {
         HStack(spacing: DesignTokens.spacingS) {
             ATBProviderMark(tab: .deepSeek, size: 24)
@@ -52,10 +61,7 @@ struct DeepSeekCard: View {
                 Text("DeepSeek API")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.atbTextPrimary)
-                Text("OpenAI 兼容 · 余额与日花费")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(Color.atbTextTertiary)
-                    .tracking(0.3)
+                ATBSubtitleText(text: subtitleText)
             }
             Spacer(minLength: DesignTokens.spacingS)
             if model.deepSeekConfigured {
@@ -137,6 +143,30 @@ struct DeepSeekCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM + 2))
                 .padding(.vertical, 1)
         }
+    }
+
+    // MARK: 余额 runway 预测(v1.0.66:按近 7 日花费速度预估可用天数)
+
+    /// "按近 7 日速度(日均 ¥X),余额约可支撑 N 天"。
+    /// 日均取近 7 日条图的合计 ÷ 天数;花费为 0 / 天数不足 → 不出行(不猜)。
+    /// 注意:不含未来的充值/赠金,只反映"照这个烧法还能烧多久"。
+    /// "按近 7 日速度(日均 ¥X),余额约可支撑 N 天"。
+    /// 日均取近 7 日条图的合计 ÷ 天数;花费为 0 / 天数不足 → nil(不猜)。
+    /// 注意:不含未来的充值/赠金,只反映"照这个烧法还能烧多久"。
+    private var runwayRow: ATBForecastRow? {
+        guard let b = model.deepSeekBalance else { return nil }
+        let points = weekCostPoints
+        guard points.count >= 2 else { return nil }
+        let total = points.reduce(0) { $0 + $1.cost }
+        let perDay = total / Double(points.count)
+        guard let days = UsageForecast.runwayDays(remaining: b.totalBalance, burnPerDay: perDay),
+              days > 0 else { return nil }
+        return ATBForecastRow(
+            icon: days < 30 ? "exclamationmark.triangle.fill" : "calendar.badge.clock",
+            text: "按近 \(points.count) 日速度(日均 \(DeepSeekMoneyFormat.full(perDay))),"
+                + "余额约可支撑 \(Int(days.rounded())) 天",
+            tint: days < 30 ? Color(red: 0.95, green: 0.55, blue: 0.10) : Color.atbTextTertiary,
+            help: "按近 7 日花费(余额差估算)线性外推;不含未来充值/赠金。")
     }
 
     // MARK: 当日费用卡

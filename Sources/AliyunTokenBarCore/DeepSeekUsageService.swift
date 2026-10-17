@@ -38,9 +38,9 @@ public enum DeepSeekUsageService {
 
     // MARK: - API Key 存储(Keychain)
 
-    /// 读取 Keychain 中的 API Key(未配置返回 nil)。
+    /// 读取凭证文件中的 API Key(未配置返回 nil)。
     public static func loadAPIKey() -> String? {
-        let raw = KeychainCredentialStore(service: KeychainAccounts.service)
+        let raw = AppFileCredentialStore.shared
             .read(account: KeychainAccounts.deepSeekAPIKey) ?? ""
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -51,14 +51,14 @@ public enum DeepSeekUsageService {
     public static func saveAPIKey(_ key: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        KeychainCredentialStore(service: KeychainAccounts.service)
+        AppFileCredentialStore.shared
             .write(trimmed, account: KeychainAccounts.deepSeekAPIKey)
         return true
     }
 
     /// 清除 API Key。
     public static func clearAPIKey() {
-        KeychainCredentialStore(service: KeychainAccounts.service)
+        AppFileCredentialStore.shared
             .delete(account: KeychainAccounts.deepSeekAPIKey)
     }
 
@@ -158,16 +158,28 @@ public enum DeepSeekMoneyFormat {
         "¥" + String(format: "%.2f", max(0, v))
     }
 
-    /// 菜单栏紧凑格式(契约:≤7 字符,渲染层据此定值域宽):
-    /// - v < 100       → ¥9.99(两位小数)
-    /// - 100 ≤ v < 1万 → ¥9999(整数)
-    /// - 1万 ≤ v < 1亿 → ¥12.3万(1 位小数)
-    /// - v ≥ 1亿       → ¥1.2亿(1 位小数)
+    /// 菜单栏紧凑格式(契约:≤7 字符):compactDigits + 币种符号。
     public static func compact(_ v: Double) -> String {
+        "¥" + compactDigits(v)
+    }
+
+    /// 菜单栏数字部分(compact 去币种符号;迷你表格金额列值域与百分比列统一 34pt,契约 ≤5 字符):
+    /// - v < 100         → 9.99(两位小数;99.995≤v<100 四舍五入成 "100.00" 超宽,回退整数 100)
+    /// - 100 ≤ v < 1万   → 9999(整数)
+    /// - 1万 ≤ v < 1亿   → 12.3万;<100万 带一位小数,≥100万 整数("123.5万" 会超宽)
+    /// - v ≥ 1亿         → 1.2亿;≥10亿 整数
+    public static func compactDigits(_ v: Double) -> String {
         let x = max(0, v)
-        if x >= 100_000_000 { return "¥" + String(format: "%.1f亿", x / 100_000_000) }
-        if x >= 10_000 { return "¥" + String(format: "%.1f万", x / 10_000) }
-        if x >= 100 { return "¥" + String(format: "%.0f", x) }
-        return "¥" + String(format: "%.2f", x)
+        if x >= 100_000_000 {
+            let y = x / 100_000_000
+            return y >= 10 ? String(format: "%.0f亿", y) : String(format: "%.1f亿", y)
+        }
+        if x >= 10_000 {
+            let y = x / 10_000
+            return y >= 100 ? String(format: "%.0f万", y) : String(format: "%.1f万", y)
+        }
+        if x >= 100 { return String(format: "%.0f", x) }
+        let s = String(format: "%.2f", x)
+        return s.count <= 5 ? s : String(format: "%.0f", x)
     }
 }

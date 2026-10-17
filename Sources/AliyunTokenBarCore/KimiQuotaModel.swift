@@ -171,3 +171,81 @@ public struct KimiBooster: Equatable {
         self.monthlyLimitYuan = monthlyLimitYuan
     }
 }
+
+// MARK: - 多账户(2026-10-04:用户有多个 Kimi 订阅账户)
+
+/// 一个已登录的 Kimi 账户。账户身份 = www.kimi.com 网页控制台登录态
+/// (web JWT 按 id 分槽存 Keychain;Keychain 槽位命名见 KimiUsageService)。
+/// 首账户固定 id="main"——沿用 v1.0.16 起的本机凭证(KimiCodeBar/Kimi CLI 文件
+/// + `kimi-web-token` Keychain 槽),零迁移;其余账户为独立网页登录。
+public struct KimiAccount: Codable, Equatable, Identifiable {
+    public let id: String
+    public var label: String
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// 单账户用量快照(模型层聚合后按账户展示/告警)。
+public struct KimiAccountSnapshot: Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let quota: KimiQuota
+    public init(id: String, label: String, quota: KimiQuota) {
+        self.id = id
+        self.label = label
+        self.quota = quota
+    }
+}
+
+extension KimiQuota {
+    /// 多账户聚合(纯函数,Verify 断言覆盖):
+    /// - 5h/周/月是**计数**窗口:used/limit 跨账户求和(每个订阅是独立池,总量口径最直观),
+    ///   重置取最早;
+    /// - 订阅共享池只有比率没有绝对值:取 totalUsedRatio 最大(风险最紧的那个);
+    /// - 加油包是钱:余额/本月消费求和,月度上限求和;
+    /// - membershipLevel / subscriptionExpireMs 取首个非空 / 最早。
+    public static func aggregate(_ quotas: [KimiQuota]) -> KimiQuota? {
+        guard !quotas.isEmpty else { return nil }
+        guard quotas.count > 1 else { return quotas[0] }
+
+        func sumWindow(_ keyPath: (KimiQuota) -> KimiWindow?) -> KimiWindow? {
+            let wins = quotas.compactMap(keyPath)
+            guard !wins.isEmpty else { return nil }
+            let used = wins.map(\.used).reduce(0, +)
+            let limit = wins.map(\.limit).reduce(0, +)
+            let reset = wins.compactMap(\.resetTimeMs).min()
+            return KimiWindow(used: used, limit: limit, resetTimeMs: reset)
+        }
+
+        let balances = quotas.compactMap(\.subscriptionBalance)
+        var balance: KimiSubscriptionBalance?
+        if !balances.isEmpty {
+            let worst = balances.max(by: { $0.totalUsedRatio < $1.totalUsedRatio })!
+            balance = KimiSubscriptionBalance(totalUsedRatio: worst.totalUsedRatio,
+                                              codeUsedRatio: worst.codeUsedRatio,
+                                              expireTimeMs: worst.expireTimeMs)
+        }
+
+        let boosters = quotas.compactMap(\.booster).filter(\.enabled)
+        var booster: KimiBooster?
+        if !boosters.isEmpty {
+            let balanceYuan = boosters.map(\.balanceYuan).reduce(0, +)
+            let monthlyUsedYuan = boosters.map(\.monthlyUsedYuan).reduce(0, +)
+            let monthlyLimitYuan = boosters.map(\.monthlyLimitYuan).reduce(0, +)
+            booster = KimiBooster(enabled: true, balanceYuan: balanceYuan,
+                                  monthlyUsedYuan: monthlyUsedYuan, monthlyLimitYuan: monthlyLimitYuan)
+        }
+
+        let level = quotas.compactMap(\.membershipLevel).first { !$0.isEmpty }
+        let expire = quotas.compactMap(\.subscriptionExpireMs).min()
+        return KimiQuota(fiveHour: sumWindow(\.fiveHour) ?? quotas[0].fiveHour,
+                         weekly: sumWindow(\.weekly) ?? quotas[0].weekly,
+                         monthly: sumWindow(\.monthly),
+                         booster: booster,
+                         membershipLevel: level,
+                         subscriptionExpireMs: expire,
+                         subscriptionBalance: balance)
+    }
+}

@@ -26,9 +26,37 @@ final class SettingsWindowManager: ObservableObject {
 }
 
 @MainActor
-private final class SettingsWindow {
+final class SettingsWindow {
     static let shared = SettingsWindow()
     private var panel: NSPanel?
+
+    /// 真正设置面板的窗口引用(供占位窗排除法使用;nil = 尚未创建)。
+    static var panelWindow: NSWindow? { shared.panel }
+
+    /// 关闭 SwiftUI `Settings` scene 造出的占位窗。
+    ///
+    /// 为什么需要:app 平时是 .accessory(无 app 菜单),但状态项不可见时
+    /// 「救生索」会切到 .regular,app 菜单随之出现;其中 SwiftUI 自动生成的
+    /// 「设置…」(⌘,)绑定 `Settings { SettingsSceneBridge() }`。该 scene 每次
+    /// 激活都会新建一个内容为空的窗口 —— 本方法在转发手势后立刻把它关掉,
+    /// 用户只会看到一张真正的设置面板。
+    ///
+    /// 判据:排除真正的 NSPanel,并匹配 SwiftUI 占位窗的两个特征之一 ——
+    /// ① 标题为「<App名>设置」(真正面板标题恰为「设置」);
+    /// ② 内容尺寸极小(0×0,Color.clear)。
+    static func dismissSwiftUIPlaceholders() {
+        guard let real = panelWindow else { return }
+        for window in NSApp.windows where window !== real {
+            guard window.isVisible else { continue }
+            let titleLooksLikePlaceholder = window.title != "设置" && window.title.hasSuffix("设置")
+            let tooSmall = window.frame.width < 40 && window.frame.height < 40
+            if titleLooksLikePlaceholder || tooSmall {
+                AppLog.info("关闭 SwiftUI Settings 占位窗(标题=\(window.title))", category: .general)
+                window.close()
+            }
+        }
+    }
+
     func show() {
         if panel == nil {
             let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
@@ -259,8 +287,7 @@ private struct ServicesSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var showOpenCodeLogin = false
     @State private var showKimiLogin = false
-    @State private var manualWorkspaceID = ""
-    @State private var manualWorkspaceError: String?
+    @State private var showMiMoLogin = false
     @State private var deepSeekDraftKey = ""
     @State private var deepSeekSaveError: String?
     @State private var zhipuDraftKey = ""
@@ -269,10 +296,30 @@ private struct ServicesSettingsPage: View {
     @State private var mimoSaveError: String?
     @State private var minimaxDraftKey = ""
     @State private var minimaxSaveError: String?
+    @State private var ollamaDraftKey = ""
+    @State private var ollamaSaveError: String?
+    @State private var showStepFunLogin = false
+
+    /// Kimi 登录窗参数:main=旧单账户槽;UUID=新账户。
+    @State private var kimiLoginAccountID: String = "main"
+    @State private var kimiLoginLabel: String?
+    @State private var renamingKimiID: String?
+    @State private var kimiRenameDraft = ""
+    @State private var renamingZhipuID: String?
+    @State private var zhipuRenameDraft = ""
+
+    /// OpenCode workspace 行内重命名
+    @State private var renamingOpenCodeID: String?
+    @State private var openCodeRenameDraft = ""
+
+    /// 阶跃登录窗参数:未配置=首账户(main);已配置=新账户(UUID)。
+    @State private var stepfunLoginAccountID: String = "main"
+    @State private var stepfunLoginLabel: String?
 
     var body: some View {
         ScrollView {
             VStack(spacing: DesignTokens.spacingM) {
+                credentialsStorageCard
                 aliyunCard
                 kimiCard
                 openCodeCard
@@ -280,11 +327,44 @@ private struct ServicesSettingsPage: View {
                 zhipuCard
                 mimoCard
                 minimaxCard
+                ollamaCard
+                stepfunCard
             }
             .padding(DesignTokens.spacingL)
         }
         .sheet(isPresented: $showOpenCodeLogin) { OpenCodeLoginView() }
-        .sheet(isPresented: $showKimiLogin) { KimiLoginView() }
+        .sheet(isPresented: $showKimiLogin) {
+            KimiLoginView(accountID: kimiLoginAccountID, newAccountLabel: kimiLoginLabel)
+        }
+        .sheet(isPresented: $showMiMoLogin) { MiMoLoginView() }
+        .sheet(isPresented: $showStepFunLogin) {
+            StepFunLoginView(accountID: stepfunLoginAccountID, newAccountLabel: stepfunLoginLabel)
+        }
+    }
+
+    // MARK: 登录态存储(维护入口)
+
+    /// 全部登录态持久化在 .app 包内凭证文件(2026-10-17 用户要求):
+    /// 展示位置 + 访达入口;文件为明文 JSON,可手动编辑维护;更新由安装脚本保留。
+    private var credentialsStorageCard: some View {
+        cardContainer(icon: "key.fill", iconColor: .atbBlue, title: "登录态存储") {
+            let store = AppFileCredentialStore.shared
+            let url = store.credentialsFileURL
+            let inApp = url.path.contains(".app/Contents/Resources")
+            statusRow(inApp ? "存储在应用包内(拷贝 .app 即带走全部登录态)"
+                            : "存储在应用支持目录(开发态回退位置)")
+            HStack(spacing: DesignTokens.spacingS) {
+                Text(url.path)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.atbTextTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: DesignTokens.spacingXS)
+                Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 11))
+            }
+            caption("明文 JSON,可用任意文本编辑器维护(改完重启生效);应用更新时由安装脚本自动保留,不会丢登录态。")
+        }
     }
 
     // MARK: 阿里云
@@ -303,7 +383,7 @@ private struct ServicesSettingsPage: View {
         }
     }
 
-    // MARK: Kimi
+    // MARK: Kimi(多账户)
 
     private var kimiCard: some View {
         cardContainer(icon: "sparkles", iconColor: .teal, title: "Kimi Code") {
@@ -311,14 +391,74 @@ private struct ServicesSettingsPage: View {
                 statusRow("已连接(复用本机 KimiCodeBar / Kimi CLI 凭证)")
                 if model.kimiWebLoggedIn {
                     statusRow("已登录网页控制台(订阅总额度可用)")
-                    Button("登出网页控制台") { model.clearKimi() }
-                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
-                } else {
-                    Button("登录 Kimi 网页控制台") { showKimiLogin = true }
-                        .buttonStyle(ATBPrimaryButtonStyle())
-                    caption("登录后可查看订阅总额度(月度用量)。点击登录,在弹出窗口完成 Kimi 账号授权。")
                 }
-                Button("立即刷新") { Task { await model.refreshKimi() } }
+                // 账户列表(多账户:逐账户移除;单账户=传统登出)
+                if !model.kimiAccounts.isEmpty {
+                    VStack(alignment: .leading, spacing: DesignTokens.spacingXS) {
+                        ForEach(model.kimiAccounts) { account in
+                            HStack(spacing: DesignTokens.spacingS) {
+                                Circle().fill(Color.teal).frame(width: 6, height: 6)
+                                Text(account.label).font(.system(size: 12))
+                                if let hint = model.kimiAccountHint(account.id) {
+                                    Text(hint)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.atbTextTertiary)
+                                }
+                                if let snap = model.kimiAccountQuotas.first(where: { $0.id == account.id }) {
+                                    Text("5h \(snap.quota.fiveHour.pctInt)%")
+                                        .font(.system(size: 11, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.atbTextSecondary)
+                                } else if let err = model.kimiAccountErrors[account.id] {
+                                    Text(err).font(.system(size: 10)).foregroundStyle(.atbCritical).lineLimit(1)
+                                }
+                                Spacer(minLength: DesignTokens.spacingXS)
+                                if renamingKimiID == account.id {
+                                    TextField("账户名", text: $kimiRenameDraft)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(size: 11))
+                                        .frame(width: 110)
+                                    Button("保存") {
+                                        model.renameKimiAccount(id: account.id, label: kimiRenameDraft)
+                                        renamingKimiID = nil
+                                    }
+                                    .buttonStyle(ATBPrimaryButtonStyle()).font(.system(size: 10))
+                                    Button("取消") { renamingKimiID = nil }
+                                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 10))
+                                } else {
+                                    Button("重命名") {
+                                        kimiRenameDraft = account.label
+                                        renamingKimiID = account.id
+                                    }
+                                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 11))
+                                    Button("移除") { model.removeKimiAccount(id: account.id) }
+                                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                                }
+                            }
+                        }
+                    }
+                }
+                HStack(spacing: DesignTokens.spacingS) {
+                    if model.kimiWebLoggedIn {
+                        Button("登录新账户") {
+                            kimiLoginAccountID = UUID().uuidString
+                            kimiLoginLabel = model.kimiNextAccountLabel
+                            showKimiLogin = true
+                        }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        Button("登出网页控制台") { model.clearKimi() }
+                            .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                    } else {
+                        Button("登录 Kimi 网页控制台") {
+                            kimiLoginAccountID = "main"
+                            kimiLoginLabel = nil
+                            showKimiLogin = true
+                        }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                    }
+                }
+                caption("每个账户 = 一次 www.kimi.com 网页登录(独立 JWT);多账户自动合计,菜单栏/告警按账户分。")
+                Button("立即刷新") { Task { await model.refreshKimi(force: true) } }
                     .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
             } else {
                 caption("未检测到本机 Kimi 登录凭证。请先安装并登录 Kimi Code CLI 或 KimiCodeBar。")
@@ -330,58 +470,71 @@ private struct ServicesSettingsPage: View {
 
     private var openCodeCard: some View {
         cardContainer(icon: "bolt.fill", iconColor: .purple, title: "OpenCode Go") {
-            if model.openCodeConfigured {
-                statusRow("已登录 (workspace: \(model.openCodeWorkspaceID.prefix(12))...)")
-                manualWorkspaceRow
-                Button("登出") {
-                    model.clearOpenCode()
-                    OpenCodeWebCleanup.clearCookies()   // P1-D7:清共享 WebView 登录态
+            if !model.openCodeCookie.isEmpty {
+                statusRow("已登录(opencode.ai 账户,\(model.openCodeWorkspaces.count) 个受监控 workspace)")
+                // workspace 列表(逐行重命名/移除)
+                if !model.openCodeWorkspaces.isEmpty {
+                    VStack(alignment: .leading, spacing: DesignTokens.spacingXS) {
+                        ForEach(model.openCodeWorkspaces) { ws in
+                            HStack(spacing: DesignTokens.spacingS) {
+                                Circle().fill(Color.purple).frame(width: 6, height: 6)
+                                Text(ws.label).font(.system(size: 12))
+                                Text(ws.id)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.atbTextTertiary)
+                                    .lineLimit(1)
+                                if let snap = model.openCodeWorkspaceQuotas.first(where: { $0.id == ws.id }) {
+                                    Text("滚动 \(snap.quota.rolling.pct)% · 周 \(snap.quota.weekly.pct)%")
+                                        .font(.system(size: 11, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.atbTextSecondary)
+                                } else if let err = model.openCodeWorkspaceErrors[ws.id] {
+                                    Text(err).font(.system(size: 10)).foregroundStyle(.atbCritical).lineLimit(1)
+                                }
+                                Spacer(minLength: DesignTokens.spacingXS)
+                                if renamingOpenCodeID == ws.id {
+                                    TextField("名称", text: $openCodeRenameDraft)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(size: 11))
+                                        .frame(width: 110)
+                                    Button("保存") {
+                                        model.renameOpenCodeWorkspace(id: ws.id, label: openCodeRenameDraft)
+                                        renamingOpenCodeID = nil
+                                    }
+                                    .buttonStyle(ATBPrimaryButtonStyle()).font(.system(size: 10))
+                                    Button("取消") { renamingOpenCodeID = nil }
+                                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 10))
+                                } else {
+                                    Button("重命名") {
+                                        openCodeRenameDraft = ws.label
+                                        renamingOpenCodeID = ws.id
+                                    }
+                                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 11))
+                                    Button("移除") { model.removeOpenCodeWorkspace(id: ws.id) }
+                                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                                }
+                            }
+                        }
+                    }
                 }
-                .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                HStack(spacing: DesignTokens.spacingS) {
+                    Button("发现全部 workspace") { Task { await model.discoverOpenCodeWorkspaces() } }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                    Button("登出") {
+                        model.clearOpenCode()
+                        OpenCodeWebCleanup.clearCookies()   // P1-D7:清共享 WebView 登录态
+                    }
+                    .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                }
+                caption("一个 opencode.ai 账户一份登录;每个 workspace 是独立订阅,多 workspace 自动合计(取最险),告警按 workspace 分。")
+                Button("立即刷新") { Task { await model.refreshOpenCode(force: true) } }
+                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
             } else {
                 Button("登录 OpenCode") { showOpenCodeLogin = true }
                     .buttonStyle(ATBPrimaryButtonStyle())
-                caption("点击登录,在弹出窗口完成 OpenCode 授权。cookie 会过期,届时可重新登录。")
-                // P1-B3:登录成功但 workspace 发现失败时,可在这里手动填写(此前提示的死胡同)
-                manualWorkspaceRow
+                caption("点击登录,在弹出窗口完成 OpenCode 授权。登录后自动发现账户下全部 workspace;cookie 会过期,届时可重新登录。")
             }
         }
-    }
-
-    /// 手动填写/修改 workspace ID(P1-B3)。
-    private var manualWorkspaceRow: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
-            HStack(spacing: DesignTokens.spacingS) {
-                TextField("workspace ID (wrk_xxx)", text: $manualWorkspaceID)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
-                    .onAppear { manualWorkspaceID = model.openCodeWorkspaceID }
-                Button("保存") { saveManualWorkspace() }
-                    .buttonStyle(ATBTextButtonStyle())
-                    .font(.system(size: 11, weight: .medium))
-            }
-            if let manualWorkspaceError {
-                Text(manualWorkspaceError)
-                    .font(.system(size: 10)).foregroundStyle(.atbCritical)
-            } else {
-                caption("登录后自动发现失败时可手动填写;保存后立即拉取用量。")
-            }
-        }
-    }
-
-    private func saveManualWorkspace() {
-        let ws = manualWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ws.hasPrefix("wrk_") else {
-            manualWorkspaceError = "ID 应以 wrk_ 开头"
-            return
-        }
-        guard !model.openCodeCookie.isEmpty else {
-            manualWorkspaceError = "请先登录 OpenCode 获取凭据"
-            return
-        }
-        manualWorkspaceError = nil
-        model.openCodeWorkspaceID = ws
-        Task { await model.refreshOpenCode() }
     }
 
     // MARK: DeepSeek
@@ -425,20 +578,76 @@ private struct ServicesSettingsPage: View {
         Task { await model.refreshDeepSeek() }
     }
 
-    // MARK: 智谱 GLM
+    // MARK: 智谱 GLM(多账户)
 
     private var zhipuCard: some View {
         cardContainer(icon: "atom", iconColor: .atbBrandZhipu, title: "智谱 GLM Coding Plan") {
             if model.zhipuConfigured {
-                if model.zhipuAPIKey.isEmpty {
-                    statusRow("已自动发现(opencode 配置 zhipuai-coding-plan)")
-                    caption("在 ~/.config/opencode/opencode.json 检测到 Coding Plan API Key,直接使用,不复制存储。")
+                if model.zhipuAccounts.isEmpty {
+                    caption("凭据仍在,但账户已全部移除。在面板智谱 tab 或此处重新粘贴 Key 即可启用。")
                 } else {
-                    statusRow("已配置 (…\(model.zhipuAPIKey.suffix(4)))")
-                    Button("移除 API Key") { model.clearZhipu() }
-                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                    if model.zhipuAPIKey.isEmpty, model.zhipuAccounts.contains(where: { $0.id == "main" }) {
+                        statusRow("已自动发现(opencode 配置 zhipuai-coding-plan)")
+                        caption("在 ~/.config/opencode/opencode.json 检测到 Coding Plan API Key,直接使用,不复制存储。")
+                    }
                 }
-                Button("立即刷新") { Task { await model.refreshZhipu() } }
+                // 账户列表:main=手动 Key 或自动发现;其余=独立 Key
+                VStack(alignment: .leading, spacing: DesignTokens.spacingXS) {
+                    ForEach(model.zhipuAccounts) { account in
+                        HStack(spacing: DesignTokens.spacingS) {
+                            Circle().fill(Color.atbBrandZhipu).frame(width: 6, height: 6)
+                            Text(account.label).font(.system(size: 12))
+                            if let hint = model.zhipuAccountHint(account.id) {
+                                Text(hint)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.atbTextTertiary)
+                            }
+                            if let snap = model.zhipuAccountQuotas.first(where: { $0.id == account.id }) {
+                                Text("5h \(snap.quota.fiveHour?.pctInt ?? 0)%")
+                                    .font(.system(size: 11, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.atbTextSecondary)
+                            } else if let err = model.zhipuAccountErrors[account.id] {
+                                Text(err).font(.system(size: 10)).foregroundStyle(.atbCritical).lineLimit(1)
+                            }
+                            Spacer(minLength: DesignTokens.spacingXS)
+                            if renamingZhipuID == account.id {
+                                TextField("账户名", text: $zhipuRenameDraft)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 11))
+                                    .frame(width: 110)
+                                Button("保存") {
+                                    model.renameZhipuAccount(id: account.id, label: zhipuRenameDraft)
+                                    renamingZhipuID = nil
+                                }
+                                .buttonStyle(ATBPrimaryButtonStyle()).font(.system(size: 10))
+                                Button("取消") { renamingZhipuID = nil }
+                                    .buttonStyle(ATBTextButtonStyle()).font(.system(size: 10))
+                            } else {
+                                Button("重命名") {
+                                    zhipuRenameDraft = account.label
+                                    renamingZhipuID = account.id
+                                }
+                                .buttonStyle(ATBTextButtonStyle()).font(.system(size: 11))
+                                Button("移除") { model.removeZhipuAccount(id: account.id) }
+                                    .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                            }
+                        }
+                    }
+                }
+                HStack(spacing: DesignTokens.spacingS) {
+                    SecureField("新账户 API Key", text: $zhipuDraftKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                    Button("添加并查询") { saveZhipuKey() }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .font(.system(size: 11, weight: .medium))
+                }
+                if let zhipuSaveError {
+                    Text(zhipuSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                }
+                caption("多账户 = 多把独立 Key(各自存钥匙串);合计口径 = 5h/周取最险账户,MCP 按次求和。")
+                Button("立即刷新") { Task { await model.refreshZhipu(force: true) } }
                     .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
             } else {
                 HStack(spacing: DesignTokens.spacingS) {
@@ -464,9 +673,14 @@ private struct ServicesSettingsPage: View {
             return
         }
         zhipuSaveError = nil
-        model.zhipuAPIKey = k
+        if model.zhipuAccounts.isEmpty {
+            // 无账户:首把 Key 落到 main 槽(didSet 会登记 main 账户)
+            model.zhipuAPIKey = k
+        } else {
+            model.addZhipuAccount(label: model.zhipuNextAccountLabel, apiKey: k)
+        }
         zhipuDraftKey = ""
-        Task { await model.refreshZhipu() }
+        Task { await model.refreshZhipu(force: true) }
     }
 
     // MARK: 小米 MiMo
@@ -474,27 +688,35 @@ private struct ServicesSettingsPage: View {
     private var mimoCard: some View {
         cardContainer(icon: "waveform", iconColor: .atbBrandMiMo, title: "小米 MiMo 开放平台") {
             if model.mimoConfigured {
-                statusRow("已配置平台 Cookie")
+                statusRow(model.mimoAutoRenewEnabled ? "已配置 · 自动续期已启用" : "已配置 · 自动续期未启用")
                 HStack(spacing: DesignTokens.spacingM) {
-                    Button("立即刷新") { Task { await model.refreshMiMo() } }
+                    Button("登录平台") { showMiMoLogin = true }
+                        .buttonStyle(ATBTextButtonStyle(color: .atbBrandMiMo)).font(.system(size: 12))
+                    Button("立即刷新") { Task { await model.refreshMiMo(force: true) } }
                         .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
                     Button("移除 Cookie") { model.clearMiMo() }
                         .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
                 }
+                if !model.mimoAutoRenewEnabled {
+                    caption("未取到小米账号 passToken,登录态过期后需重新登录。点「登录平台」在窗内登录一次即可启用自动续期。")
+                }
             } else {
                 VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
-                    SecureField("Cookie: api-platform_serviceToken=…; userId=…",
+                    Button("登录平台(推荐)") { showMiMoLogin = true }
+                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .font(.system(size: 11, weight: .medium))
+                    SecureField("或手工粘贴:Cookie: api-platform_serviceToken=…; userId=…",
                                 text: $mimoDraftCookie)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11, design: .monospaced))
                     Button("保存并查询") { saveMiMoCookie() }
-                        .buttonStyle(ATBPrimaryButtonStyle())
+                        .buttonStyle(ATBTextButtonStyle())
                         .font(.system(size: 11, weight: .medium))
                     if let mimoSaveError {
                         Text(mimoSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
                     }
                 }
-                caption("MiMo 未开放 API Key 余额接口:登录 platform.xiaomimimo.com 后,从浏览器开发者工具复制任一 api/v1 请求的整段 Cookie 请求头。Cookie 只存系统钥匙串,过期后重新粘贴。")
+                caption("MiMo 未开放 API Key 余额接口。推荐在窗内登录 platform.xiaomimimo.com:App 会自动保存平台与小米账号两域 Cookie,并在登录态过期时静默续期。手工粘贴只含平台段,过期后需重新粘贴。Cookie 只存系统钥匙串。")
             }
         }
     }
@@ -558,6 +780,152 @@ private struct ServicesSettingsPage: View {
         Task { await model.refreshMiniMax() }
     }
 
+    // MARK: Ollama Cloud
+
+    private var ollamaCard: some View {
+        cardContainer(icon: "hare.fill", iconColor: .atbBrandOllama, title: "Ollama Cloud") {
+            if model.ollamaConfigured {
+                statusRow(ollamaStatusText)
+                HStack(spacing: DesignTokens.spacingM) {
+                    Button("立即刷新") { Task { await model.refreshOllama() } }
+                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+                    Button("移除 API Key") { model.clearOllama() }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+                    HStack(spacing: DesignTokens.spacingS) {
+                        SecureField("API Key", text: $ollamaDraftKey)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11, design: .monospaced))
+                        Button("保存并查询") { saveOllamaKey() }
+                            .buttonStyle(ATBPrimaryButtonStyle())
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    if let ollamaSaveError {
+                        Text(ollamaSaveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                    }
+                }
+                caption("在 ollama.com → Settings → Keys 创建 API Key 后粘贴(Key 不过期,可随时吊销;只存系统钥匙串)。用量显示近 30 天消费(美元)及占套餐月度额度比例;接口不返回重置时间,故不显示倒计时。")
+            }
+        }
+    }
+
+    /// 已配置状态行文案(含套餐档位 + 近 30 天消费;档位来自远程 /api/me,
+    /// 拿不到则省略)。
+    private var ollamaStatusText: String {
+        var status = "已配置 (…\(model.ollamaAPIKey.suffix(4)))"
+        if let q = model.ollamaQuota {
+            if let plan = q.planDisplay { status += " · 套餐 \(plan)" }
+            status += " · 近 30 天 \(OllamaMoney.full(q.spentUSD30d))"
+        }
+        return status
+    }
+
+    private func saveOllamaKey() {
+        let k = ollamaDraftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else {
+            ollamaSaveError = "请输入 API Key"
+            return
+        }
+        ollamaSaveError = nil
+        model.ollamaAPIKey = k
+        ollamaDraftKey = ""
+        Task { await model.refreshOllama() }
+    }
+
+    // MARK: 阶跃 Step Plan(多账户)
+
+    private var stepfunCard: some View {
+        cardContainer(icon: "stairs", iconColor: .atbBrandStepFun, title: "阶跃 Step Plan (StepFun)") {
+            if model.stepfunConfigured {
+                statusRow(stepfunStatusText)
+                // 账户清单(多账户时逐行展示;单账户并入状态行)
+                ForEach(model.stepfunAccounts) { account in
+                    HStack(spacing: DesignTokens.spacingS) {
+                        Text(account.label)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.atbTextSecondary)
+                        // 身份展示:优先手机号尾号(****5678),区分账户/暴露重复登录
+                        if let identity = account.identityDisplay {
+                            Text(identity)
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(.atbTextTertiary)
+                        }
+                        if model.stepfunDuplicateAccountIDs.contains(account.id) {
+                            Text("重复")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        if let q = model.stepfunAccountQuotas.first(where: { $0.id == account.id })?.quota,
+                           let m = q.subscription {
+                            Text("月池 \(m.usedPctInt)%")
+                                .font(.system(size: 11, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(.atbTextSecondary)
+                        }
+                        Spacer()
+                        Button("移除") {
+                            model.removeStepFunAccount(id: account.id)
+                            StepFunSessionController.shared.logout(accountID: account.id)
+                        }
+                        .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
+                    }
+                }
+                // 重复账户一键清理(同一 oasis_id 只保留第一个)
+                if !model.stepfunDuplicateAccountIDs.isEmpty {
+                    Button("移除重复账户(合计已只计一次)") {
+                        for id in model.removeStepFunDuplicateAccounts() {
+                            StepFunSessionController.shared.logout(accountID: id)
+                        }
+                    }
+                    .buttonStyle(ATBTextButtonStyle(color: .orange)).font(.system(size: 12))
+                }
+                HStack(spacing: DesignTokens.spacingM) {
+                    Button("添加账户") {
+                        stepfunLoginAccountID = UUID().uuidString
+                        stepfunLoginLabel = "账户\(model.stepfunAccounts.count + 1)"
+                        showStepFunLogin = true
+                    }
+                    .buttonStyle(ATBPrimaryButtonStyle()).font(.system(size: 12))
+                    Button("立即刷新") { Task { await model.refreshStepFun(force: true) } }
+                        .buttonStyle(ATBTextButtonStyle()).font(.system(size: 12))
+                    Button("全部移除") {
+                        model.clearStepFun()
+                        StepFunSessionController.shared.logoutAll()
+                    }
+                    .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 12))
+                }
+                if let err = model.stepfunError {
+                    Text(err).font(.system(size: 10)).foregroundStyle(.atbCritical)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: DesignTokens.spacingS - 2) {
+                    Button("登录 platform.stepfun.com") {
+                        stepfunLoginAccountID = "main"
+                        stepfunLoginLabel = nil
+                        showStepFunLogin = true
+                    }
+                    .buttonStyle(ATBPrimaryButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
+                }
+                caption("额度查询走控制台登录态,且平台登录凭据会持续轮换——App 登录一次后在后台保持会话自动续期,无需粘贴任何 Cookie(API Key 也查不了额度)。可登录多个账户,各账户独立会话、独立展示。")
+            }
+        }
+    }
+
+    /// 已配置状态行文案(账户数 + 聚合月池)。
+    private var stepfunStatusText: String {
+        var status = model.stepfunAccounts.count > 1
+            ? "已登录 \(model.stepfunAccounts.count) 个账户(后台保持会话)"
+            : "已登录(后台保持会话)"
+        if let q = model.stepfunQuota {
+            status += " · \(q.billingDisplay)"
+            if let sub = q.subscription { status += " \(sub.usedPctInt)%" }
+        }
+        return status
+    }
+
     // MARK: 卡片零件
 
     /// 卡片容器:头部(图标+标题)+ 内容,视觉 token 与弹层卡片一致。
@@ -618,11 +986,16 @@ private struct HistorySettingsPage: View {
 
     private var trendSection: some View {
         historyCard(icon: "chart.xyaxis.line", iconColor: .atbBlue, title: "用量趋势(近 40 个采样点)") {
-            // 5h 窗口被官方取消(现 quota 可证)时隐藏该趋势行;无 quota(未登录等)保留。
+            // 窗口按 quota 实际形态出趋势行(5h/周被官方取消时隐藏;无 quota 保留全部)。
             if model.quota?.usage.fiveHour != nil || model.quota == nil {
                 trendRow("阿里云 · 5小时", color: .atbBlue, provider: "aliyun", window: "5h")
             }
-            trendRow("阿里云 · 7天", color: .orange, provider: "aliyun", window: "7d")
+            if model.quota?.usage.oneWeek != nil || model.quota == nil {
+                trendRow("阿里云 · 7天", color: .orange, provider: "aliyun", window: "7d")
+            }
+            if model.quota?.usage.oneMonth != nil || model.quota == nil {
+                trendRow("阿里云 · 月度", color: .orange, provider: "aliyun", window: "monthly")
+            }
             if model.openCodeConfigured {
                 trendRow("OpenCode · 滚动", color: .purple, provider: "opencode", window: "rolling")
                 trendRow("OpenCode · 每周", color: .atbBlue, provider: "opencode", window: "weekly")
@@ -658,7 +1031,7 @@ private struct HistorySettingsPage: View {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
                     GridRow {
                         Text("日期").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
-                        Text("阿里云 7d").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
+                        Text("阿里云 月").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
                         Text("OpenCode 月").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
                         Text("Kimi 周").font(.system(size: 9, weight: .semibold)).foregroundStyle(.atbTextTertiary)
                     }
@@ -702,7 +1075,8 @@ private struct HistorySettingsPage: View {
             }
             return DailyRow(
                 date: fmt.string(from: day),
-                aliyun: maxOf { $0.aliyunOneWeek },
+                // 主窗取月(2026-09 新契约),旧记录无月值时回退周
+                aliyun: maxOf { $0.aliyunOneMonth ?? $0.aliyunOneWeek },
                 opencode: maxOf { $0.opencodeMonthly },
                 kimi: maxOf { $0.kimiWeekly }
             )

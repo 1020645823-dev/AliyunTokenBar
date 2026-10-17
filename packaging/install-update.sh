@@ -46,8 +46,32 @@ fi
 
 # 4) 替换安装(先校验构建产物完整,再原子性替换)
 [ -f "dist/$APP_NAME.app/Contents/MacOS/$BIN_NAME" ] || { echo "❌ 构建产物不完整"; exit 1; }
+
+# 4a) 保留登录态凭证文件(v1.0.82 起全部登录态持久化在 .app/Contents/Resources/,
+#     替换整个 .app 前先备份到 /tmp,装完写回新包——否则全部登录态丢失)
+#     ⚠️ 只用本次运行产生的备份(CRED_RESTORE 标记):/tmp 里的陈旧备份不得
+#     在"用户删掉 app 后全新安装"的场景被误恢复
+CRED_NAME="atb-credentials.json"
+CRED_SRC="$INSTALLED_APP/Contents/Resources/$CRED_NAME"
+CRED_BAK="/tmp/atb-credentials.backup.json"
+CRED_RESTORE=0
+if [ -f "$CRED_SRC" ]; then
+  cp "$CRED_SRC" "$CRED_BAK"
+  CRED_RESTORE=1
+  echo "==> 已备份登录态凭证($(python3 -c "import json;print(len(json.load(open('$CRED_BAK')).get('credentials',{})))" 2>/dev/null || echo "?") 项)"
+fi
+
 rm -rf "$INSTALLED_APP"
 cp -R "dist/$APP_NAME.app" "$INSTALL_DIR/"
+
+# 4b) 写回凭证文件(仅本次备份存在时;用完即清,避免陈旧备份跨安装误恢复)
+if [ "$CRED_RESTORE" = "1" ] && [ -f "$CRED_BAK" ]; then
+  mkdir -p "$INSTALLED_APP/Contents/Resources"
+  cp "$CRED_BAK" "$INSTALLED_APP/Contents/Resources/$CRED_NAME"
+  chmod 600 "$INSTALLED_APP/Contents/Resources/$CRED_NAME"
+  rm -f "$CRED_BAK"
+  echo "==> 登录态凭证已写回新包"
+fi
 
 # 5) 重启 + 确认
 open "$INSTALLED_APP"

@@ -8,6 +8,8 @@ public struct UsageSnapshot: Codable, Equatable {
     public let timestamp: Date
     public let aliyunFiveHour: Int?
     public let aliyunOneWeek: Int?
+    /// 阿里云月度窗口已用百分比(2026-09 官方取消周限额改月限额;旧记录无此字段 → nil)
+    public let aliyunOneMonth: Int?
     public let opencodeRolling: Int?
     public let opencodeWeekly: Int?
     public let opencodeMonthly: Int?
@@ -30,18 +32,31 @@ public struct UsageSnapshot: Codable, Equatable {
     public let minimaxInterval: Int?
     /// MiniMax Coding Plan 周窗口已用百分比
     public let minimaxWeekly: Int?
+    /// Ollama Cloud 月度 credits 已用百分比(新计费;旧套餐为 nil)
+    public let ollamaMonthly: Int?
+    /// Ollama Cloud 5 小时窗口已用百分比(旧计费遗留;新套餐为 nil)
+    public let ollamaSession: Int?
+    /// Ollama Cloud 周窗口已用百分比(旧计费遗留;新套餐为 nil)
+    public let ollamaWeekly: Int?
+    /// 阶跃 Step Plan 订阅月池已用百分比(Credit 月池;旧计费形状为 nil)
+    public let stepfunMonthly: Int?
+    /// 阶跃 Step Plan 加油包已用百分比(未加购为 nil)
+    public let stepfunTopup: Int?
 
     public init(timestamp: Date,
-                aliyunFiveHour: Int?, aliyunOneWeek: Int?,
+                aliyunFiveHour: Int?, aliyunOneWeek: Int?, aliyunOneMonth: Int? = nil,
                 opencodeRolling: Int?, opencodeWeekly: Int?, opencodeMonthly: Int?,
                 kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil, kimiMonthly: Int? = nil,
                 deepSeekBalance: Double? = nil, deepSeekTodayCost: Double? = nil,
                 zhipuFiveHour: Int? = nil, zhipuWeekly: Int? = nil,
                 mimoBalance: Double? = nil, mimoPlanPct: Int? = nil,
-                minimaxInterval: Int? = nil, minimaxWeekly: Int? = nil) {
+                minimaxInterval: Int? = nil, minimaxWeekly: Int? = nil,
+                ollamaMonthly: Int? = nil, ollamaSession: Int? = nil, ollamaWeekly: Int? = nil,
+                stepfunMonthly: Int? = nil, stepfunTopup: Int? = nil) {
         self.timestamp = timestamp
         self.aliyunFiveHour = aliyunFiveHour
         self.aliyunOneWeek = aliyunOneWeek
+        self.aliyunOneMonth = aliyunOneMonth
         self.opencodeRolling = opencodeRolling
         self.opencodeWeekly = opencodeWeekly
         self.opencodeMonthly = opencodeMonthly
@@ -56,6 +71,11 @@ public struct UsageSnapshot: Codable, Equatable {
         self.mimoPlanPct = mimoPlanPct
         self.minimaxInterval = minimaxInterval
         self.minimaxWeekly = minimaxWeekly
+        self.ollamaMonthly = ollamaMonthly
+        self.ollamaSession = ollamaSession
+        self.ollamaWeekly = ollamaWeekly
+        self.stepfunMonthly = stepfunMonthly
+        self.stepfunTopup = stepfunTopup
     }
 }
 
@@ -228,6 +248,7 @@ public final class HistoryStore {
             switch (provider, window) {
             case ("aliyun", "5h"): return snap.aliyunFiveHour
             case ("aliyun", "7d"): return snap.aliyunOneWeek
+            case ("aliyun", "monthly"): return snap.aliyunOneMonth
             case ("opencode", "rolling"): return snap.opencodeRolling
             case ("opencode", "weekly"): return snap.opencodeWeekly
             case ("opencode", "monthly"): return snap.opencodeMonthly
@@ -239,19 +260,24 @@ public final class HistoryStore {
             case ("mimo", "plan"): return snap.mimoPlanPct
             case ("minimax", "interval"): return snap.minimaxInterval
             case ("minimax", "weekly"): return snap.minimaxWeekly
+            case ("ollama", "monthly"): return snap.ollamaMonthly
+            case ("ollama", "5h"): return snap.ollamaSession
+            case ("ollama", "weekly"): return snap.ollamaWeekly
+            case ("stepfun", "monthly"): return snap.stepfunMonthly
+            case ("stepfun", "topup"): return snap.stepfunTopup
             default: return nil
             }
         }
     }
 
     /// 基于近 N 条有效点线性外推「距达 100% 还需多少分钟」(P2-B6 泛化)。
-    /// provider/window 指定目标序列(默认阿里云 7d,兼容旧调用)。
+    /// provider/window 指定目标序列(默认阿里云月窗,2026-09 官方改月限额后的主窗口)。
     /// 用两点间斜率(百分比/小时)推算;数据不足或斜率非正返回 nil。
     /// 结果仅粗略估算(滚动窗口非固定周期),UI 应标注「估算」。
     public static func estimateMinutesToLimit(
         snapshots: [UsageSnapshot],
         provider: String = "aliyun",
-        window: String = "7d"
+        window: String = "monthly"
     ) -> Int? {
         let values = series(snapshots, provider: provider, window: window)
         guard values.count == snapshots.count else { return nil }
@@ -274,7 +300,7 @@ public final class HistoryStore {
     /// 快照序列 → CSV(P2-B5)。首行表头,ISO8601 时间戳,空值留空。
     /// 新列只追加在行尾,保证旧表头前缀兼容(CI testHistoryCSV 断言 prefix)。
     public static func csv(_ snapshots: [UsageSnapshot]) -> String {
-        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost,zhipu5h,zhipuWeekly,mimoBalance,mimoPlanPct,minimaxInterval,minimaxWeekly"
+        let header = "timestamp,aliyun5h,aliyun7d,opencodeRolling,opencodeWeekly,opencodeMonthly,kimi5h,kimiWeekly,kimiMonthly,deepseekBalance,deepseekTodayCost,zhipu5h,zhipuWeekly,mimoBalance,mimoPlanPct,minimaxInterval,minimaxWeekly,aliyunMonthly"
         let fmt = ISO8601DateFormatter()
         var rows: [String] = [header]
         for s in snapshots {
@@ -289,6 +315,7 @@ public final class HistoryStore {
                 cell(s.zhipuFiveHour), cell(s.zhipuWeekly),
                 moneyCell(s.mimoBalance), cell(s.mimoPlanPct),
                 cell(s.minimaxInterval), cell(s.minimaxWeekly),
+                cell(s.aliyunOneMonth),
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n")

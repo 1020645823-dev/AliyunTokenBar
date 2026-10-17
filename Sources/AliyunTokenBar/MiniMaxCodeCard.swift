@@ -2,11 +2,16 @@ import SwiftUI
 import AppKit
 import AliyunTokenBarCore
 
-// MARK: - MiniMax Coding Plan 用量卡
+// MARK: - MiniMax Coding Plan 用量卡(多模型窗口 · 触顶预测)
 //
-// 视觉语言与 ZhipuCodeCard / KimiCodeCard 对称(品牌行 + 多窗口环卡)。
-// 数据源 token_plan/remains:当前计费窗口(通常 5h 滚动)+ 周窗口(周额度为 0 时隐藏)。
-// 附加信息行:套餐名 tag + 主模型 + 已用次数 + 积分余额。
+// v1.0.66 视觉语言(StepFun v1.0.65 设计范式泛化 + MiniMax 特色):
+// - 品牌行带套餐名徽章 + 数据更新时间;
+// - 双环卡保留(当前计费窗口 / 本周);
+// - 新增**触顶预测行**;
+// - **多模型细条行**:MiniMax 的 model_remains[] 按模型给额度(general 之外还有
+//   video 等专项,各自带 5h/日窗口与周窗口),旧版把所有模型挤成一行文字,
+//   新版每个模型一条 3pt 细条(标签/百分比/次数一目了然);
+// - 积分余额(按量付费赠送)单独信息行;Key 失效时错误卡内可直接重粘。
 
 struct MiniMaxCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -34,40 +39,21 @@ struct MiniMaxCodeCard: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.atbTextPrimary)
                     if let plan = model.minimaxQuota?.planName {
-                        Text(plan)
-                            .font(.system(size: 9, weight: .semibold))
-                            .lineLimit(1)
-                            .foregroundStyle(brand)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(brand.opacity(0.14))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        ATBBrandTag(text: plan, brand: brand)
                     }
                 }
-                Text("Coding Plan · 当前窗口 + 周")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(Color.atbTextTertiary)
-                    .tracking(0.3)
+                ATBSubtitleText(text: subtitleText)
             }
             Spacer(minLength: DesignTokens.spacingS)
-            refreshButton
+            ATBRefreshButton(action: { Task { await model.refreshMiniMax() } }, help: "刷新 MiniMax 用量")
         }
     }
 
-    private var refreshButton: some View {
-        Button {
-            Task { await model.refreshMiniMax() }
-        } label: {
-            Image(systemName: "arrow.clockwise")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.atbTextTertiary)
-                .frame(width: 22, height: 22)
-                .background(Color.primary.opacity(0.06))
-                .clipShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .help("刷新 MiniMax 用量")
-        .accessibilityLabel("刷新 MiniMax 用量")
+    private var subtitleText: String {
+        var base = "Coding Plan · 当前窗口 + 周"
+        let t = ATBTimeFormat.updated(ATBTimeFormat.latestData(model))
+        if !t.isEmpty { base += " · \(t) 更新" }
+        return base
     }
 
     // MARK: 内容
@@ -77,23 +63,26 @@ struct MiniMaxCodeCard: View {
         if let q = model.minimaxQuota {
             VStack(spacing: DesignTokens.spacingM) {
                 multiRingSection(q: q)
-                detailRow(q: q)
+                forecastSection(q)
+                modelRows(q)
+                if let points = q.pointsBalance {
+                    ATBInfoRow(icon: "star.circle.fill",
+                               text: "积分余额 \(points == points.rounded() ? String(Int(points)) : String(format: "%.1f", points))",
+                               tint: brand,
+                               help: "按量付费赠送积分(points_balance)")
+                }
             }
         } else if let err = model.minimaxError {
-            let isNetwork = err.contains("网络") || err.contains("响应") || err.contains("解析")
-            if isNetwork {
+            if err.contains("网络") || err.contains("响应") || err.contains("解析") {
                 VStack(spacing: DesignTokens.spacingS) {
-                    dashCard("当前窗口")
-                    dashCard("每周限额")
+                    ATBUnavailableRow(title: "当前窗口")
+                    ATBUnavailableRow(title: "每周限额")
                 }
             } else {
                 errorHint(err)
             }
         } else {
-            HStack { Spacer(); LoadingRing().frame(width: 18, height: 18); Spacer() }
-                .frame(height: 64)
-                .atbCard(corner: DesignTokens.radiusL, paddingH: DesignTokens.spacingL,
-                         paddingV: DesignTokens.spacingL, alignment: .center)
+            ATBLoadingCard()
         }
     }
 
@@ -118,91 +107,100 @@ struct MiniMaxCodeCard: View {
                 threshold: model.thresholdConfig))
         }
         return ATBMultiRingCard(slots: slots)
-            .padding(.horizontal, DesignTokens.spacingM)
-            .padding(.vertical, DesignTokens.spacingS)
-            .frame(maxWidth: .infinity)
-            .background(Color.atbCardBackground)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.radiusM)
-                    .strokeBorder(Color.atbSeparator.opacity(0.5), lineWidth: DesignTokens.strokeHairline)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-            .overlay(alignment: .leading) {
-                Rectangle().fill(brand)
-                    .frame(width: DesignTokens.stripeWidth)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusM))
-                    .padding(.vertical, 1)
+            .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM, paddingV: DesignTokens.spacingS)
+    }
+
+    // MARK: 触顶预测(本窗 + 周)
+
+    private struct ForecastItem: Identifiable {
+        let id: String
+        let icon: String
+        let text: String
+        let tint: Color
+    }
+
+    private func forecastItems(_ q: MiniMaxQuota) -> [ForecastItem] {
+        var items: [ForecastItem] = []
+        let windows: [(id: String, label: String, window: MiniMaxWindow?)] = [
+            ("interval", "本窗", q.interval),
+            ("weekly", "本周", q.weekly)
+        ]
+        for w in windows {
+            guard let win = w.window, let ms = win.resetTimeMs else { continue }
+            let samples = ATBHistory.pctSamples(model, provider: "minimax", window: w.id)
+            guard let rate = UsageForecast.pctPerHour(samples: samples), rate > 0,
+                  let last = samples.last else { continue }
+            let hoursToReset = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+                .timeIntervalSinceNow / 3600
+            guard hoursToReset > 0 else { continue }
+            let projected = min(100, last.pct + rate * hoursToReset)
+            if projected >= 99.5 {
+                let minsLeft = UsageForecast.minutesToLimit(samples: samples) ?? 0
+                items.append(ForecastItem(
+                    id: w.id,
+                    icon: "exclamationmark.triangle.fill",
+                    text: "\(w.label) · 按当前速度约 \(UsageForecast.durationText(minutes: minsLeft)) 后触顶",
+                    tint: Color(red: 0.95, green: 0.55, blue: 0.10)))
+            } else {
+                items.append(ForecastItem(
+                    id: w.id,
+                    icon: "chart.line.uptrend.xyaxis",
+                    text: "\(w.label) · 预计重置时用到 \(Int(projected.rounded()))%",
+                    tint: Color.atbTextTertiary))
             }
+        }
+        return items
     }
 
-    /// 明细行:专项模型次数(video 等)+ 主窗口次数 + 积分余额
-    private func detailRow(q: MiniMaxQuota) -> some View {
-        HStack(spacing: DesignTokens.spacingS) {
-            Image(systemName: "number.square.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.atbTextTertiary)
-            Text(detailText(q))
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.atbTextSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
+    @ViewBuilder
+    private func forecastSection(_ q: MiniMaxQuota) -> some View {
+        let items = forecastItems(q)
+        if items.isEmpty {
+            ATBForecastRow(text: "趋势积累中(约 6 小时数据后给出触顶预测)",
+                           help: "按历史用量速率线性外推;至少需要 6 小时跨度的两个有效采样点。")
+        } else {
+            VStack(spacing: 4) {
+                ForEach(items) { item in
+                    ATBForecastRow(icon: item.icon, text: item.text, tint: item.tint)
+                }
+            }
         }
-        .atbCard(paddingV: DesignTokens.spacingS - 2)
     }
 
-    private func detailText(_ q: MiniMaxQuota) -> String {
-        var parts: [String] = []
-        // 主条目为 general(纯百分比)时名字不展示,避免噪音
-        if let name = q.modelName, !name.isEmpty, name.lowercased() != "general" {
-            parts.append(name)
+    /// 多模型细条行(video 等专项额度):每模型一条 3pt 条 + 本窗百分比 + 次数。
+    /// 主条目(general 纯百分比)不进列表——名字是噪音,主环卡已覆盖。
+    @ViewBuilder
+    private func modelRows(_ q: MiniMaxQuota) -> some View {
+        let models = q.models.filter {
+            !($0.name.lowercased() == "general" || $0.name.isEmpty)
         }
-        if let usage = q.interval?.usageText { parts.append("本窗已用 \(usage)") }
-        if let usage = q.weekly?.usageText { parts.append("周已用 \(usage)") }
-        // 专项模型(video 等):日/周次数
-        for m in q.models {
-            var bits: [String] = []
-            if let usage = m.interval?.usageText { bits.append(usage) }
-            if let usage = m.weekly?.usageText { bits.append("周\(usage)") }
-            if !bits.isEmpty { parts.append("\(m.name) \(bits.joined(separator: "/"))") }
+        if !models.isEmpty {
+            VStack(spacing: 4) {
+                ForEach(models, id: \.name) { m in
+                    modelRow(m)
+                }
+            }
         }
-        if let points = q.pointsBalance {
-            parts.append("积分 \(points == points.rounded() ? String(Int(points)) : String(format: "%.1f", points))")
-        }
-        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
 
-    private func dashCard(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.atbTextSecondary)
-            Spacer()
-            Text("—")
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.atbTextTertiary)
-        }
-        .atbCard(paddingV: DesignTokens.spacingS - 2)
+    private func modelRow(_ m: MiniMaxModelQuota) -> some View {
+        let win = m.interval ?? m.weekly
+        let pct = win?.pctInt ?? 0
+        let band = thresholdBrand(pct, config: model.thresholdConfig, brand: brand)
+        return ATBThinMeterRow(
+            label: m.name,
+            pct: pct,
+            color: band,
+            valueText: win?.usageText,
+            trailing: (m.interval ?? m.weekly).flatMap { ATBResetText.compact(fromMs: $0.resetTimeMs) },
+            help: "\(m.name) 专项额度(interval=当前计费窗口,weekly=周窗口)")
     }
+
+    // MARK: Key 失效重粘(错误态专用)
 
     private func errorHint(_ err: String) -> some View {
         VStack(alignment: .leading, spacing: DesignTokens.spacingS) {
-            HStack(alignment: .top, spacing: DesignTokens.spacingS) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("配置异常")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.atbTextPrimary)
-                    Text(err)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.atbTextSecondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-            // Key 失效可直接在面板重粘(设置页同款输入)
+            ATBErrorHintCard(message: err)
             HStack(spacing: DesignTokens.spacingS) {
                 SecureField("API Key(eyJ…)", text: $draftKey)
                     .textFieldStyle(.roundedBorder)
@@ -212,12 +210,9 @@ struct MiniMaxCodeCard: View {
                     .font(.system(size: 11, weight: .medium))
             }
             if let saveError {
-                Text(saveError)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.atbCritical)
+                Text(saveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
             }
         }
-        .atbCard()
     }
 
     private func saveKey() {

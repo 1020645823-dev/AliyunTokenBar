@@ -15,9 +15,9 @@ public struct MenuBarTableValue: Equatable {
     }
 }
 
-/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→→⚛→〜→∞→▣(本机恒最后)。
+/// 列身份:固定顺序即 CaseIterable 声明顺序 ☁→✨→⚡→→⚛→〜→∞→🪜→▣(本机恒最后)。
 public enum MenuBarColumnKind: String, CaseIterable, Equatable {
-    case aliyun, kimi, openCode, deepSeek, zhipu, mimo, minimax, system
+    case aliyun, kimi, openCode, deepSeek, zhipu, mimo, minimax, ollama, stepfun, system
 
     public var symbolName: String {
         switch self {
@@ -28,6 +28,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .zhipu: return "atom"
         case .mimo: return "waveform"
         case .minimax: return "infinity"
+        case .ollama: return "hare.fill"
+        case .stepfun: return "stairs"
         case .system: return "desktopcomputer"
         }
     }
@@ -40,6 +42,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .zhipu: return "智谱"
         case .mimo: return "MiMo"
         case .minimax: return "MiniMax"
+        case .ollama: return "Ollama"
+        case .stepfun: return "阶跃"
         case .system: return "本机"
         }
     }
@@ -51,6 +55,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .deepSeek: return "今日"
         case .minimax: return "本窗"
         case .mimo: return "套餐"
+        case .ollama: return "30天"
+        case .stepfun: return "月池"
         case .system: return "CPU"
         }
     }
@@ -61,6 +67,8 @@ public enum MenuBarColumnKind: String, CaseIterable, Equatable {
         case .kimi, .openCode, .minimax, .zhipu: return "周"
         case .deepSeek: return "余额"
         case .mimo: return "余额"
+        case .ollama: return "周"
+        case .stepfun: return "加油包"
         case .system: return "内存"
         }
     }
@@ -90,6 +98,16 @@ public struct MenuBarTableColumn: Equatable {
         self.primaryLabel = primaryLabel
         self.secondaryLabel = nil
     }
+    /// 双值列 + 显式标签:同一 provider 的主窗口标签随数据形态变化时用
+    /// (Ollama 新计费=月度单值列,旧计费=5小时+周双值列,而 kind 默认标签只有一个)。
+    public init(kind: MenuBarColumnKind, primary: MenuBarTableValue, secondary: MenuBarTableValue,
+                primaryLabel: String, secondaryLabel: String?) {
+        self.kind = kind
+        self.primary = primary
+        self.secondary = secondary
+        self.primaryLabel = primaryLabel
+        self.secondaryLabel = secondaryLabel
+    }
 }
 
 public enum MenuBarTable {
@@ -98,15 +116,15 @@ public enum MenuBarTable {
         MenuBarTableValue(text: pct.map { "\($0)%" } ?? "—", pct: pct)
     }
 
-    /// 金额 → 展示文本(DeepSeek 列专用):nil → 横杠;紧凑格式 ≤7 字符。
+    /// 金额 → 展示文本(DeepSeek 列专用):nil → 横杠;紧凑格式 ≤5 字符(无币种符号,值域 34pt 与百分比列统一)。
     /// pct 恒为 nil(金额不做阈值变色)。
     static func moneyValue(_ v: Double?) -> MenuBarTableValue {
-        MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compact($0) } ?? "—", pct: nil)
+        MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compactDigits($0) } ?? "—", pct: nil)
     }
 
-    /// 金额 → 展示文本(MiMo 余额行专用):nil → 横杠;紧凑格式 ≤7 字符(同 DeepSeek 契约)。
-    static func mimoMoney(_ v: Double?, currency: String) -> MenuBarTableValue {
-        MenuBarTableValue(text: v.map { MiMoMoneyFormat.compact($0, currency: currency) } ?? "—", pct: nil)
+    /// 金额 → 展示文本(MiMo 余额行专用):nil → 横杠;紧凑格式 ≤5 字符(同 DeepSeek 契约,菜单栏省币种符号)。
+    static func mimoMoney(_ v: Double?) -> MenuBarTableValue {
+        MenuBarTableValue(text: v.map { MiMoMoneyFormat.compactDigits($0) } ?? "—", pct: nil)
     }
 
     /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→∞→▣,与配置无关;本机恒最后)。
@@ -115,13 +133,16 @@ public enum MenuBarTable {
     /// 启用列中:阿里云直接出列;Kimi/OpenCode/DeepSeek/智谱/MiniMax 已配置且(有数据或出错)时显示,
     /// 出错→横杠;MiMo 同规则(主行套餐% 可为横杠,次行余额);本机启用时显示,采样未就绪→横杠。
     public static func columns(
-        aliyunFiveHour: Int?, aliyunOneWeek: Int?,
+        aliyunFiveHour: Int?, aliyunOneWeek: Int?, aliyunOneMonth: Int?,
         kimiConfigured: Bool, kimiHasError: Bool, kimiFiveHour: Int?, kimiWeekly: Int?,
         openCodeConfigured: Bool, openCodeHasError: Bool, openCodeRolling: Int?, openCodeWeekly: Int?,
         deepSeekConfigured: Bool, deepSeekHasError: Bool, deepSeekTodayCost: Double?, deepSeekBalance: Double?,
         zhipuConfigured: Bool, zhipuHasError: Bool, zhipuFiveHour: Int?, zhipuWeekly: Int?,
-        mimoConfigured: Bool, mimoHasError: Bool, mimoPlanPct: Int?, mimoBalance: Double?, mimoCurrency: String,
+        mimoConfigured: Bool, mimoHasError: Bool, mimoPlanPct: Int?, mimoBalance: Double?,
         minimaxConfigured: Bool, minimaxHasError: Bool, minimaxInterval: Int?, minimaxWeekly: Int?,
+        ollamaConfigured: Bool, ollamaHasError: Bool, ollamaPrimary: Int?, ollamaSecondary: Int?,
+        stepfunConfigured: Bool, stepfunHasError: Bool, stepfunPrimary: Int?, stepfunPrimaryLabel: String?,
+        stepfunSecondary: Int?, stepfunSecondaryLabel: String?,
         systemEnabled: Bool, cpu: Int?, memory: Int?,
         disabled: Set<String> = []
     ) -> [MenuBarTableColumn] {
@@ -130,7 +151,7 @@ public enum MenuBarTable {
         }
         var cols: [MenuBarTableColumn] = []
         if !off(.aliyun) {
-            cols.append(aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek))
+            cols.append(aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek, oneMonth: aliyunOneMonth))
         }
         if !off(.kimi) && kimiConfigured && (kimiHasError || kimiFiveHour != nil || kimiWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .kimi,
@@ -148,15 +169,26 @@ public enum MenuBarTable {
             cols.append(MenuBarTableColumn(kind: .zhipu,
                                            primary: value(zhipuFiveHour), secondary: value(zhipuWeekly)))
         }
-        // MiMo:主行=Token 套餐已用%(无套餐→横杠),次行=余额紧凑金额(同 DeepSeek 金额列宽度契约)。
+        // MiMo:主行=Token 套餐已用%(无套餐→横杠),次行=余额紧凑金额(无币种符号,同 DeepSeek 列宽契约)。
         if !off(.mimo) && mimoConfigured && (mimoHasError || mimoPlanPct != nil || mimoBalance != nil) {
             cols.append(MenuBarTableColumn(kind: .mimo,
                                            primary: value(mimoPlanPct),
-                                           secondary: mimoMoney(mimoBalance, currency: mimoCurrency)))
+                                           secondary: mimoMoney(mimoBalance)))
         }
         if !off(.minimax) && minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
             cols.append(MenuBarTableColumn(kind: .minimax,
                                            primary: value(minimaxInterval), secondary: value(minimaxWeekly)))
+        }
+        // Ollama:新计费只有月度窗口 → 单值列(主=月度,标签改「月度」,次行横杠);
+        // 旧计费套餐返回 session+weekly → 双值列(主=5h,次=周)。窗口子集由数据决定。
+        if !off(.ollama) && ollamaConfigured && (ollamaHasError || ollamaPrimary != nil || ollamaSecondary != nil) {
+            cols.append(ollamaColumn(primary: ollamaPrimary, secondary: ollamaSecondary))
+        }
+        // 阶跃 Step Plan:标签随计费形态(月池/加油包 或 5小时/周),由调用方按数据传入;
+        // 无次窗口(仅订阅月池)→ 单值列。
+        if !off(.stepfun) && stepfunConfigured && (stepfunHasError || stepfunPrimary != nil || stepfunSecondary != nil) {
+            cols.append(stepfunColumn(primary: stepfunPrimary, primaryLabel: stepfunPrimaryLabel,
+                                      secondary: stepfunSecondary, secondaryLabel: stepfunSecondaryLabel))
         }
         if !off(.system) && systemEnabled {
             cols.append(MenuBarTableColumn(kind: .system,
@@ -165,16 +197,57 @@ public enum MenuBarTable {
         return cols
     }
 
-    /// 阿里云列:5h 窗口存在 → 主=5h/次=7d;窗口缺失(2026-08-15 官方限时取消 5h 限额,
-    /// 服务端不再返回 per5Hour 字段)→ 单值列,主行直接显示 7d,次行横杠保持网格对齐。
-    /// 完全无数据(主行也横杠)同样走单值形态,标签仍标 7d。
-    static func aliyunColumn(fiveHour: Int?, oneWeek: Int?) -> MenuBarTableColumn {
+    /// 阿里云列(三窗口按数据形态变形):
+    /// - 5h + 主窗(周/月)→ 双值列:主=5h,次=主窗(标签随实际窗口 7天/30天);
+    /// - 仅主窗(2026-08-15 官方取消 5h 后常态)→ 单值列,主行显示主窗,次行横杠;
+    /// - 完全无数据(主行也横杠)同样走单值形态,标签跟随主窗。
+    /// 主窗取 oneMonth ?? oneWeek(2026-09 官方取消周限改月限;两者现实中不同时返回)。
+    static func aliyunColumn(fiveHour: Int?, oneWeek: Int?, oneMonth: Int?) -> MenuBarTableColumn {
+        let mainPct = oneMonth ?? oneWeek
+        let mainLabel = oneMonth != nil ? "30天" : "7天"
         guard let f5 = fiveHour else {
             return MenuBarTableColumn(singleValueKind: .aliyun,
-                                      primary: value(oneWeek), primaryLabel: "7天",
+                                      primary: value(mainPct), primaryLabel: mainLabel,
                                       secondary: value(nil))
         }
-        return MenuBarTableColumn(kind: .aliyun, primary: value(f5), secondary: value(oneWeek))
+        return MenuBarTableColumn(kind: .aliyun,
+                                  primary: value(f5), secondary: value(mainPct),
+                                  primaryLabel: "5小时", secondaryLabel: mainLabel)
+    }
+
+    /// Ollama 列:2026-10-09 起 /api/usage 只回报近 30 天美元报表,**只有
+    /// 月度(滚动 30 天 vs 套餐额度)一个口径** → 单值列,主行显示占比、
+    /// 标签「30天」,次行横杠保持网格对齐。
+    /// 次窗口分支是防御性保留:旧结构(session+weekly)已从服务端消失,
+    /// 万一回退也能按 5小时/周 双值列展示。
+    static func ollamaColumn(primary: Int?, secondary: Int?) -> MenuBarTableColumn {
+        guard secondary != nil else {
+            return MenuBarTableColumn(singleValueKind: .ollama,
+                                      primary: value(primary), primaryLabel: "30天",
+                                      secondary: value(nil))
+        }
+        // 旧套餐:primary 实为 session(5h) → 显式标签「5小时/周」
+        // (kind 默认标签是「30天」,对新计费正确、对旧计费错误,故此处显式覆盖)。
+        return MenuBarTableColumn(kind: .ollama,
+                                  primary: value(primary), secondary: value(secondary),
+                                  primaryLabel: "5小时", secondaryLabel: "周")
+    }
+
+    /// 阶跃 Step Plan 列:标签显式传入(新计费=月池/加油包;旧计费=5小时/周),
+    /// 因为仅凭「次窗口有无值」无法区分两种形态(月池+加油包 与 5h+周 都是双值)。
+    /// 无次窗口 → 单值列(kind 默认主标签「月池」,次行横杠)。
+    static func stepfunColumn(primary: Int?, primaryLabel: String?,
+                              secondary: Int?, secondaryLabel: String?) -> MenuBarTableColumn {
+        guard let secondary, let secondaryLabel else {
+            return MenuBarTableColumn(singleValueKind: .stepfun,
+                                      primary: value(primary),
+                                      primaryLabel: primaryLabel ?? MenuBarColumnKind.stepfun.primaryLabel,
+                                      secondary: value(nil))
+        }
+        return MenuBarTableColumn(kind: .stepfun,
+                                  primary: value(primary), secondary: value(secondary),
+                                  primaryLabel: primaryLabel ?? MenuBarColumnKind.stepfun.primaryLabel,
+                                  secondaryLabel: secondaryLabel)
     }
 
     /// 悬停 tooltip:每列「名称 主标签 值 · 次标签 值」,列间「 | 」分隔;
@@ -198,7 +271,8 @@ extension TokenPlanModel {
         let monitor = SystemMetricsMonitor.shared
         return MenuBarTable.columns(
             aliyunFiveHour: quota?.usage.fiveHour?.percentageInt,
-            aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
+            aliyunOneWeek: quota?.usage.oneWeek?.percentageInt,
+            aliyunOneMonth: quota?.usage.oneMonth?.percentageInt,
             kimiConfigured: kimiConfigured, kimiHasError: kimiError != nil,
             kimiFiveHour: kimiQuota?.fiveHour.pctInt, kimiWeekly: kimiQuota?.weekly.pctInt,
             openCodeConfigured: openCodeConfigured, openCodeHasError: openCodeError != nil,
@@ -210,9 +284,14 @@ extension TokenPlanModel {
             mimoConfigured: mimoConfigured, mimoHasError: mimoError != nil,
             mimoPlanPct: mimoUsage?.plan.map { Int($0.usedPct.rounded()) },
             mimoBalance: mimoUsage?.balance.balance,
-            mimoCurrency: mimoUsage?.balance.currency ?? "CNY",
             minimaxConfigured: minimaxConfigured, minimaxHasError: minimaxError != nil,
             minimaxInterval: minimaxQuota?.interval?.pctInt, minimaxWeekly: minimaxQuota?.weekly?.pctInt,
+            ollamaConfigured: ollamaConfigured, ollamaHasError: ollamaError != nil,
+            ollamaPrimary: ollamaQuota?.primary.map { Int($0.pct.rounded()) },
+            ollamaSecondary: ollamaQuota?.secondary.map { Int($0.pct.rounded()) },
+            stepfunConfigured: stepfunConfigured, stepfunHasError: stepfunError != nil,
+            stepfunPrimary: stepfunQuota?.primaryPct, stepfunPrimaryLabel: stepfunQuota?.primaryLabel,
+            stepfunSecondary: stepfunQuota?.secondaryPct, stepfunSecondaryLabel: stepfunQuota?.secondaryLabel,
             systemEnabled: systemStatsEnabled && isEnabled(.system),
             cpu: monitor.cpuPercent, memory: monitor.memoryPercent,
             disabled: disabledProviders)

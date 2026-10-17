@@ -3,7 +3,8 @@ import WebKit
 import AliyunTokenBarCore
 
 /// OpenCode Go 登录窗口:内嵌 WKWebView 让用户登录 opencode.ai,
-/// 登录后自动从 cookieStore 抓 auth cookie + 发现 workspace ID。
+/// 登录后打包该域全部 cookie(一个账户一份会话)并自动发现该账户下全部
+/// workspace(每个 workspace 是独立订阅/独立配额,2026-10-17)。
 @MainActor
 struct OpenCodeLoginView: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -46,26 +47,24 @@ struct OpenCodeLoginView: View {
         .background(Color.atbPanelBackground)
     }
 
-    /// 登录成功(cookie 拿到)后:发现 workspace ID,存配置,关闭窗口。
+    /// 登录成功(cookie 拿到)后:存 cookie → 拉取账户下全部 workspace 并入 →
+    /// 逐 workspace 拉取用量 → 关闭窗口。
     private func handleLoginSuccess(cookie: String) async {
         loading = true
-        message = "正在获取 workspace..."
-        // 用 cookie 发现 workspace ID
-        if let wsID = await OpenCodeUsageService.discoverWorkspaceID(cookie: cookie) {
-            model.openCodeCookie = cookie
-            model.openCodeWorkspaceID = wsID
-            message = "登录成功!workspace: \(wsID)"
-            await model.refreshOpenCode()
-            loading = false
-            // 短暂展示后关闭
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            dismiss()
+        message = "正在发现 workspace..."
+        model.openCodeCookie = cookie
+        let added = await model.discoverOpenCodeWorkspaces()
+        if !model.openCodeWorkspaces.isEmpty {
+            message = added > 0
+                ? "登录成功!已发现 \(model.openCodeWorkspaces.count) 个 workspace(新增 \(added))"
+                : "登录成功!\(model.openCodeWorkspaces.count) 个 workspace 已同步"
         } else {
-            loading = false
-            message = "登录成功但未找到 workspace,请在设置手动填 workspace ID(wrk_xxx)"
-            // cookie 还是存上
-            model.openCodeCookie = cookie
+            message = "登录成功,但未发现 workspace(可在卡片里手动添加 wrk_xxx)"
         }
+        loading = false
+        // 短暂展示后关闭
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        dismiss()
     }
 }
 
@@ -105,21 +104,25 @@ struct OpenCodeWebView: NSViewRepresentable {
         init(_ parent: OpenCodeWebView) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // 每次页面加载完,检查 cookie 里有没有 auth
-            checkAuthCookie(webView)
+            // 登录成功判定:落到 console 工作区页(未登录会停在 /console/login)。
+            let url = webView.url?.absoluteString ?? ""
+            let onConsole = url.contains("/console") && !url.contains("/console/login")
+            guard onConsole || url.contains("/workspace/") else { return }
+            captureCookies(webView)
         }
 
-        private func checkAuthCookie(_ webView: WKWebView) {
+        /// 打包 opencode.ai 域全部 cookie 成 Cookie 头。
+        /// ⚠️ 不假设会话 cookie 名叫 "auth"(console 会话名可能变化),
+        /// 全部带上让服务端自己选(2026-10-17 加固)。
+        private func captureCookies(_ webView: WKWebView) {
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                for c in cookies {
-                    // 找 opencode.ai 域的 auth cookie
-                    if c.name == "auth" && (c.domain.contains("opencode.ai")) {
-                        let cookieValue = "auth=\(c.value)"
-                        DispatchQueue.main.async {
-                            self.parent.onLoginSuccess(cookieValue)
-                        }
-                        return
-                    }
+                let header = cookies
+                    .filter { $0.domain.contains("opencode.ai") }
+                    .map { "\($0.name)=\($0.value)" }
+                    .joined(separator: "; ")
+                guard !header.isEmpty else { return }
+                DispatchQueue.main.async {
+                    self.parent.onLoginSuccess(header)
                 }
             }
         }

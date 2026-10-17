@@ -13,3 +13,8 @@ Vendor/Sparkle/Sparkle.framework/
 packaging/Frameworks/
 packaging/bin/
 packaging/keys/
+
+# 非本项目目录/文件(其他工具的产物,勿入库)
+.v2c/
+.video_agent/
+dsh-patch-pi-ai-catalog.mjs

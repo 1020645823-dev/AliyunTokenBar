@@ -23,6 +23,10 @@ extension Color {
     static var atbBrandMiMo: Color { Color(red: 1.00, green: 0.41, blue: 0.00) }
     /// MiniMax(品牌洋红/绛红基调)
     static var atbBrandMiniMax: Color { Color(red: 0.78, green: 0.10, blue: 0.38) }
+    /// Ollama(品牌黑灰;深色模式下略提亮以保证在深底可见)
+    static var atbBrandOllama: Color { Color(red: 0.35, green: 0.37, blue: 0.40) }
+    /// 阶跃星辰(品牌天蓝 #00A9FF,文档站品牌色)
+    static var atbBrandStepFun: Color { Color(red: 0.00, green: 0.66, blue: 1.00) }
     /// 本机/系统(中性银灰)
     static var atbBrandSystem: Color { Color(red: 0.42, green: 0.45, blue: 0.50) }
 }
@@ -38,6 +42,8 @@ enum ProviderBrand {
         case .zhipu: return .atbBrandZhipu
         case .mimo: return .atbBrandMiMo
         case .minimax: return .atbBrandMiniMax
+        case .ollama: return .atbBrandOllama
+        case .stepfun: return .atbBrandStepFun
         case .system: return .atbBrandSystem
         }
     }

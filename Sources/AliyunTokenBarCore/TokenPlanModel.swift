@@ -25,36 +25,51 @@ public final class TokenPlanModel: ObservableObject {
 
     // MARK: - OpenCode Go
 
-    /// OpenCode Go 用量(三窗口);未配置/未拉取为 nil
+    /// OpenCode Go 用量(三窗口,多 workspace 聚合值);未配置/未拉取为 nil。
+    /// 菜单栏/历史/图标/告警单口径继续读此值(单 workspace 聚合=原值,零行为变化)。
     @Published public var openCodeQuota: OpenCodeQuota?
-    /// OpenCode 是否配置了(cookie+workspace 都填了)
-    public var openCodeConfigured: Bool {
-        !openCodeCookie.isEmpty && !openCodeWorkspaceID.isEmpty
-    }
-    /// OpenCode auth cookie(浏览器 opencode.ai 的 auth cookie)。
-    /// 读:CredentialStore(Keychain,默认)/ 写:同步回写。
-    /// cookie 是敏感凭据,不再入 UserDefaults(旧值由首启迁移,见 init)。
+    /// OpenCode 是否已登录(opencode.ai 账户的 auth cookie;一个账户一份,
+    /// 该账户下全部 workspace 共用此 cookie,2026-10-17 多 workspace)。
     @Published public var openCodeCookie: String {
         didSet { credentialStore.write(openCodeCookie, account: Self.openCodeCookieAccount) }
     }
-    /// OpenCode workspace ID(wrk_xxx,非敏感,仍用 UserDefaults)
-    @Published public var openCodeWorkspaceID: String {
-        didSet { UserDefaults.standard.set(openCodeWorkspaceID, forKey: UserDefaultsKeys.openCodeWorkspaceID) }
-    }
+    /// OpenCode 是否已配置(已登录且 ≥1 个受监控 workspace)。
+    public var openCodeConfigured: Bool { !openCodeCookie.isEmpty && !openCodeWorkspaces.isEmpty }
     @Published public var openCodeError: String?
+    /// 受监控的 workspace 列表(2026-10-17;id = wrk_xxx/org_xxx,label 可重命名)。
+    /// 持久化到 UserDefaults;列表键存在=已迁移(防止移除全部后被凭据复活)。
+    @Published public var openCodeWorkspaces: [OpenCodeWorkspace] {
+        didSet { persistOpenCodeWorkspaces() }
+    }
+    /// 单 workspace 用量快照(模型层聚合后按 workspace 展示/告警)
+    @Published public var openCodeWorkspaceQuotas: [OpenCodeWorkspaceSnapshot] = []
+    /// 逐 workspace 错误明细(面板按行显示,可移除)
+    @Published public var openCodeWorkspaceErrors: [String: String] = [:]
+    /// OpenCode 最近一次成功拉取时间(任一 workspace 成功即更新)
+    @Published public var openCodeLastUpdated: Date?
 
     // MARK: - Kimi Code
 
     /// Kimi Code 套餐用量(5h/周/月度总额 + 加油包)
     @Published public var kimiQuota: KimiQuota?
-    /// Kimi 是否已配置(本机存在 KimiCodeBar / Kimi CLI 凭证)
+    /// Kimi 是否已配置(本机 KimiCodeBar / Kimi CLI 凭证,或任一已登录账户的 web JWT)
     public var kimiConfigured: Bool {
-        KimiUsageService.tokenExists()
+        !kimiAccounts.isEmpty || KimiUsageService.tokenExists() || KimiUsageService.loadWebToken() != nil
     }
-    /// Kimi 网页控制台是否已登录(提供月度总额度数据)
+    /// Kimi 网页控制台是否已登录(提供月度总额度数据;main 账户的 legacy 槽)
     public var kimiWebLoggedIn: Bool {
         KimiUsageService.loadWebToken() != nil
     }
+    /// Kimi 已登录账户列表(2026-10-04 多账户;main=旧单账户路径,零迁移)
+    @Published public var kimiAccounts: [KimiAccount] {
+        didSet { persistKimiAccounts() }
+    }
+    /// Kimi 单账户用量快照(模型层聚合后按账户展示/告警)
+    @Published public var kimiAccountQuotas: [KimiAccountSnapshot] = []
+    /// Kimi 逐账户错误明细(面板按账户显示重登入口)
+    @Published public var kimiAccountErrors: [String: String] = [:]
+    /// Kimi 最近一次成功拉取时间(任一账户成功即更新)
+    @Published public var kimiLastUpdated: Date?
     @Published public var kimiError: String?
 
     // MARK: - DeepSeek API
@@ -84,10 +99,16 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var zhipuQuota: ZhipuQuota?
     /// 智谱 API Key(Keychain 存储,设置页粘贴;留空则自动发现 opencode 配置)。
     @Published public var zhipuAPIKey: String {
-        didSet { credentialStore.write(zhipuAPIKey, account: Self.zhipuAPIKeyAccount) }
+        didSet {
+            credentialStore.write(zhipuAPIKey, account: Self.zhipuAPIKeyAccount)
+            // 粘贴新 Key 且当前无账户(用户曾移除全部)→ 顺手登记首账户,免得刷新空转
+            if !zhipuAPIKey.isEmpty, zhipuAccounts.isEmpty {
+                zhipuAccounts = [ZhipuAccount(id: "main", label: "账户1")]
+            }
+        }
     }
     /// 智谱是否已配置(Keychain 手动配置 或 自动发现 opencode 的 coding-plan key)。
-    public var zhipuConfigured: Bool { zhipuEffectiveAPIKey != nil }
+    public var zhipuConfigured: Bool { zhipuEffectiveAPIKey != nil || !zhipuAccounts.isEmpty }
     @Published public var zhipuError: String?
     /// 实际生效的 key:手动配置优先,其次自动发现(均空为未配置)。
     public var zhipuEffectiveAPIKey: String? {
@@ -96,6 +117,16 @@ public final class TokenPlanModel: ObservableObject {
     }
     /// CredentialStore 里智谱 API Key 的 account 名。
     public static let zhipuAPIKeyAccount = KeychainAccounts.zhipuAPIKey
+    /// 智谱多账户(2026-10-04):账户列表;Key 按 id 分槽,main 复用旧槽+自动发现兜底
+    @Published public var zhipuAccounts: [ZhipuAccount] {
+        didSet { persistZhipuAccounts() }
+    }
+    /// 智谱单账户用量快照(模型层聚合后按账户展示/告警)
+    @Published public var zhipuAccountQuotas: [ZhipuAccountSnapshot] = []
+    /// 智谱逐账户错误明细
+    @Published public var zhipuAccountErrors: [String: String] = [:]
+    /// 智谱最近一次成功拉取时间(任一账户成功即更新)
+    @Published public var zhipuLastUpdated: Date?
 
     // MARK: - 小米 MiMo API
 
@@ -105,14 +136,347 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var mimoLoading = false
     /// MiMo 最近一次成功拉取时间(状态行展示;失败保留旧值)
     @Published public var mimoLastUpdated: Date?
-    /// MiMo 控制台 Cookie(整段 Cookie 请求头,Keychain 存储,didSet 同步回写)
-    @Published public var mimoCookie: String {
-        didSet { credentialStore.write(mimoCookie, account: Self.mimoCookieAccount) }
+    /// MiMo 控制台两域 Cookie jar(Keychain 存储,didSet 同步回写)。
+    /// platform 段供控制台 API 认证;account 段的 `passToken` 供会话静默续期。
+    @Published public var mimoJar: MiMoCookieJar? {
+        didSet {
+            persistMiMoJar()
+            // 凭据已更新:清掉鉴权退避,让下一次刷新立刻生效(用户重登后无需等冷却)
+            mimoAuthFailures = 0
+            mimoRetryNotBefore = nil
+        }
     }
+    /// 控制台 API 的 Cookie 请求头(由 jar 的 platform 段派生;保留旧版单键语义)。
+    /// 赋值即按"旧版单段 Cookie"迁移(无 account 段 → 不可自动续期,但行为不劣化)。
+    public var mimoCookie: String {
+        get { mimoJar?.platformHeader ?? "" }
+        set { mimoJar = MiMoCookieJar.legacy(newValue) }
+    }
+    /// 连续鉴权失败次数 + 冷却截止时刻(会话过期时不按正常间隔打无效请求)
+    private var mimoAuthFailures = 0
+    private var mimoRetryNotBefore: Date?
+    /// 本机 CLI 用量账本(零凭据兜底;控制台拿不到时给下限与趋势)
+    @Published public var mimoLocalUsage: MiMoLocalUsage?
+    /// 上次**控制台成功**快照(跨重启保留;控制台不可用时展示 + 标注时间)
+    @Published public var mimoLastSnapshot: MiMoLastUsage?
+    private let mimoLocalStore = MiMoLocalUsageStore()
+    private let mimoLastStore = MiMoLastUsageStore()
+    private var mimoLocalCollectedAt: Date?
     /// MiMo 是否已配置 Cookie。
-    public var mimoConfigured: Bool { !mimoCookie.isEmpty }
-    /// CredentialStore 里 MiMo Cookie 的 account 名。
+    public var mimoConfigured: Bool { !(mimoJar?.platformHeader.isEmpty ?? true) }
+    /// 是否具备自动续期能力(account 段含 passToken)。
+    public var mimoAutoRenewEnabled: Bool { mimoJar?.canRenew ?? false }
+    /// CredentialStore 里 MiMo Cookie 的 account 名(旧版单键)。
     public static let mimoCookieAccount = KeychainAccounts.mimoCookie
+    /// CredentialStore 里 MiMo Cookie jar 的 account 名。
+    public static let mimoJarAccount = KeychainAccounts.mimoCookieJar
+
+    /// 阶跃账户列表落盘(JSON;id=会话仓库标识,label=展示名)。
+    private func persistStepFunAccounts() {
+        guard let data = try? JSONEncoder().encode(stepfunAccounts),
+              let json = String(data: data, encoding: .utf8) else { return }
+        UserDefaults.standard.set(json, forKey: UserDefaultsKeys.stepfunAccounts)
+    }
+
+    private static func loadStepFunAccounts(defaults: UserDefaults) -> [StepFunAccount] {
+        guard let json = defaults.string(forKey: UserDefaultsKeys.stepfunAccounts),
+              let data = json.data(using: .utf8),
+              let accounts = try? JSONDecoder().decode([StepFunAccount].self, from: data) else {
+            return []
+        }
+        return accounts
+    }
+
+    /// 登录成功后登记新账户(登录窗调用;App 层同时建对应会话仓库)。
+    public func addStepFunAccount(_ account: StepFunAccount) {
+        guard !stepfunAccounts.contains(where: { $0.id == account.id }) else { return }
+        stepfunAccounts.append(account)
+        stepfunSessionActive = true
+        stepfunAuthFailures[account.id] = 0
+        stepfunRetryNotBefore[account.id] = nil
+        stepfunLastGood[account.id] = nil
+    }
+
+    /// 移除某账户(UI 层同时调 StepFunSessionController.logout(accountID:) 清该仓库)。
+    public func removeStepFunAccount(id: String) {
+        stepfunAccounts.removeAll { $0.id == id }
+        stepfunAccountQuotas.removeAll { $0.id == id }
+        stepfunAccountErrors[id] = nil
+        stepfunAuthFailures[id] = nil
+        stepfunRetryNotBefore[id] = nil
+        stepfunLastGood[id] = nil
+        notificationTracker.clear(provider: "stepfun")
+        if stepfunAccounts.isEmpty {
+            stepfunSessionActive = false
+            stepfunQuota = nil
+            stepfunError = nil
+        } else {
+            Task { await refreshStepFun(force: true) }
+        }
+    }
+
+    /// 同一 oasis_id 的多个会话 = 同一个阶跃账户(重复登录)。返回**重复项**的
+    /// 账户 id 集合(每组保留第一个;oasis_id 为 nil 的账户不参与判定)。
+    public var stepfunDuplicateAccountIDs: Set<String> {
+        var seen = Set<String>()
+        var duplicates = Set<String>()
+        for account in stepfunAccounts {
+            guard let oasis = account.oasisID, !oasis.isEmpty else { continue }
+            if seen.contains(oasis) {
+                duplicates.insert(account.id)
+            } else {
+                seen.insert(oasis)
+            }
+        }
+        return duplicates
+    }
+
+    /// 某 oasis_id 对应的首个账户标签(重复提示「与账户N 是同一账户」用)。
+    public func stepfunFirstAccountLabel(oasisID: String?) -> String? {
+        guard let oasisID, !oasisID.isEmpty else { return nil }
+        return stepfunAccounts.first { $0.oasisID == oasisID }?.label
+    }
+
+    /// 记录某账户的 oasis_id(登录时/首次成功拉取时识别;持久化随账户列表)。
+    public func setStepFunAccountOasisID(_ accountID: String, _ oasisID: String) {
+        guard let i = stepfunAccounts.firstIndex(where: { $0.id == accountID }),
+              stepfunAccounts[i].oasisID != oasisID else { return }
+        stepfunAccounts[i].oasisID = oasisID
+    }
+
+    /// 记录某账户的手机号尾4位(登录成功/惰性补抓时识别;持久化随账户列表)。
+    public func setStepFunAccountPhoneTail(_ accountID: String, _ phoneTail: String) {
+        guard let i = stepfunAccounts.firstIndex(where: { $0.id == accountID }),
+              stepfunAccounts[i].phoneTail != phoneTail else { return }
+        stepfunAccounts[i].phoneTail = phoneTail
+    }
+
+    /// 移除全部重复账户(同 oasis_id 只保留第一个);返回被移除的 id
+    /// (调用方需同时清各自会话仓库)。
+    @discardableResult
+    public func removeStepFunDuplicateAccounts() -> [String] {
+        let duplicates = stepfunDuplicateAccountIDs
+        guard !duplicates.isEmpty else { return [] }
+        for id in duplicates { removeStepFunAccount(id: id) }
+        return Array(duplicates)
+    }
+
+    // MARK: - 智谱多账户(2026-10-04;API Key 按 id 分槽,main 复用旧槽+自动发现)
+
+    /// 智谱 Key 的 Keychain 槽位:main 复用旧槽(零迁移),其余按 id 分槽。
+    static func zhipuKeySlot(accountID: String) -> String {
+        accountID == "main" ? KeychainAccounts.zhipuAPIKey : "\(KeychainAccounts.zhipuAPIKey)-\(accountID)"
+    }
+
+    /// 某账户生效的 Key:main = 手动优先 + opencode 自动发现兜底;其余 = 分槽手动 Key。
+    public func zhipuKey(accountID: String) -> String? {
+        if accountID == "main" { return zhipuEffectiveAPIKey }
+        guard let k = credentialStore.read(account: Self.zhipuKeySlot(accountID: accountID)),
+              !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return k
+    }
+
+    /// 新增智谱账户(设置/面板调用;Key 写入该账户专属 Keychain 槽)。
+    public func addZhipuAccount(label: String, apiKey: String) {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        let id = UUID().uuidString
+        credentialStore.write(key, account: Self.zhipuKeySlot(accountID: id))
+        zhipuAccounts.append(ZhipuAccount(id: id, label: label))
+        zhipuAccountErrors[id] = nil
+        Task { await refreshZhipu(force: true) }
+    }
+
+    public func removeZhipuAccount(id: String) {
+        zhipuAccounts.removeAll { $0.id == id }
+        if id != "main" { credentialStore.delete(account: Self.zhipuKeySlot(accountID: id)) }
+        zhipuAccountQuotas.removeAll { $0.id == id }
+        zhipuAccountErrors[id] = nil
+        notificationTracker.clear(provider: "zhipu")
+        if zhipuAccounts.isEmpty {
+            zhipuQuota = nil
+            zhipuError = nil
+        } else {
+            Task { await refreshZhipu(force: true) }
+        }
+    }
+
+    private func persistZhipuAccounts() {
+        guard let data = try? JSONEncoder().encode(zhipuAccounts),
+              let json = String(data: data, encoding: .utf8) else { return }
+        UserDefaults.standard.set(json, forKey: UserDefaultsKeys.zhipuAccounts)
+    }
+
+    private static func loadZhipuAccounts(defaults: UserDefaults) -> [ZhipuAccount] {
+        guard let json = defaults.string(forKey: UserDefaultsKeys.zhipuAccounts),
+              let data = json.data(using: .utf8),
+              let accounts = try? JSONDecoder().decode([ZhipuAccount].self, from: data) else {
+            return []
+        }
+        return accounts
+    }
+
+    /// 某账户下一标签("账户N",N = 现有数量+1)。
+    public var zhipuNextAccountLabel: String { "账户\(zhipuAccounts.count + 1)" }
+
+    /// 智谱账户的感官区分提示:Key 尾 4 位(每把 Key 唯一,一眼对上是哪把)。
+    public func zhipuAccountHint(_ accountID: String) -> String? {
+        guard let key = zhipuKey(accountID: accountID), key.count > 4 else { return nil }
+        return "…\(key.suffix(4))"
+    }
+
+    /// 重命名账户(didSet 持久化)。
+    public func renameZhipuAccount(id: String, label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = zhipuAccounts.firstIndex(where: { $0.id == id }) else { return }
+        zhipuAccounts[idx].label = trimmed
+    }
+
+    // MARK: - Kimi 多账户(2026-10-04;web JWT 按 id 分槽,main 复用旧槽+本机 coding 凭证)
+
+    /// 登录成功后登记 Kimi 账户(登录窗已把 JWT 写进该 id 的 Keychain 槽)。
+    public func addKimiAccount(_ account: KimiAccount) {
+        guard !kimiAccounts.contains(where: { $0.id == account.id }) else { return }
+        kimiAccounts.append(account)
+        kimiAccountErrors[account.id] = nil
+        Task { await refreshKimi(force: true) }
+    }
+
+    public func removeKimiAccount(id: String) {
+        kimiAccounts.removeAll { $0.id == id }
+        KimiUsageService.clearWebToken(accountID: id)
+        kimiAccountQuotas.removeAll { $0.id == id }
+        kimiAccountErrors[id] = nil
+        notificationTracker.clear(provider: "kimi")
+        if kimiAccounts.isEmpty {
+            kimiQuota = nil
+            kimiError = nil
+        } else {
+            Task { await refreshKimi(force: true) }
+        }
+    }
+
+    private func persistKimiAccounts() {
+        guard let data = try? JSONEncoder().encode(kimiAccounts),
+              let json = String(data: data, encoding: .utf8) else { return }
+        UserDefaults.standard.set(json, forKey: UserDefaultsKeys.kimiAccounts)
+    }
+
+    private static func loadKimiAccounts(defaults: UserDefaults) -> [KimiAccount] {
+        guard let json = defaults.string(forKey: UserDefaultsKeys.kimiAccounts),
+              let data = json.data(using: .utf8),
+              let accounts = try? JSONDecoder().decode([KimiAccount].self, from: data) else {
+            return []
+        }
+        return accounts
+    }
+
+    /// 某账户下一标签("账户N",N = 现有数量+1)。
+    public var kimiNextAccountLabel: String { "账户\(kimiAccounts.count + 1)" }
+
+    /// Kimi 账户的感官区分提示:登录态 JWT 里的用户标识尾 6 位
+    /// (web JWT 的 sub;main 无网页登录时回退本机 coding token 的 user_id)。
+    public func kimiAccountHint(_ accountID: String) -> String? {
+        guard let sub = KimiUsageService.accountSubject(accountID: accountID), sub.count > 6 else { return nil }
+        return "…\(sub.suffix(6))"
+    }
+
+    /// 重命名账户(didSet 持久化)。
+    public func renameKimiAccount(id: String, label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = kimiAccounts.firstIndex(where: { $0.id == id }) else { return }
+        kimiAccounts[idx].label = trimmed
+    }
+
+    // MARK: - OpenCode Go 多 workspace(2026-10-17;一份登录 cookie,按 workspace 分流抓取)
+
+    /// 登录成功后并入发现的 workspace(已存在的保留原 label=用户重命名)。
+    /// 返回新加入的条目数(UI 提示用)。
+    @discardableResult
+    public func mergeOpenCodeWorkspaces(_ discovered: [OpenCodeUsageService.OpenCodeWorkspaceInfo]) -> Int {
+        var added = 0
+        for info in discovered where !openCodeWorkspaces.contains(where: { $0.id == info.id }) {
+            openCodeWorkspaces.append(OpenCodeWorkspace(id: info.id, label: info.name))
+            openCodeWorkspaceErrors[info.id] = nil
+            added += 1
+        }
+        return added
+    }
+
+    /// 登录后拉取全部 workspace 列表并并入(console API;端点失效时返回 0,
+    /// 用户可在卡片手动添加 wrk_xxx)。返回并入的条目数。
+    @discardableResult
+    public func discoverOpenCodeWorkspaces() async -> Int {
+        ensureCredentialLoaded()
+        guard !openCodeCookie.isEmpty else { return 0 }
+        let infos = await OpenCodeUsageService.listWorkspaces(cookie: openCodeCookie)
+        guard !infos.isEmpty else { return 0 }
+        let added = mergeOpenCodeWorkspaces(infos)
+        if !openCodeWorkspaces.isEmpty {
+            await refreshOpenCode(force: true)
+        }
+        return added
+    }
+
+    /// 手动添加 workspace(列表端点失效时;用户从浏览器 URL 复制 wrk_xxx)。
+    public func addOpenCodeWorkspace(id: String, label: String?) {
+        let wsID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wsID.isEmpty, !openCodeWorkspaces.contains(where: { $0.id == wsID }) else { return }
+        let trimmedLabel = (label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        openCodeWorkspaces.append(OpenCodeWorkspace(id: wsID,
+                                                    label: trimmedLabel.isEmpty ? "Workspace \(openCodeWorkspaces.count + 1)" : trimmedLabel))
+        openCodeWorkspaceErrors[wsID] = nil
+        Task { await refreshOpenCode(force: true) }
+    }
+
+    public func removeOpenCodeWorkspace(id: String) {
+        openCodeWorkspaces.removeAll { $0.id == id }
+        openCodeWorkspaceQuotas.removeAll { $0.id == id }
+        openCodeWorkspaceErrors[id] = nil
+        notificationTracker.clear(provider: "opencode")
+        if openCodeWorkspaces.isEmpty {
+            openCodeQuota = nil
+            openCodeError = nil
+        } else {
+            Task { await refreshOpenCode(force: true) }
+        }
+    }
+
+    private func persistOpenCodeWorkspaces() {
+        guard let data = try? JSONEncoder().encode(openCodeWorkspaces),
+              let json = String(data: data, encoding: .utf8) else { return }
+        UserDefaults.standard.set(json, forKey: UserDefaultsKeys.openCodeWorkspaces)
+    }
+
+    private static func loadOpenCodeWorkspaces(defaults: UserDefaults) -> [OpenCodeWorkspace] {
+        guard let json = defaults.string(forKey: UserDefaultsKeys.openCodeWorkspaces),
+              let data = json.data(using: .utf8),
+              let workspaces = try? JSONDecoder().decode([OpenCodeWorkspace].self, from: data) else {
+            return []
+        }
+        return workspaces
+    }
+
+    /// 重命名 workspace(didSet 持久化)。
+    public func renameOpenCodeWorkspace(id: String, label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = openCodeWorkspaces.firstIndex(where: { $0.id == id }) else { return }
+        openCodeWorkspaces[idx].label = trimmed
+    }
+
+    /// jar 落盘:新键存 JSON;旧键同步 platform 段(回滚到旧版本时凭据仍可用)。
+    /// ⚠️ 凭据加载完成前一律不落盘——init 里的清空赋值会经 didSet 走到这里,
+    /// 若此时写盘就会把刚从 Keychain 读出的凭据抹掉。
+    private func persistMiMoJar() {
+        guard mimoCredentialsLoaded else { return }
+        guard let jar = mimoJar else {
+            credentialStore.delete(account: Self.mimoJarAccount)
+            credentialStore.delete(account: Self.mimoCookieAccount)
+            return
+        }
+        credentialStore.write(jar.jsonString() ?? "", account: Self.mimoJarAccount)
+        credentialStore.write(jar.platformHeader, account: Self.mimoCookieAccount)
+    }
 
     // MARK: - MiniMax Coding Plan
 
@@ -127,6 +491,87 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var minimaxError: String?
     /// CredentialStore 里 MiniMax API Key 的 account 名。
     public static let minimaxAPIKeyAccount = KeychainAccounts.minimaxAPIKey
+
+    // MARK: - Ollama Cloud
+
+    /// Ollama Cloud 用量(近 30 天消费 vs 套餐月额度);未配置/未拉取为 nil
+    @Published public var ollamaQuota: OllamaQuota?
+    /// Ollama Cloud API Key(Keychain 存储,设置页粘贴)
+    @Published public var ollamaAPIKey: String {
+        didSet { credentialStore.write(ollamaAPIKey, account: Self.ollamaAPIKeyAccount) }
+    }
+    /// Ollama 是否已配置 API Key。
+    public var ollamaConfigured: Bool { !ollamaAPIKey.isEmpty }
+    @Published public var ollamaError: String?
+    /// CredentialStore 里 Ollama API Key 的 account 名。
+    public static let ollamaAPIKeyAccount = KeychainAccounts.ollamaAPIKey
+
+    // MARK: - 阶跃 StepFun Step Plan(多账户)
+
+    /// 阶跃 Step Plan 用量(**全部账户聚合**;菜单栏/摘要/快照口径);未配置/未拉取为 nil
+    @Published public var stepfunQuota: StepFunQuota?
+    /// 按账户的用量快照(面板分段展示;本轮失败的账户保留 last-good 旧值并标 isStale)
+    @Published public var stepfunAccountQuotas: [StepFunAccountSnapshot] = []
+    /// 按账户的最后错误(面板分段展示;键=账户 id,值=错误文案)
+    @Published public var stepfunAccountErrors: [String: String] = [:]
+    /// 已登录账户列表(UserDefaults 持久化;id = 会话仓库标识,首账户 "main" 沿用默认仓库)
+    @Published public var stepfunAccounts: [StepFunAccount] {
+        didSet { persistStepFunAccounts() }
+    }
+    @Published public var stepfunError: String?
+    @Published public var stepfunLoading = false
+    /// 最近一次成功拉取时间(状态行展示;失败保留旧值)
+    @Published public var stepfunLastUpdated: Date?
+    /// 控制台登录态遗留粘贴通道(Keychain;主通道是常驻 WebView 会话,粘贴 token
+    /// 会被平台滚动轮换作废,仅作 v1.0.60 前的兼容回退)。
+    @Published public var stepfunConsoleToken: String {
+        didSet {
+            guard stepfunCredentialsLoaded else { return }
+            credentialStore.write(stepfunConsoleToken, account: Self.stepfunConsoleTokenAccount)
+            stepfunAuthFailures.removeAll()
+            stepfunRetryNotBefore.removeAll()
+        }
+    }
+    /// 阶跃是否已配置(任一账户已登录,或遗留 token 非空)。
+    public var stepfunConfigured: Bool { !stepfunAccounts.isEmpty || !stepfunConsoleToken.isEmpty }
+    /// 兼容标记:任一账户有会话即 true(仅作状态展示;真值在账户列表——
+    /// 冷启动预热不再看它,防止一次全员失败把整个数据源冻住)。
+    @Published public var stepfunSessionActive: Bool = false {
+        didSet {
+            guard stepfunSessionActive != oldValue else { return }
+            UserDefaults.standard.set(stepfunSessionActive, forKey: UserDefaultsKeys.stepfunSessionActive)
+        }
+    }
+    /// 阶跃额度拉取通道:App 层注入(参数=账户 id,返回该账户会话页的三态结果)。
+    /// 无通道且有存量 token 时退回 URLSession 直连(遗留粘贴通道)。
+    public var stepfunConsoleFetchSink: ((String) async -> StepFunUsageService.StepFunFetchOutcome)?
+    /// 阶跃会话重载通道:App 层注入(参数=账户 id)。鉴权失败自愈用——
+    /// 强制重载会话页,让 SPA 用 30 天 refresh token 换发新 access token
+    /// (Oasis-Token 的 access 段只有 30 分钟 TTL,与 30 分钟刷新周期同频竞态)。
+    public var stepfunSessionReload: ((String) async -> Void)?
+    /// 阶跃账户身份通道:App 层注入(参数=账户 id,返回该账户会话的 oasis_id;
+    /// nil=读不到)。仅对尚未识别身份的账户调用一次(去重/防重复登录用)。
+    public var stepfunIdentitySink: ((String) async -> String?)?
+    /// 阶跃账户手机号通道:App 层注入(参数=账户 id,返回该账户绑定的手机号尾4位;
+    /// nil=读不到/未绑手机)。登录成功后抓一次 + 惰性补抓(见 refreshStepFun),
+    /// 供面板身份展示(优先于 oasis_id 尾4位)。
+    public var stepfunPhoneSink: ((String) async -> String?)?
+    /// 平台 web_id(登录窗抓取;SPA 的 Oasis-Webid 请求头同源,非敏感)。
+    @Published public var stepfunWebId: String {
+        didSet { UserDefaults.standard.set(stepfunWebId, forKey: UserDefaultsKeys.stepfunWebId) }
+    }
+    /// CredentialStore 里阶跃控制台登录态的 account 名。
+    public static let stepfunConsoleTokenAccount = KeychainAccounts.stepfunConsoleToken
+    /// 每账户独立鉴权失败计数 + 冷却截止(键=账户 id;单账户过期不连坐其他账户)
+    private var stepfunAuthFailures: [String: Int] = [:]
+    private var stepfunRetryNotBefore: [String: Date] = [:]
+    /// 每账户 last-good 快照(本轮失败时保留展示旧值,标 isStale;进程内有效)
+    private var stepfunLastGood: [String: StepFunAccountSnapshot] = [:]
+    /// 手机号尾号补抓次数(键=账户 id;**进程内**有效,不持久化):
+    /// 每账户每次启动最多试 3 次——覆盖启动初期会话页未就绪的竞态,
+    /// 又避免会话真死时每轮刷新都白打一次账户中心 RPC。
+    private var stepfunPhoneAttempts: [String: Int] = [:]
+    private var stepfunCredentialsLoaded = false
 
     /// 刷新间隔(分钟),用户可在设置改;默认 10。只影响 usage(高频)。
     @Published public var refreshIntervalMinutes: Int = 10 {
@@ -195,6 +640,8 @@ public final class TokenPlanModel: ObservableObject {
         case .zhipu: return zhipuConfigured
         case .mimo: return mimoConfigured
         case .minimax: return minimaxConfigured
+        case .ollama: return ollamaConfigured
+        case .stepfun: return stepfunConfigured
         }
     }
 
@@ -286,6 +733,8 @@ public final class TokenPlanModel: ObservableObject {
 
     /// Keychain 是否已加载(延迟到首次访问,避免启动时序问题)
     private var credentialLoaded = false
+    /// MiMo jar 是否已从 Keychain 载入(载入前禁止落盘,防 init 清空赋值误删凭据)
+    private var mimoCredentialsLoaded = false
 
     private init() {
         let defaults = UserDefaults.standard
@@ -315,16 +764,41 @@ public final class TokenPlanModel: ObservableObject {
             dailyDigestEnabled = defaults.bool(forKey: UserDefaultsKeys.dailyDigestEnabled)
         }
 
-        credentialStore = KeychainCredentialStore(service: KeychainAccounts.service)
+        credentialStore = AppFileCredentialStore.shared
         openCodeCookie = ""   // 延迟到 ensureCredentialLoaded() 读取
-        openCodeWorkspaceID = defaults.string(forKey: UserDefaultsKeys.openCodeWorkspaceID) ?? ""
         deepSeekAPIKey = ""   // 延迟到 ensureCredentialLoaded() 读取
         zhipuAPIKey = ""      // 延迟到 ensureCredentialLoaded() 读取
-        mimoCookie = ""       // 延迟到 ensureCredentialLoaded() 读取
+        // mimoJar 默认 nil,延迟到 ensureCredentialLoaded() 读取(不在此处赋值:
+        // 计算属性 setter 需要 self 完全初始化,且会经 didSet 触发落盘)
         minimaxAPIKey = ""    // 延迟到 ensureCredentialLoaded() 读取
-
+        ollamaAPIKey = ""     // 延迟到 ensureCredentialLoaded() 读取
+        stepfunConsoleToken = ""   // 延迟到 ensureCredentialLoaded() 读取
+        stepfunWebId = defaults.string(forKey: UserDefaultsKeys.stepfunWebId) ?? ""
+        if defaults.object(forKey: UserDefaultsKeys.stepfunSessionActive) != nil {
+            stepfunSessionActive = defaults.bool(forKey: UserDefaultsKeys.stepfunSessionActive)
+        }
+        // 账户列表(迁移在 init 末尾做——需要 self 完全初始化)
+        stepfunAccounts = Self.loadStepFunAccounts(defaults: defaults)
+        zhipuAccounts = Self.loadZhipuAccounts(defaults: defaults)
+        kimiAccounts = Self.loadKimiAccounts(defaults: defaults)
+        openCodeWorkspaces = Self.loadOpenCodeWorkspaces(defaults: defaults)
         historyStore = HistoryStore(backend: FileHistoryBackend(url: HistoryStore.defaultURL()))
         deepSeekDailyStore = DeepSeekDailyStore()
+
+        // 一次性迁移:v1.0.60–63 的单会话(默认仓库)→ 首账户 "main"(沿用默认仓库,零 Cookie 迁移)
+        if stepfunAccounts.isEmpty, stepfunSessionActive {
+            stepfunAccounts = [StepFunAccount(id: "main", label: "账户1")]
+            persistStepFunAccounts()
+        }
+        // 一次性迁移:v1.0.66 前的单 Key/单登录 → 首账户 "main"(各自复用旧槽,零迁移)
+        // ⚠️ 智谱 Key 是延迟加载的,key-based 迁移放在 ensureCredentialLoaded() 末尾
+        // ⚠️ 列表键存在(哪怕为空数组)即视为已迁移——否则用户移除全部账户后,
+        // 下次启动会因本机凭据仍在把 main 复活。
+        if kimiAccounts.isEmpty, defaults.object(forKey: UserDefaultsKeys.kimiAccounts) == nil,
+           KimiUsageService.tokenExists() || KimiUsageService.loadWebToken() != nil {
+            kimiAccounts = [KimiAccount(id: "main", label: "账户1")]
+            persistKimiAccounts()
+        }
     }
 
     /// 延迟加载 Keychain 中的 cookie(避免启动时序问题)。幂等。
@@ -334,10 +808,40 @@ public final class TokenPlanModel: ObservableObject {
         CredentialMigration.migrate(legacyKey: "openCodeCookie",
                                     account: Self.openCodeCookieAccount, to: credentialStore)
         openCodeCookie = credentialStore.read(account: Self.openCodeCookieAccount) ?? ""
+        // 多 workspace 一次性迁移(2026-10-17):旧单 cookie + 旧 workspace ID 键
+        // → 首个受监控 workspace(cookie 复用旧 Keychain 槽,零迁移)。
+        // ⚠️ 列表键存在(哪怕空数组)即视为已迁移——否则用户移除全部 workspace 后,
+        // 下次启动会因 cookie 仍在把旧 workspace 复活。
+        if openCodeWorkspaces.isEmpty,
+           UserDefaults.standard.object(forKey: UserDefaultsKeys.openCodeWorkspaces) == nil,
+           !openCodeCookie.isEmpty {
+            let legacyWS = UserDefaults.standard.string(forKey: UserDefaultsKeys.openCodeWorkspaceID) ?? ""
+            if !legacyWS.isEmpty {
+                openCodeWorkspaces = [OpenCodeWorkspace(id: legacyWS, label: "默认 workspace")]
+                persistOpenCodeWorkspaces()
+            }
+        }
         deepSeekAPIKey = credentialStore.read(account: Self.deepSeekAPIKeyAccount) ?? ""
         zhipuAPIKey = credentialStore.read(account: Self.zhipuAPIKeyAccount) ?? ""
-        mimoCookie = credentialStore.read(account: Self.mimoCookieAccount) ?? ""
+        // jar 优先(含 account 段 passToken);旧版单键作为兼容回退
+        if let raw = credentialStore.read(account: Self.mimoJarAccount), let jar = MiMoCookieJar.decode(raw) {
+            mimoJar = jar
+        } else if let legacy = credentialStore.read(account: Self.mimoCookieAccount) {
+            mimoJar = MiMoCookieJar.legacy(legacy)
+        }
+        mimoCredentialsLoaded = true
         minimaxAPIKey = credentialStore.read(account: Self.minimaxAPIKeyAccount) ?? ""
+        ollamaAPIKey = credentialStore.read(account: Self.ollamaAPIKeyAccount) ?? ""
+        stepfunConsoleToken = credentialStore.read(account: Self.stepfunConsoleTokenAccount) ?? ""
+        stepfunCredentialsLoaded = true
+        // 多账户一次性迁移(2026-10-04):智谱单 Key(手动或自动发现)→ 首账户 "main"。
+        // ⚠️ 列表键存在(哪怕空数组)即视为已迁移,防止移除全部账户后被复活。
+        if zhipuAccounts.isEmpty,
+           UserDefaults.standard.object(forKey: UserDefaultsKeys.zhipuAccounts) == nil,
+           zhipuEffectiveAPIKey != nil {
+            zhipuAccounts = [ZhipuAccount(id: "main", label: "账户1")]
+            persistZhipuAccounts()
+        }
     }
 
     /// 启动定时刷新
@@ -355,7 +859,11 @@ public final class TokenPlanModel: ObservableObject {
         Task { await refreshDeepSeek() }
         Task { await refreshZhipu() }
         Task { await refreshMiMo() }
+        loadMiMoLocalSide()                                      // P2:跨重启快照
+        Task { await collectMiMoLocal(force: true) }             // P2:本机口径账本
         Task { await refreshMiniMax() }
+        Task { await refreshOllama() }
+        Task { await refreshStepFun() }
         if loadAliyunAKSK() != nil {
             aliyunAKSKConfigured = true
         }
@@ -405,9 +913,8 @@ public final class TokenPlanModel: ObservableObject {
         resetBoundaryTask?.cancel()
         guard let q = quota else { return }
         let now = Date()
-        var candidates: [Int64] = []
-        if let ms = q.usage.fiveHour?.resetTimeMs { candidates.append(ms) }
-        candidates.append(q.usage.oneWeek.resetTimeMs)
+        // 三窗口(5h/周/月)全量收集:存在的窗口才参与边界调度(月窗重置=订阅月起点)
+        let candidates: [Int64] = q.usage.activeWindows.compactMap { $0.detail.resetTimeMs > 0 ? $0.detail.resetTimeMs : nil }
         let upcoming = candidates.compactMap { ms -> Int64? in
             guard ms > 0 else { return nil }
             let t = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
@@ -463,6 +970,8 @@ public final class TokenPlanModel: ObservableObject {
         case .zhipu: await refreshZhipu()
         case .mimo: await refreshMiMo()
         case .minimax: await refreshMiniMax()
+        case .ollama: await refreshOllama()
+        case .stepfun: await refreshStepFun()
         case .system: break
         }
     }
@@ -488,35 +997,56 @@ public final class TokenPlanModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    /// 自愈:若已有 cookie 但缺 workspace(如旧版登录失败遗留,或 discover 逻辑修复后首次启动),
-    /// 用现存 cookie 自动重新发现 workspace,免去用户手动重登。
+    /// 自愈:已登录但没有受监控 workspace(旧版登录失败遗留/迁移时 workspace 缺失)
+    /// → 拉取 workspace 列表并入(端点失效时回落到 /auth 发现的默认 workspace)。
     private func recoverOpenCodeIfNeeded() async {
         ensureCredentialLoaded()
-        guard !openCodeCookie.isEmpty, openCodeWorkspaceID.isEmpty else { return }
-        if let wsID = await OpenCodeUsageService.discoverWorkspaceID(cookie: openCodeCookie) {
-            openCodeWorkspaceID = wsID
-        }
+        guard !openCodeCookie.isEmpty, openCodeWorkspaces.isEmpty else { return }
+        await discoverOpenCodeWorkspaces()
     }
 
-    /// 拉一次 OpenCode Go 用量(cookie + workspace 配置后)
-    public func refreshOpenCode() async {
+    /// 拉取 OpenCode Go 用量(2026-10-17 多 workspace:逐 workspace 用同一 cookie
+    /// 抓取 → 聚合 → 面板/告警用聚合值)。单 workspace 时等价于旧路径。
+    /// ⚠️ 不在这里补 workspace:cookie 仍在,补了会把用户刚移除的条目复活。
+    public func refreshOpenCode(force: Bool = false) async {
         ensureCredentialLoaded()
-        guard isEnabled(.openCode), openCodeConfigured else { return }
-        let result = await OpenCodeUsageService.fetchQuota(cookie: openCodeCookie, workspaceID: openCodeWorkspaceID)
-        switch result {
-        case .success(let q):
-            openCodeQuota = q
-            openCodeError = nil
-            AppLog.debug("OpenCode 用量刷新成功 rolling=\(q.rolling.pct)% weekly=\(q.weekly.pct)%", category: .opencode)
-            recordAndNotify()
-        case .failure(let e):
-            switch e {
-            case .authExpired: openCodeError = "OpenCode cookie 已过期,请在设置更新"
-            case .network(let s): openCodeError = "OpenCode 网络错误: \(s)"
-            case .parse: openCodeError = "OpenCode 页面格式变化,解析失败"
-            case .invalidResponse: openCodeError = "OpenCode 响应异常"
-            case .unknown(let s): openCodeError = s
+        guard isEnabled(.openCode), !openCodeCookie.isEmpty, !openCodeWorkspaces.isEmpty else { return }
+
+        var snapshots: [OpenCodeWorkspaceSnapshot] = []
+        var errors: [String: String] = [:]
+        var anySucceeded = false
+        for ws in openCodeWorkspaces {
+            let result = await OpenCodeUsageService.fetchQuota(cookie: openCodeCookie, workspaceID: ws.id)
+            switch result {
+            case .success(let q):
+                anySucceeded = true
+                snapshots.append(OpenCodeWorkspaceSnapshot(id: ws.id, label: ws.label, quota: q))
+            case .failure(let e):
+                errors[ws.id] = openCodeErrorMessage(e)
             }
+        }
+
+        if anySucceeded {
+            openCodeQuota = OpenCodeQuota.aggregate(snapshots.map(\.quota))
+            openCodeError = nil
+            openCodeLastUpdated = Date()
+            openCodeWorkspaceQuotas = snapshots
+            AppLog.debug("OpenCode 用量刷新成功 \(snapshots.count) workspace rolling=\(openCodeQuota.map { "\($0.rolling.pct)%" } ?? "无") weekly=\(openCodeQuota.map { "\($0.weekly.pct)%" } ?? "无")", category: .opencode)
+            recordAndNotify()
+        } else {
+            openCodeError = errors.values.first ?? "OpenCode 刷新失败"
+        }
+        openCodeWorkspaceErrors = errors
+    }
+
+    /// OpenCode 错误文案(与旧单账户口径一致的用户可读描述)。
+    private func openCodeErrorMessage(_ e: UsageError) -> String {
+        switch e {
+        case .authExpired: return "OpenCode 登录已过期,请重新登录账户"
+        case .network(let s): return "OpenCode 网络错误: \(s)"
+        case .parse: return "无 Go 用量数据(未订阅或页面改版)"
+        case .invalidResponse: return "OpenCode 响应异常"
+        case .unknown(let s): return s
         }
     }
 
@@ -524,64 +1054,130 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 拉取 Kimi Code 套餐用量(读本机 KimiCodeBar/Kimi CLI 凭证 + web 控制台登录)。
     /// 凭证不存在时静默跳过(设置页有引导)。
-    public func refreshKimi() async {
+    /// 刷新 Kimi 用量(2026-10-04 多账户:main=本机凭证/legacy web 槽,其余=各自 web JWT 槽)。
+    public func refreshKimi(force: Bool = false) async {
         guard isEnabled(.kimi), kimiConfigured else { return }
-        let result = await KimiUsageService.fetchQuota()
-        switch result {
-        case .success(let q):
-            kimiQuota = q
-            kimiError = nil
-            AppLog.debug("Kimi 用量刷新成功 5h=\(q.fiveHour.pct)% weekly=\(q.weekly.pct)%", category: .kimi)
-            recordAndNotify()
-        case .failure(let e):
-            switch e {
-            case .authExpired: kimiError = "Kimi 登录已过期,请重新登录 KimiCodeBar / Kimi CLI"
-            case .network(let s): kimiError = "Kimi 网络错误: \(s)"
-            case .parse: kimiError = "Kimi 响应格式变化,解析失败"
-            case .invalidResponse: kimiError = "Kimi 响应异常"
-            case .unknown(let s): kimiError = s
+        // 无账户(用户移除全部)→ 不拉取;卡片显示登录引导。
+        // ⚠️ 不在这里补 main:本机凭证文件仍在,补了会把用户刚移除的账户复活。
+        guard !kimiAccounts.isEmpty else { return }
+
+        var snapshots: [KimiAccountSnapshot] = []
+        var errors: [String: String] = [:]
+        var anySucceeded = false
+        for account in kimiAccounts {
+            let result = await KimiUsageService.fetchQuota(accountID: account.id)
+            switch result {
+            case .success(let q):
+                anySucceeded = true
+                snapshots.append(KimiAccountSnapshot(id: account.id, label: account.label, quota: q))
+            case .failure(let e):
+                errors[account.id] = kimiErrorMessage(e)
             }
+        }
+
+        if anySucceeded {
+            kimiQuota = KimiQuota.aggregate(snapshots.map(\.quota))
+            kimiError = nil
+            kimiLastUpdated = Date()
+            kimiAccountQuotas = snapshots
+            AppLog.debug("Kimi 用量刷新成功 \(snapshots.count) 账户 5h=\(kimiQuota.map { "\($0.fiveHour.pct)%" } ?? "无") weekly=\(kimiQuota.map { "\($0.weekly.pct)%" } ?? "无")", category: .kimi)
+            recordAndNotify()
+        } else {
+            kimiError = errors.values.first ?? "Kimi 刷新失败"
+        }
+        kimiAccountErrors = errors
+    }
+
+    /// Kimi 错误文案(与旧单账户口径一致)。
+    private func kimiErrorMessage(_ e: UsageError) -> String {
+        switch e {
+        case .authExpired: return "Kimi 登录已过期,请重新登录该账户"
+        case .network(let s): return "Kimi 网络错误: \(s)"
+        case .parse: return "Kimi 响应格式变化,解析失败"
+        case .invalidResponse: return "Kimi 响应异常"
+        case .unknown(let s): return s
         }
     }
 
-    /// 清空 Kimi 状态(不删共享凭证文件;web 登录 token 一并清)。
+    /// 清空 Kimi 状态(不删共享凭证文件;所有账户的 web token 一并清)。
     public func clearKimi() {
+        for account in kimiAccounts {
+            KimiUsageService.clearWebToken(accountID: account.id)
+        }
+        kimiAccounts = []
+        kimiAccountQuotas = []
+        kimiAccountErrors = [:]
         kimiQuota = nil
         kimiError = nil
-        KimiUsageService.clearWebToken()
         notificationTracker.clear(provider: "kimi")
     }
 
     // MARK: - 智谱 GLM Coding Plan
 
     /// 拉取智谱 Coding Plan 用量。未配置(无手动 key 且未发现 opencode 配置)时静默跳过。
-    public func refreshZhipu() async {
+    /// 刷新智谱用量(2026-10-04 多账户:逐账户拉取 → 聚合 → 面板/告警用聚合值)。
+    /// 单账户时等价于旧路径(聚合返回原值);无任何账户但有 Key 时先补 main 迁移。
+    public func refreshZhipu(force: Bool = false) async {
         ensureCredentialLoaded()
-        guard isEnabled(.zhipu) else { return }
-        guard let key = zhipuEffectiveAPIKey else { return }
-        let result = await ZhipuUsageService.fetchQuota(apiKey: key)
-        switch result {
-        case .success(let q):
-            zhipuQuota = q
-            zhipuError = nil
-            AppLog.debug("智谱用量刷新成功 5h=\(q.fiveHour.map { "\($0.pctInt)%" } ?? "无") weekly=\(q.weekly.map { "\($0.pctInt)%" } ?? "无") level=\(q.level ?? "?")", category: .zhipu)
-            recordAndNotify()
-        case .failure(let e):
-            switch e {
-            case .authExpired: zhipuError = "智谱 API Key 无效或已失效,请在设置更新"
-            case .network(let s): zhipuError = "智谱 网络错误: \(s)"
-            case .parse: zhipuError = "智谱 响应格式变化,解析失败"
-            case .invalidResponse(let s): zhipuError = "智谱 响应异常: \(s)"
-            case .unknown(let s): zhipuError = s
+        guard isEnabled(.zhipu), zhipuConfigured else { return }
+        // 无账户(用户移除全部)→ 不拉取;卡片显示添加引导。
+        // ⚠️ 不在这里补 main:凭据(Key/自动发现)仍在,补了会把用户刚移除的账户复活。
+        guard !zhipuAccounts.isEmpty else { return }
+
+        var snapshots: [ZhipuAccountSnapshot] = []
+        var errors: [String: String] = [:]
+        var anySucceeded = false
+        for account in zhipuAccounts {
+            guard let key = zhipuKey(accountID: account.id), !key.isEmpty else {
+                errors[account.id] = "未配置 API Key(设置 → 智谱 GLM 粘贴)"
+                continue
             }
+            let result = await ZhipuUsageService.fetchQuota(apiKey: key)
+            switch result {
+            case .success(let q):
+                anySucceeded = true
+                snapshots.append(ZhipuAccountSnapshot(id: account.id, label: account.label, quota: q))
+            case .failure(let e):
+                errors[account.id] = zhipuErrorMessage(e)
+            }
+        }
+
+        if anySucceeded {
+            zhipuQuota = ZhipuQuota.aggregate(snapshots.map(\.quota))
+            zhipuError = nil
+            zhipuLastUpdated = Date()
+            zhipuAccountQuotas = snapshots
+            AppLog.debug("智谱用量刷新成功 \(snapshots.count) 账户 5h=\(zhipuQuota?.fiveHour.map { "\($0.pctInt)%" } ?? "无") weekly=\(zhipuQuota?.weekly.map { "\($0.pctInt)%" } ?? "无") level=\(zhipuQuota?.level ?? "?")", category: .zhipu)
+            recordAndNotify()
+        } else {
+            zhipuError = errors.values.first ?? "智谱刷新失败"
             AppLog.warning("智谱刷新失败: \(zhipuError ?? "")", category: .zhipu)
+        }
+        zhipuAccountErrors = errors
+    }
+
+    /// 智谱错误文案(与旧单账户口径一致的用户可读描述)。
+    private func zhipuErrorMessage(_ e: ZhipuUsageService.ZhipuError) -> String {
+        switch e {
+        case .authExpired: return "智谱 API Key 无效或已失效,请在设置更新"
+        case .network(let s): return "智谱 网络错误: \(s)"
+        case .parse: return "智谱 响应格式变化,解析失败"
+        case .invalidResponse(let s): return "智谱 响应异常: \(s)"
+        case .unknown(let s): return s
         }
     }
 
     /// 移除手动配置的智谱 API Key + 清状态(自动发现的 opencode 配置不受影响)。
+    /// 多账户:清全部账户与各自 Keychain 槽。
     public func clearZhipu() {
+        for account in zhipuAccounts where account.id != "main" {
+            credentialStore.delete(account: Self.zhipuKeySlot(accountID: account.id))
+        }
         credentialStore.delete(account: Self.zhipuAPIKeyAccount)
         zhipuAPIKey = ""
+        zhipuAccounts = []
+        zhipuAccountQuotas = []
+        zhipuAccountErrors = [:]
         zhipuQuota = nil
         zhipuError = nil
         notificationTracker.clear(provider: "zhipu")
@@ -632,18 +1228,42 @@ public final class TokenPlanModel: ObservableObject {
 
     /// 拉取 MiMo 余额 + Token 套餐用量(控制台 Cookie 认证)。
     /// 未配置 Cookie 时静默跳过;失败保留旧数据 + 状态行报错(DeepSeek 同语义)。
-    public func refreshMiMo() async {
+    /// - Parameter force: 手动刷新/保存新 Cookie 时传 true,跳过鉴权失败冷却。
+    public func refreshMiMo(force: Bool = false) async {
         ensureCredentialLoaded()
         guard isEnabled(.mimo), mimoConfigured else { return }
         guard !mimoLoading else { return }
+        // 鉴权失败冷却:会话过期属于"用户不处理不会自愈",按正常间隔轮询纯属无效请求
+        if !force, let until = mimoRetryNotBefore, Date() < until { return }
         mimoLoading = true
         defer { mimoLoading = false }
-        let result = await MiMoUsageService.fetchUsage(cookieHeader: mimoCookie)
+        var result = await MiMoUsageService.fetchUsage(cookieHeader: mimoCookie)
+        // 会话过期 → 先用 passToken 静默续期,成功则重试一次(用户无感,不再需要手工重抄 Cookie)
+        if case .failure(let e) = result, isMiMoAuthFailure(e), let jar = mimoJar, jar.canRenew {
+            AppLog.info("MiMo 会话过期,尝试用 passToken 自动续期", category: .mimo)
+            if case .success(let renewed) = await MiMoSessionRenewal.renew(jar: jar) {
+                mimoJar = renewed
+                result = await MiMoUsageService.fetchUsage(cookieHeader: renewed.platformHeader)
+                if case .success = result {
+                    AppLog.info("MiMo 自动续期完成,重试成功", category: .mimo)
+                } else {
+                    AppLog.warning("MiMo 自动续期完成,但重试仍失败", category: .mimo)
+                }
+            } else {
+                AppLog.warning("MiMo 自动续期失败,需人工重新登录", category: .mimo)
+            }
+        }
         switch result {
         case .success(let usage):
             mimoUsage = usage
             mimoError = nil
             mimoLastUpdated = Date()
+            mimoAuthFailures = 0
+            mimoRetryNotBefore = nil
+            // 落一份跨重启快照,控制台不可用时仍能展示"上次已知口径 + 时间"
+            let snapshot = MiMoLastUsage(schemaVersion: 1, capturedAt: Date(), usage: usage)
+            mimoLastSnapshot = snapshot
+            mimoLastStore.save(snapshot)
             AppLog.debug("MiMo 余额刷新成功 balance=\(usage.balance.balance)\(usage.balance.currency) plan=\(usage.plan.map { "\(Int($0.usedPct.rounded()))%" } ?? "无")", category: .mimo)
             recordAndNotify()
         case .failure(let e):
@@ -655,17 +1275,59 @@ public final class TokenPlanModel: ObservableObject {
             case .parse(let s): mimoError = "MiMo 响应格式变化,解析失败(\(s))"
             case .unknown(let s): mimoError = s
             }
+            // 鉴权类失败才降频;网络抖动仍按正常间隔重试
+            switch e {
+            case .loginRequired, .invalidCredentials, .invalidCookie:
+                mimoAuthFailures += 1
+                let cooldown = MiMoUsageService.authRetryCooldownSeconds(consecutiveFailures: mimoAuthFailures)
+                mimoRetryNotBefore = Date().addingTimeInterval(cooldown)
+                AppLog.warning("MiMo 鉴权失败,\(Int(cooldown / 60)) 分钟内不再重试(第 \(mimoAuthFailures) 次)", category: .mimo)
+            default:
+                break
+            }
             AppLog.warning("MiMo 刷新失败: \(mimoError ?? "")", category: .mimo)
         }
+    }
+
+    /// 是否属于"用户必须处理"的 MiMo 鉴权失败(只有这类才值得尝试静默续期)。
+    private func isMiMoAuthFailure(_ e: MiMoUsageService.MiMoError) -> Bool {
+        switch e {
+        case .loginRequired, .invalidCredentials, .invalidCookie: return true
+        case .network, .parse, .unknown: return false
+        }
+    }
+
+    /// 载入 MiMo 本地侧数据:上次成功快照 + 本机 CLI 用量账本。
+    /// 启动时调一次即可(快照立即读盘;账本走 `collectMiMoLocal` 节流采集)。
+    public func loadMiMoLocalSide() {
+        if let snapshot = mimoLastStore.load() {
+            mimoLastSnapshot = snapshot
+            if mimoLastUpdated == nil { mimoLastUpdated = snapshot.capturedAt }
+        }
+    }
+
+    /// 采集本机 CLI 用量账本(零凭据、零网络)。节流 10 分钟;`force` 绕过。
+    /// sqlite3 子进程放到后台线程,不阻塞主线程刷新。
+    public func collectMiMoLocal(force: Bool = false) async {
+        if !force, let last = mimoLocalCollectedAt, Date().timeIntervalSince(last) < 600 { return }
+        mimoLocalCollectedAt = Date()
+        let store = mimoLocalStore
+        let collected = await Task.detached(priority: .utility) {
+            MiMoLocalUsageCollector.collect(store: store)
+        }.value
+        if let collected { mimoLocalUsage = collected }
     }
 
     /// 移除 MiMo Cookie + 清状态。
     public func clearMiMo() {
         credentialStore.delete(account: Self.mimoCookieAccount)
+        credentialStore.delete(account: Self.mimoJarAccount)
         mimoCookie = ""
         mimoUsage = nil
         mimoError = nil
         mimoLastUpdated = nil
+        mimoAuthFailures = 0
+        mimoRetryNotBefore = nil
     }
 
     // MARK: - MiniMax Coding Plan
@@ -701,6 +1363,270 @@ public final class TokenPlanModel: ObservableObject {
         minimaxQuota = nil
         minimaxError = nil
         notificationTracker.clear(provider: "minimax")
+    }
+
+    // MARK: - Ollama Cloud
+
+    /// 拉取 Ollama Cloud 用量(ollama.com 私有端点 + 本机 daemon 探测档位)。
+    /// 未配置 API Key 时静默跳过(设置页/面板有引导)。
+    public func refreshOllama() async {
+        ensureCredentialLoaded()
+        guard isEnabled(.ollama), ollamaConfigured else { return }
+        let result = await OllamaUsageService.fetchQuota(apiKey: ollamaAPIKey)
+        switch result {
+        case .success(let q):
+            ollamaQuota = q
+            ollamaError = nil
+            // 诊断:记录近 30 天消费(美元)+ 请求数 + 档位/额度。2026-10-09 起
+            // /api/usage 只回报绝对美元(totals.usage_usd),不再有 0-1 小数口径歧义。
+            AppLog.debug("Ollama 用量刷新成功 近30天=$\(String(format: "%.2f", q.spentUSD30d))(\(q.requests30d) 次) 近7天=$\(String(format: "%.2f", q.spentUSD7d)) 额度=\(q.capUSD.map { "$\($0)" } ?? "未知") 占比=\(q.usagePct.map { "\(Int($0.rounded()))%" } ?? "无") plan=\(q.plan ?? "?")", category: .ollama)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: ollamaError = "API Key 无效或已吊销,请在设置更新"
+            case .rateLimited: ollamaError = "请求被限流(用量可能已耗尽),稍后自动重试"
+            case .network(let s): ollamaError = "Ollama 网络错误: \(s)"
+            case .parse(let s): ollamaError = "Ollama 响应格式变化,解析失败(\(s))"
+            case .invalidResponse(let s): ollamaError = "Ollama 响应异常: \(s)"
+            case .unknown(let s): ollamaError = s
+            }
+            AppLog.warning("Ollama 刷新失败: \(ollamaError ?? "")", category: .ollama)
+        }
+    }
+
+    /// 移除 Ollama API Key + 清状态。
+    public func clearOllama() {
+        credentialStore.delete(account: Self.ollamaAPIKeyAccount)
+        ollamaAPIKey = ""
+        ollamaQuota = nil
+        ollamaError = nil
+        notificationTracker.clear(provider: "ollama")
+    }
+
+    // MARK: - 阶跃 StepFun Step Plan
+
+    /// 拉取阶跃 Step Plan 用量(**逐账户**)并聚合。通道:
+    /// ① 主:App 注入的 `stepfunConsoleFetchSink(accountID)`(每账户一个常驻
+    ///    WebView,页面内同源 fetch,Cookie 自动轮换);
+    /// ② 兜底:无账户仅存量 token 时走 URLSession 直连(遗留粘贴通道)。
+    ///
+    /// 稳定性语义(2026-10-09 重写):
+    /// - 鉴权失败先**自愈**(重载会话页让 SPA 用 30 天 refresh token 换发新
+    ///   access,再重试一次),仍失败才标记「需重登」——Oasis-Token 的 access 段
+    ///   只有 30 分钟 TTL,与刷新周期同频,裸 fetch 常抢在 SPA 续期前打出 401,
+    ///   不重载就直接逼用户重登属于误杀;
+    /// - 冷却**按账户独立**,一个账户过期不连坐其他账户;
+    /// - 「会话页加载中」是软错误(页面未就绪),不计鉴权失败、不进冷却;
+    /// - 本轮失败的账户保留 last-good 快照(标 isStale),统计不跳动、行不消失。
+    public func refreshStepFun(force: Bool = false) async {
+        ensureCredentialLoaded()
+        guard isEnabled(.stepfun), stepfunConfigured else { return }
+        guard !stepfunLoading else { return }
+        stepfunLoading = true
+        defer { stepfunLoading = false }
+
+        // 遗留单 token 通道(无账户列表时;v1.0.60 前用户)
+        if stepfunAccounts.isEmpty {
+            guard let token = StepFunUsageService.normalizedToken(from: stepfunConsoleToken) else {
+                if stepfunConsoleToken.isEmpty { return }
+                stepfunError = "Oasis-Token 无法识别,请重新登录"
+                return
+            }
+            let result = await StepFunUsageService.fetchQuota(
+                consoleToken: token, webId: stepfunWebId,
+                onRotatedToken: { [weak self] rotated in
+                    Task { @MainActor in self?.stepfunConsoleToken = rotated }
+                })
+            applyStepFunResult(snapshots: [], aggregateResult: result)
+            return
+        }
+
+        var errors: [String: String] = [:]
+        var fresh: [String: StepFunAccountSnapshot] = [:]
+        var anyFresh = false
+        for account in stepfunAccounts {
+            // 每账户独立冷却(手动刷新 force 绕过)
+            if !force, let until = stepfunRetryNotBefore[account.id], Date() < until {
+                let mins = max(1, Int(until.timeIntervalSinceNow / 60))
+                errors[account.id] = "刷新冷却中,约 \(mins) 分钟后重试"
+                continue
+            }
+            // 身份懒识别(与拉取结果无关:cookie 在就有身份;失败账户也要能识别出重复)
+            if account.oasisID == nil, let identity = stepfunIdentitySink,
+               let oasis = await identity(account.id), !oasis.isEmpty {
+                setStepFunAccountOasisID(account.id, oasis)
+                AppLog.info("阶跃[\(account.id)]身份识别:oasis_id=\(oasis)", category: .stepfun)
+            }
+            // 手机号尾号惰性补抓(JWT 里没有手机号,走账户中心 GetAccountBinding):
+            // 老账户(加功能前登录的)没有 phoneTail,启动后补抓;每账户最多 3 次。
+            // 拿不到不阻塞用量展示——身份回落 oasis_id 尾4位。
+            if account.phoneTail == nil, (stepfunPhoneAttempts[account.id] ?? 0) < 3,
+               let phone = stepfunPhoneSink {
+                stepfunPhoneAttempts[account.id, default: 0] += 1
+                if let tail = await phone(account.id), !tail.isEmpty {
+                    setStepFunAccountPhoneTail(account.id, tail)
+                    AppLog.info("阶跃[\(account.id)]手机号识别:尾号 \(tail)", category: .stepfun)
+                }
+            }
+            guard let sink = stepfunConsoleFetchSink else {
+                errors[account.id] = "会话通道未接入(需重启应用)"
+                continue
+            }
+            // 拉取(含一次重载自愈:401 包络/页面被踢到登录域都会先重载再判死刑)
+            let outcome = await fetchStepFunAccount(accountID: account.id, sink: sink)
+            var raw: String
+            switch outcome {
+            case .pageNotReady:
+                // 页面/webView 未就绪:软错误,不消耗鉴权冷却
+                errors[account.id] = "会话页面加载中,稍后自动重试"
+                continue
+            case .sessionExpired:
+                // 重载后仍停在登录域:会话真的死了(区别于「加载中」,给重登入口)
+                errors[account.id] = "登录态已过期,请重新登录该账户"
+                noteStepFunAuthFailure(accountID: account.id)
+                continue
+            case .json(let text):
+                raw = text
+            }
+            let data = Data(raw.utf8)
+            if let envelope = StepFunUsageService.classifyEnvelope(data: data) {
+                switch envelope {
+                case .authExpired:
+                    errors[account.id] = "登录态已过期,请重新登录该账户"
+                    noteStepFunAuthFailure(accountID: account.id)
+                case .tokenNotPermitted:
+                    errors[account.id] = "凭证类型不对:API Key 查不了额度"
+                    noteStepFunAuthFailure(accountID: account.id)
+                default:
+                    errors[account.id] = "平台返回异常(\(raw.prefix(50)))"
+                }
+                continue
+            }
+            guard let quota = StepFunUsageService.parseQuota(from: data) else {
+                errors[account.id] = "响应格式变化,解析失败(\(raw.prefix(50)))"
+                continue
+            }
+            anyFresh = true
+            fresh[account.id] = StepFunAccountSnapshot(id: account.id, label: account.label,
+                                                       quota: quota, fetchedAt: Date())
+            stepfunLastGood[account.id] = fresh[account.id]
+            // 成功即清该账户的失败计数/冷却
+            stepfunAuthFailures[account.id] = 0
+            stepfunRetryNotBefore[account.id] = nil
+        }
+
+        // 合并:成功用新值,失败保留 last-good(标旧);按账户顺序输出
+        let merged = StepFunAccountSnapshot.merge(accounts: stepfunAccounts, fresh: fresh,
+                                                  previous: stepfunLastGood, now: Date())
+        stepfunAccountQuotas = merged
+        stepfunAccountErrors = errors
+        // 同一 oasis_id 的重复会话只计一次(登录时已防重复添加,这里是双重保险)
+        let duplicates = stepfunDuplicateAccountIDs
+        let counted = merged.filter { !duplicates.contains($0.id) }
+        if anyFresh {
+            stepfunQuota = counted.isEmpty ? nil : StepFunQuota.aggregate(counted.map(\.quota))
+            stepfunError = nil
+            stepfunLastUpdated = Date()
+            stepfunSessionActive = true
+            AppLog.debug("阶跃用量刷新成功 \(fresh.count)/\(stepfunAccounts.count) 账户(\(merged.count - fresh.count) 个旧数据) 月池=\(stepfunQuota?.subscription.map { "\($0.usedPctInt)%" } ?? "无") 加油包=\(stepfunQuota?.topup.map { "\($0.usedPctInt)%" } ?? "无")", category: .stepfun)
+            recordAndNotify()
+        } else if !merged.isEmpty {
+            // 全员失败但有 last-good:展示旧数据 + 汇总错误(行内还有逐账户明细)
+            stepfunQuota = StepFunQuota.aggregate(counted.map(\.quota))
+            stepfunError = "全部账户刷新失败(展示旧数据,见各账户明细)"
+            AppLog.warning("阶跃全部账户刷新失败:\(errors)", category: .stepfun)
+        } else {
+            stepfunQuota = nil
+            stepfunError = errors.values.first ?? "阶跃用量暂不可用"
+            AppLog.warning("阶跃刷新失败:\(stepfunError ?? "")", category: .stepfun)
+        }
+    }
+
+    /// 记录一次(自愈后的)鉴权失败:该账户独立计数 + 冷却(15/30/60/120 分钟)。
+    private func noteStepFunAuthFailure(accountID: String) {
+        stepfunAuthFailures[accountID, default: 0] += 1
+        let cooldown = StepFunUsageService.authRetryCooldownSeconds(
+            consecutiveFailures: stepfunAuthFailures[accountID] ?? 1)
+        stepfunRetryNotBefore[accountID] = Date().addingTimeInterval(cooldown)
+        AppLog.warning("阶跃[\(accountID)]鉴权失败(第 \(stepfunAuthFailures[accountID] ?? 1) 次),\(Int(cooldown / 60)) 分钟内不再重试该账户", category: .stepfun)
+    }
+
+    /// 拉取单账户(含一次重载自愈)。两类信号触发自愈:
+    /// ① 响应是 `unauthenticated` 包络(access token 抢跑过期);
+    /// ② 页面被踢到登录域(account.stepfun.com,会话已死但 refresh 可能还有效)。
+    /// 自愈 = 强制重载会话页(SPA 用 30 天 refresh token 换发新 access)后重试;
+    /// 重载后回到平台域并拿到响应 → 正常继续;仍停在登录域 → `.sessionExpired`
+    /// (调用方按真鉴权失败处理:重登入口 + 冷却);还在导航 → `.pageNotReady`(软)。
+    private func fetchStepFunAccount(accountID: String,
+                                     sink: @escaping (String) async -> StepFunUsageService.StepFunFetchOutcome)
+    async -> StepFunUsageService.StepFunFetchOutcome {
+        let first = await sink(accountID)
+        let needsHeal: Bool
+        if case .json(let raw) = first {
+            needsHeal = StepFunUsageService.classifyEnvelope(data: Data(raw.utf8)) == .authExpired
+        } else {
+            needsHeal = first == .sessionExpired
+        }
+        guard needsHeal, let reload = stepfunSessionReload else { return first }
+        AppLog.info("阶跃[\(accountID)]鉴权失败,重载会话页自愈", category: .stepfun)
+        await reload(accountID)
+        var last: StepFunUsageService.StepFunFetchOutcome = .pageNotReady
+        for _ in 0..<4 {
+            if Task.isCancelled { break }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            last = await sink(accountID)
+            if case .json = last { return last }
+        }
+        return last
+    }
+
+    /// 应用一轮刷新结果(成功:快照+聚合+时间+告警评估;失败:错误文案)。
+    /// 仅遗留单 token 通道仍走这里;多账户路径在 refreshStepFun 内联处理
+    /// (每账户独立冷却 + last-good 合并)。
+    private func applyStepFunResult(snapshots: [StepFunAccountSnapshot],
+                                    aggregateResult: Result<StepFunQuota, StepFunUsageService.StepFunError>?) {
+        switch aggregateResult {
+        case .success(let q):
+            stepfunQuota = q
+            stepfunError = nil
+            stepfunLastUpdated = Date()
+            stepfunAuthFailures.removeAll()
+            stepfunRetryNotBefore.removeAll()
+            stepfunSessionActive = true
+            if !snapshots.isEmpty { stepfunAccountQuotas = snapshots }
+            AppLog.debug("阶跃用量刷新成功 \(snapshots.count) 账户 月池=\(q.subscription.map { "\($0.usedPctInt)%" } ?? "无") 加油包=\(q.topup.map { "\($0.usedPctInt)%" } ?? "无")", category: .stepfun)
+            recordAndNotify()
+        case .failure(let e):
+            switch e {
+            case .authExpired: stepfunError = "阶跃控制台登录态已过期,请重新登录 platform.stepfun.com"
+            case .tokenNotPermitted: stepfunError = "阶跃凭证类型不对:API Key 查不了额度,需要网页登录态"
+            case .network(let s): stepfunError = "阶跃网络错误: \(s)"
+            case .parse(let s): stepfunError = "阶跃响应格式变化,解析失败(\(s))"
+            case .invalidResponse(let s): stepfunError = "阶跃响应异常: \(s)"
+            case .unknown(let s): stepfunError = s
+            }
+            AppLog.warning("阶跃刷新失败: \(stepfunError ?? "")", category: .stepfun)
+        case .none:
+            break
+        }
+    }
+
+    /// 移除阶跃全部登录态 + 清状态(App 层同时调 StepFunSessionController.logoutAll())。
+    public func clearStepFun() {
+        credentialStore.delete(account: Self.stepfunConsoleTokenAccount)
+        stepfunConsoleToken = ""
+        stepfunAccounts = []
+        persistStepFunAccounts()
+        stepfunSessionActive = false
+        stepfunQuota = nil
+        stepfunAccountQuotas = []
+        stepfunAccountErrors = [:]
+        stepfunError = nil
+        stepfunLastUpdated = nil
+        stepfunAuthFailures.removeAll()
+        stepfunRetryNotBefore.removeAll()
+        stepfunLastGood.removeAll()
+        notificationTracker.clear(provider: "stepfun")
     }
 
     // MARK: - 阿里云 OpenAPI AK/SK（console token 自动刷新）
@@ -824,7 +1750,8 @@ public final class TokenPlanModel: ObservableObject {
         let snap = UsageSnapshot(
             timestamp: Date(),
             aliyunFiveHour: quota?.usage.fiveHour?.percentageInt,
-            aliyunOneWeek: quota?.usage.oneWeek.percentageInt,
+            aliyunOneWeek: quota?.usage.oneWeek?.percentageInt,
+            aliyunOneMonth: quota?.usage.oneMonth?.percentageInt,
             opencodeRolling: openCodeQuota?.rolling.pct,
             opencodeWeekly: openCodeQuota?.weekly.pct,
             opencodeMonthly: openCodeQuota?.monthly.pct,
@@ -838,7 +1765,12 @@ public final class TokenPlanModel: ObservableObject {
             mimoBalance: mimoUsage?.balance.balance,
             mimoPlanPct: mimoUsage?.plan.map { Int($0.usedPct.rounded()) },
             minimaxInterval: minimaxQuota?.interval?.pctInt,
-            minimaxWeekly: minimaxQuota?.weekly?.pctInt
+            minimaxWeekly: minimaxQuota?.weekly?.pctInt,
+            ollamaMonthly: ollamaQuota?.monthly?.pctInt,
+            ollamaSession: nil,
+            ollamaWeekly: nil,
+            stepfunMonthly: stepfunQuota?.subscription?.usedPctInt,
+            stepfunTopup: stepfunQuota?.topup?.usedPctInt
         )
         historyStore.append(snap)
 
@@ -853,25 +1785,64 @@ public final class TokenPlanModel: ObservableObject {
             if let f = q.usage.fiveHour {
                 entries.append((WatchKey(provider: "aliyun", window: "5h"), f.percentageInt))
             }
-            entries.append((WatchKey(provider: "aliyun", window: "7d"), q.usage.oneWeek.percentageInt))
-        }
-        if isEnabled(.openCode), let oc = openCodeQuota {
-            entries.append((WatchKey(provider: "opencode", window: "rolling"), oc.rolling.pct))
-            entries.append((WatchKey(provider: "opencode", window: "weekly"), oc.weekly.pct))
-        }
-        if isEnabled(.kimi), let k = kimiQuota {
-            entries.append((WatchKey(provider: "kimi", window: "5h"), k.fiveHour.pctInt))
-            entries.append((WatchKey(provider: "kimi", window: "weekly"), k.weekly.pctInt))
-            if let m = k.monthly {
-                entries.append((WatchKey(provider: "kimi", window: "monthly"), m.pctInt))
+            if let w = q.usage.oneWeek {
+                entries.append((WatchKey(provider: "aliyun", window: "7d"), w.percentageInt))
+            }
+            if let m = q.usage.oneMonth {
+                entries.append((WatchKey(provider: "aliyun", window: "monthly"), m.percentageInt))
             }
         }
-        if isEnabled(.zhipu), let z = zhipuQuota {
-            if let f = z.fiveHour {
-                entries.append((WatchKey(provider: "zhipu", window: "5h"), f.pctInt))
+        // OpenCode:按 workspace 参与告警(单 workspace=旧口径;多 workspace=每行独立流,避免合计稀释风险)
+        if isEnabled(.openCode) {
+            let perWorkspace = openCodeWorkspaceQuotas
+            if perWorkspace.count <= 1, let oc = openCodeQuota {
+                entries.append((WatchKey(provider: "opencode", window: "rolling"), oc.rolling.pct))
+                entries.append((WatchKey(provider: "opencode", window: "weekly"), oc.weekly.pct))
+            } else {
+                for snap in perWorkspace {
+                    entries.append((WatchKey(provider: "opencode", window: "滚动·\(snap.label)"), snap.quota.rolling.pct))
+                    entries.append((WatchKey(provider: "opencode", window: "周·\(snap.label)"), snap.quota.weekly.pct))
+                }
             }
-            if let w = z.weekly {
-                entries.append((WatchKey(provider: "zhipu", window: "weekly"), w.pctInt))
+        }
+        // Kimi:按账户参与告警(单账户=旧口径;多账户=每账户独立流,避免合计稀释风险)
+        if isEnabled(.kimi) {
+            let perAccount = kimiAccountQuotas
+            if perAccount.count <= 1, let k = kimiQuota {
+                entries.append((WatchKey(provider: "kimi", window: "5h"), k.fiveHour.pctInt))
+                entries.append((WatchKey(provider: "kimi", window: "weekly"), k.weekly.pctInt))
+                if let m = k.monthly {
+                    entries.append((WatchKey(provider: "kimi", window: "monthly"), m.pctInt))
+                }
+            } else {
+                for snap in perAccount {
+                    entries.append((WatchKey(provider: "kimi", window: "5h·\(snap.label)"), snap.quota.fiveHour.pctInt))
+                    entries.append((WatchKey(provider: "kimi", window: "weekly·\(snap.label)"), snap.quota.weekly.pctInt))
+                    if let m = snap.quota.monthly {
+                        entries.append((WatchKey(provider: "kimi", window: "monthly·\(snap.label)"), m.pctInt))
+                    }
+                }
+            }
+        }
+        // 智谱:按账户参与告警(单账户=旧口径;多账户=每账户独立流)
+        if isEnabled(.zhipu) {
+            let perAccount = zhipuAccountQuotas
+            if perAccount.count <= 1, let z = zhipuQuota {
+                if let f = z.fiveHour {
+                    entries.append((WatchKey(provider: "zhipu", window: "5h"), f.pctInt))
+                }
+                if let w = z.weekly {
+                    entries.append((WatchKey(provider: "zhipu", window: "weekly"), w.pctInt))
+                }
+            } else {
+                for snap in perAccount {
+                    if let f = snap.quota.fiveHour {
+                        entries.append((WatchKey(provider: "zhipu", window: "5h·\(snap.label)"), f.pctInt))
+                    }
+                    if let w = snap.quota.weekly {
+                        entries.append((WatchKey(provider: "zhipu", window: "weekly·\(snap.label)"), w.pctInt))
+                    }
+                }
             }
         }
         // MiMo 为余额型(同 DeepSeek),不参与阈值告警;MiniMax 双窗口参与。
@@ -881,6 +1852,31 @@ public final class TokenPlanModel: ObservableObject {
             }
             if let w = mm.weekly {
                 entries.append((WatchKey(provider: "minimax", window: "weekly"), w.pctInt))
+            }
+        }
+        if isEnabled(.ollama), let ol = ollamaQuota {
+            // 2026-10-09 起只有滚动 30 天 vs 月额度一个口径(窗口名沿用 monthly,
+            // 历史序列/预测都按这个名字采样);无档位(无占比)不参与告警。
+            if let m = ol.monthly {
+                entries.append((WatchKey(provider: "ollama", window: "monthly"), m.pctInt))
+            }
+        }
+        // 阶跃:按账户参与告警(单账户=monthly 旧口径;多账户=月池·<标签> 区分流)。
+        if isEnabled(.stepfun) {
+            let perAccount = stepfunAccountQuotas
+            if perAccount.count <= 1, let sf = stepfunQuota {
+                if let m = sf.subscription {
+                    entries.append((WatchKey(provider: "stepfun", window: "monthly"), m.usedPctInt))
+                }
+                if let t = sf.topup {
+                    entries.append((WatchKey(provider: "stepfun", window: "topup"), t.usedPctInt))
+                }
+            } else {
+                for snap in perAccount {
+                    if let m = snap.quota.subscription {
+                        entries.append((WatchKey(provider: "stepfun", window: "月池·\(snap.label)"), m.usedPctInt))
+                    }
+                }
             }
         }
         for (key, band) in notificationTracker.evaluate(entries, config: thresholdConfig) {
@@ -913,16 +1909,31 @@ public final class TokenPlanModel: ObservableObject {
         if isEnabled(.aliyun), let q = quota {
             var line = "阿里云"
             if let f = q.usage.fiveHour { line += " 5h \(f.percentageInt)%" }
-            line += " 7d \(q.usage.oneWeek.percentageInt)%"
+            if let w = q.usage.oneWeek { line += " 7d \(w.percentageInt)%" }
+            if let m = q.usage.oneMonth { line += " 月 \(m.percentageInt)%" }
             parts.append(line)
         }
         if isEnabled(.openCode), let o = openCodeQuota {
             parts.append("OpenCode 滚动 \(o.rolling.pct)% · 周 \(o.weekly.pct)% · 月 \(o.monthly.pct)%")
+            // 多 workspace:附每 workspace 滚动/周
+            if openCodeWorkspaceQuotas.count > 1 {
+                let detail = openCodeWorkspaceQuotas.map { snap in
+                    "\(snap.label) 滚动 \(snap.quota.rolling.pct)% · 周 \(snap.quota.weekly.pct)%"
+                }.joined(separator: " · ")
+                parts.append("OpenCode工作区: \(detail)")
+            }
         }
         if isEnabled(.kimi), let k = kimiQuota {
             var line = "Kimi 5h \(k.fiveHour.pctInt)% · 周 \(k.weekly.pctInt)%"
             if let m = k.monthly { line += " · 月 \(m.pctInt)%" }
             parts.append(line)
+            // 多账户:附每账户 5h
+            if kimiAccountQuotas.count > 1 {
+                let detail = kimiAccountQuotas.map { snap in
+                    "\(snap.label) 5h \(snap.quota.fiveHour.pctInt)%"
+                }.joined(separator: " · ")
+                parts.append("Kimi账户: \(detail)")
+            }
         }
         if isEnabled(.deepSeek), let b = deepSeekBalance {
             var line = "DeepSeek 余额 \(DeepSeekMoneyFormat.full(b.totalBalance))"
@@ -935,6 +1946,16 @@ public final class TokenPlanModel: ObservableObject {
             if let w = z.weekly { line += " · 周 \(w.pctInt)%" }
             if let m = z.mcp { line += " · MCP \(Int(m.percentage.rounded()))%" }
             parts.append(line)
+            // 多账户:附每账户 5h/周
+            if zhipuAccountQuotas.count > 1 {
+                let detail = zhipuAccountQuotas.map { snap in
+                    var s = "\(snap.label)"
+                    if let f = snap.quota.fiveHour { s += " 5h \(f.pctInt)%" }
+                    if let w = snap.quota.weekly { s += " 周 \(w.pctInt)%" }
+                    return s
+                }.joined(separator: " · ")
+                parts.append("智谱账户: \(detail)")
+            }
         }
         if isEnabled(.mimo), let m = mimoUsage {
             var line = "MiMo 余额 \(MiMoMoneyFormat.full(m.balance.balance, currency: m.balance.currency))"
@@ -946,6 +1967,28 @@ public final class TokenPlanModel: ObservableObject {
             if let i = mm.interval { line += " 本窗 \(i.pctInt)%" }
             if let w = mm.weekly { line += " · 周 \(w.pctInt)%" }
             parts.append(line)
+        }
+        if isEnabled(.ollama), let ol = ollamaQuota {
+            // 新接口只有滚动 30 天口径:有档位显示占比,否则显示绝对消费
+            if let m = ol.monthly {
+                parts.append("Ollama 30天 \(m.pctInt)%")
+            } else {
+                parts.append("Ollama 近30天 \(OllamaMoney.full(ol.spentUSD30d))")
+            }
+        }
+        if isEnabled(.stepfun), let sf = stepfunQuota {
+            var line = "阶跃"
+            if let m = sf.subscription { line += " 月池 \(m.usedPctInt)%" }
+            if let t = sf.topup { line += " · 加油包 \(t.usedPctInt)%" }
+            parts.append(line)
+            // 多账户:附每账户月池
+            if stepfunAccountQuotas.count > 1 {
+                let detail = stepfunAccountQuotas.compactMap { snap -> String? in
+                    guard let m = snap.quota.subscription else { return nil }
+                    return "\(snap.label) \(m.usedPctInt)%"
+                }.joined(separator: " · ")
+                if !detail.isEmpty { parts.append("阶跃账户: \(detail)") }
+            }
         }
         guard !parts.isEmpty else { return }
         AppLog.info("发送每日用量摘要", category: .general)
@@ -971,7 +2014,9 @@ public final class TokenPlanModel: ObservableObject {
     public func clearOpenCode() {
         credentialStore.delete(account: Self.openCodeCookieAccount)
         openCodeCookie = ""
-        openCodeWorkspaceID = ""
+        openCodeWorkspaces = []
+        openCodeWorkspaceQuotas = []
+        openCodeWorkspaceErrors = [:]
         openCodeQuota = nil
         openCodeError = nil
         notificationTracker.clear(provider: "opencode")
@@ -1066,7 +2111,7 @@ public final class TokenPlanModel: ObservableObject {
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
                 if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
-                AppLog.info("阿里云全量刷新成功 \(logFiveHour(q.usage))7d=\(q.usage.oneWeek.percentageInt)% 耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                AppLog.info("阿里云全量刷新成功 \(logWindows(q.usage))耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
@@ -1089,7 +2134,7 @@ public final class TokenPlanModel: ObservableObject {
                 lastError = nil
                 authState = authState.afterRefresh(error: nil)
                 if consecutiveFailures != 0 { consecutiveFailures = 0; rescheduleIfNeeded() }
-                AppLog.debug("阿里云 usage 刷新成功 \(logFiveHour(usage))耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
+                AppLog.debug("阿里云 usage 刷新成功 \(logWindows(usage))耗时=\(String(format: "%.1f", Date().timeIntervalSince(start)))s", category: .aliyun)
                 scheduleResetBoundaryRefresh()
                 recordAndNotify()
             case .failure(let e):
@@ -1137,9 +2182,9 @@ public final class TokenPlanModel: ObservableObject {
         }
     }
 
-    /// 日志用 5h 片段:窗口存在时 "5h=X% "(带尾空格),缺失时空串。
-    private func logFiveHour(_ w: UsageWindows) -> String {
-        w.fiveHour.map { "5h=\($0.percentageInt)% " } ?? ""
+    /// 日志用窗口片段:存在的窗口逐个输出 "5h=X% 7d=Y% 30d=Z% "(尾随空格);全缺失时空串。
+    private func logWindows(_ w: UsageWindows) -> String {
+        w.activeWindows.map { "\($0.name)=\($0.detail.percentageInt)% " }.joined()
     }
 
     /// 语义化版本比较:返回 -1(a<b)/0(=)/1(a>b)。解析失败按字符串比。

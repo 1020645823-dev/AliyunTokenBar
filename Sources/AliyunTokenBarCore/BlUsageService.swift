@@ -26,6 +26,8 @@ public final class BlUsageService {
                         var per5HourResetTime: Int64?
                         var per1WeekPercentage: Double?
                         var per1WeekResetTime: Int64?
+                        var per1MonthPercentage: Double?
+                        var per1MonthResetTime: Int64?
                         var specCode: String?
                         var status: String?
                         var remainingDays: Int64?
@@ -39,6 +41,7 @@ public final class BlUsageService {
                         enum CodingKeys: String, CodingKey {
                             case per5HourPercentage, per5HourResetTime
                             case per1WeekPercentage, per1WeekResetTime
+                            case per1MonthPercentage, per1MonthResetTime
                             case specCode, status, remainingDays
                             case startTime, endTime, autoRenewFlag
                             case remainingCredits, totalCredits, activeCount
@@ -52,6 +55,8 @@ public final class BlUsageService {
                             per5HourResetTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .per5HourResetTime)?.wrappedValue
                             per1WeekPercentage = try c.decodeIfPresent(FlexibleDouble.self, forKey: .per1WeekPercentage)?.wrappedValue
                             per1WeekResetTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .per1WeekResetTime)?.wrappedValue
+                            per1MonthPercentage = try c.decodeIfPresent(FlexibleDouble.self, forKey: .per1MonthPercentage)?.wrappedValue
+                            per1MonthResetTime = try c.decodeIfPresent(FlexibleInt64.self, forKey: .per1MonthResetTime)?.wrappedValue
                             specCode = try c.decodeIfPresent(String.self, forKey: .specCode)
                             status = try c.decodeIfPresent(String.self, forKey: .status)
                             remainingDays = try c.decodeIfPresent(FlexibleInt64.self, forKey: .remainingDays)?.wrappedValue
@@ -80,24 +85,23 @@ public final class BlUsageService {
         return payload
     }
 
-    /// 解析 usage 响应。宽容解析:
-    /// - 5h 两个字段均缺失/null → fiveHour == nil(2026-08-15 官方限时取消 5h 窗口后的
-    ///   常态;也可能是窗口存在但零用量的旧空窗形态,两种对展示语义等价:隐藏 5h 统计);
-    ///   任一字段存在 → 窗口有效,缺失侧按 0(零用量正常显示,不隐藏)。
-    /// - 7d 字段缺失/null → 按 0(官方控制台同款,避免整次更新 .parse;
-    ///   2026-08-03 事故根因)。
+    /// 解析 usage 响应。宽容解析(三窗口统一规则:两字段均缺失/null → 窗口 nil;
+    /// 任一字段存在 → 窗口有效,缺失侧按 0):
+    /// - 5h/周:2026-08-15 官方取消 5h 限额、2026-09 取消周限额后,per5Hour*/per1Week*
+    ///   字段不再返回 → 对应窗口 nil(隐藏,不显 0%);字段回归则自动恢复展示。
+    /// - 月:2026-09 起新契约主窗口(per1Month*,官方 FAQ:个人版月限额 Credits,
+    ///   订阅日起每 30 天重置)。2026-09-23 实测响应仅含 per1MonthPercentage/
+    ///   per1MonthResetTime 两个字段。
     public static func parseUsage(_ data: Data) throws -> UsageWindows {
         let p = try decodePayload(data)
-        let fiveHour: UsageDetail? = (p.per5HourPercentage != nil || p.per5HourResetTime != nil)
-            ? UsageDetail(percentageRaw: p.per5HourPercentage ?? 0,
-                          resetTimeMs: p.per5HourResetTime ?? 0)
-            : nil
+        func window(pct: Double?, reset: Int64?) -> UsageDetail? {
+            guard pct != nil || reset != nil else { return nil }
+            return UsageDetail(percentageRaw: pct ?? 0, resetTimeMs: reset ?? 0)
+        }
         return UsageWindows(
-            fiveHour: fiveHour,
-            oneWeek: UsageDetail(
-                percentageRaw: p.per1WeekPercentage ?? 0,
-                resetTimeMs: p.per1WeekResetTime ?? 0
-            )
+            fiveHour: window(pct: p.per5HourPercentage, reset: p.per5HourResetTime),
+            oneWeek: window(pct: p.per1WeekPercentage, reset: p.per1WeekResetTime),
+            oneMonth: window(pct: p.per1MonthPercentage, reset: p.per1MonthResetTime)
         )
     }
 

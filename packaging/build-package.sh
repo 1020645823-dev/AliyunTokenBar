@@ -28,6 +28,21 @@ command -v swift   >/dev/null || { echo "缺少 swift"; exit 1; }
 command -v codesign>/dev/null || { echo "缺少 codesign"; exit 1; }
 command -v hdiutil >/dev/null || { echo "缺少 hdiutil"; exit 1; }
 
+# SDK 自选:本机无 Xcode(仅 CommandLineTools)时,默认 MacOSX27*.sdk 缺少
+# SwiftUI 宏插件(报 "external macro implementation type 'SwiftUIMacros.StateMacro'
+# could not be found"),会直接构建失败。此处在未显式指定 SDKROOT 时,按可用性
+# 依次探测一个能构建的 SDK;都不行则不设(交回默认行为,报错信息仍可见)。
+if [ -z "${SDKROOT:-}" ]; then
+  for sdk in MacOSX26.5.sdk MacOSX26.sdk MacOSX26.4.sdk; do
+    cand="/Library/Developer/CommandLineTools/SDKs/$sdk"
+    if [ -d "$cand" ]; then
+      export SDKROOT="$cand"
+      echo "    SDKROOT 自动选用: $cand"
+      break
+    fi
+  done
+fi
+
 # ---------- 1. 构建 release ----------
 echo "==> [1/5] swift build -c release"
 swift build -c release

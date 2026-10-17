@@ -47,6 +47,15 @@ enum DesignTokens {
     static let strokeHairline: CGFloat = 0.5
     /// 品牌竖纹宽度(卡左侧 3pt 色条)
     static let stripeWidth: CGFloat = 3
+    /// 细条行进度条固定宽度(ATBThinMeterRow):多行列表里各行条必须等长对齐,
+    /// 弹性宽度会被可变长尾注(重置倒计时有/无/长/短)挤成长短不齐。
+    /// 56pt 是给紧凑尾注(ATBResetText.compact,≈69pt)留够空间的上限
+    /// (行内容 312pt = 面板360−内容边距24−卡片内边距24)
+    static let meterWidth: CGFloat = 56
+    /// 细条行标签固定宽度(ATBThinMeterRow):标签若留弹性区间,HStack 会把
+    /// 各行的剩余空间按比例分配进去,尾注长短不同的行被拉伸到不同宽度,
+    /// 把后面的百分比/进度条挤成错位;固定后各行列严丝合缝
+    static let meterLabelWidth: CGFloat = 64
 }
 
 // MARK: - 统一卡片外观修饰符
@@ -185,25 +194,30 @@ enum MenuBarTextRenderer {
     /// cpu/memory 均为 nil(开关关闭)时各样式整段隐藏、systemStats 回退云朵;仅一个为 nil(采样未就绪)时该数值显示横杠(—)。
     /// thresholdConfig:控制百分比数字的阈值变色(品牌色保留于图标前缀)。
     /// aliyunVisible:阿里云数据源开关;关闭时云朵/单行样式不渲染云朵图标与阿里云段。
+    /// 阿里云主窗口 = oneMonth ?? oneWeek(2026-09 官方取消周限改月限;标签随之 30d/7d)。
     @MainActor
     static func image(scheme: MenuBarDisplayScheme, fiveHour: Int?, oneWeek: Int?,
+                      oneMonth: Int? = nil,
                       openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                       kimiFiveHour: Int? = nil, kimiWeekly: Int? = nil,
                       cpu: Int? = nil, memory: Int? = nil,
                       columns: [MenuBarTableColumn]? = nil, isDark: Bool = false,
                       thresholdConfig: ThresholdConfig = ThresholdConfig(),
                       aliyunVisible: Bool = true) -> NSImage {
+        let mainWindow = oneMonth ?? oneWeek
+        let mainWindowLabel = oneMonth != nil ? "30d" : "7d"
         switch scheme {
-        case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, oneWeek: oneWeek,
+        case .cloudPercent: return cloudPercentImage(fiveHour: fiveHour, mainWindow: mainWindow,
+                                                      mainWindowLabel: mainWindowLabel,
                                                       openCodeRolling: openCodeRolling, openCodeWeekly: openCodeWeekly,
                                                       kimiWeekly: kimiWeekly, cpu: cpu, memory: memory,
                                                       thresholdConfig: thresholdConfig,
                                                       aliyunVisible: aliyunVisible)
         case .compact: return miniTableImage(columns: columns ?? [], isDark: isDark,
                                              thresholdConfig: thresholdConfig)
-        case .singleLine: return singleLineImage(fiveHour: fiveHour, oneWeek: oneWeek, cpu: cpu, memory: memory,
+        case .singleLine: return singleLineImage(fiveHour: fiveHour, mainWindow: mainWindow, cpu: cpu, memory: memory,
                                                  aliyunVisible: aliyunVisible)
-        case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, oneWeek: oneWeek ?? 0,
+        case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, mainWindow: mainWindow ?? 0,
                                               thresholdConfig: thresholdConfig)
         case .systemStats: return systemStatsImage(cpu: cpu, memory: memory)
         }
@@ -215,13 +229,13 @@ enum MenuBarTextRenderer {
     }
 
     /// 云朵 + 阿里云双百分比 + OpenCode 双百分比 + Kimi 周百分比:
-    /// ☁ 5h 35% · 7d 61%  ⚡ 22% · 43%  ✨ 58%
+    /// ☁ 5h 35% · 30d 61%  ⚡ 22% · 43%  ✨ 58%
     /// 用**模板图**(系统自动适配明暗:深色菜单栏自动染白)。
     /// 三 Provider 区分靠**形状**(云朵 vs 闪电 vs 星星)而非颜色——符合 macOS 菜单栏规范。
     /// 阈值变色:百分比数字按风险变色(safe→黑/白 / warning→橙 / critical→红)。
     /// 服务不可用(nil)时数值显示为横杠(—)。
     @MainActor
-    private static func cloudPercentImage(fiveHour: Int?, oneWeek: Int?,
+    private static func cloudPercentImage(fiveHour: Int?, mainWindow: Int?, mainWindowLabel: String,
                                           openCodeRolling: Int? = nil, openCodeWeekly: Int? = nil,
                                           kimiWeekly: Int? = nil,
                                           cpu: Int? = nil, memory: Int? = nil,
@@ -230,18 +244,18 @@ enum MenuBarTextRenderer {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
         let content = HStack(spacing: 4) {
-            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显 7d 段;数据源停用时整段隐藏)
+            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显主窗段;数据源停用时整段隐藏)
             if aliyunVisible {
                 cloudShape.fill(Color.black).frame(width: 14, height: 11)
-                if fiveHour != nil || oneWeek == nil {
+                if fiveHour != nil || mainWindow == nil {
                     Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
                     Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                         .foregroundStyle(fiveHour.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
                     Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
                 }
-                Text("7d").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
-                Text(pctText(oneWeek)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(oneWeek.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
+                Text(mainWindowLabel).font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
+                Text(pctText(mainWindow)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(mainWindow.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
             // OpenCode:闪电 + 双百分比(配置了才显示;服务不可用时也显示横杠)
             if openCodeRolling != nil || openCodeWeekly != nil {
@@ -297,8 +311,9 @@ enum MenuBarTextRenderer {
     }
 
     /// 默认紧凑:迷你表格——列=数据源(☁✨⚡🧠▣,顺序固定),行=主/次指标。
-    /// 每列固定宽:图标位 10pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt,留 1pt 余量;过窄会换行破网格),值右对齐;
-    /// DeepSeek 列为金额(≤7 字符),值域加宽到 48pt。下行缩进图标位宽度,8 个数字严格成网格。
+    /// 每列固定宽:图标位 8pt + 图标-值距 1pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt、
+    /// 金额无符号后 "12.3万" ≈34pt;过窄会截断破网格),值右对齐;金额列不再单独加宽(v1.0.48 去 ¥)。
+    /// 下行宽=图标位+1+值域,8 个数字严格成网格。列间 4pt。
     /// 非模板渲染:基底色按菜单栏明暗手选;数字独立按阈值 band 变色
     /// (safe→基底 / warning→橙 / critical→红),图标恒基底色——颜色只编码风险。
     /// 横杠(pct=nil)与金额不着色。总高 ≈21pt;若视觉验收发现溢出/挤压,先把 11pt 降 10.5pt 再调 valueWidth。
@@ -306,13 +321,12 @@ enum MenuBarTextRenderer {
     private static func miniTableImage(columns: [MenuBarTableColumn], isDark: Bool,
                                        thresholdConfig: ThresholdConfig) -> NSImage {
         let base: Color = isDark ? .white : .black
-        let iconWidth: CGFloat = 10
-        let content = HStack(alignment: .top, spacing: 7) {
+        let iconWidth: CGFloat = 8
+        let valueWidth: CGFloat = 34
+        let content = HStack(alignment: .top, spacing: 4) {
             ForEach(columns, id: \.kind) { col in
-                // DeepSeek/MiMo 金额列值域更宽(¥99.99 / ¥9999 / ¥12.3万,契约 ≤7 字符)
-                let valueWidth: CGFloat = (col.kind == .deepSeek || col.kind == .mimo) ? 48 : 34
                 VStack(spacing: -1) {
-                    HStack(spacing: 2) {
+                    HStack(spacing: 1) {
                         Image(systemName: col.kind.symbolName)
                             .font(.system(size: 9, weight: .bold))
                             .frame(width: iconWidth, alignment: .leading)
@@ -323,7 +337,7 @@ enum MenuBarTextRenderer {
                     }
                     Text(col.secondary.text)
                         .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                        .frame(width: iconWidth + 2 + valueWidth, alignment: .trailing)
+                        .frame(width: iconWidth + 1 + valueWidth, alignment: .trailing)
                         .foregroundStyle(col.secondary.pct.map { thresholdColor($0, config: thresholdConfig, base: base) } ?? base)
                 }
             }
@@ -333,19 +347,19 @@ enum MenuBarTextRenderer {
         return render(content, isTemplate: false)
     }
 
-    /// 单行:35%·61%(nil 时显示横杠;5h 窗口取消时只显 7d 段);尾部追加 C/M 段。
+    /// 单行:35%·61%(nil 时显示横杠;5h 窗口取消时只显主窗段);尾部追加 C/M 段。
     /// aliyunVisible=false(数据源停用)时不渲染阿里云段与多余分隔点。
     @MainActor
-    private static func singleLineImage(fiveHour: Int?, oneWeek: Int?,
+    private static func singleLineImage(fiveHour: Int?, mainWindow: Int?,
                                         cpu: Int? = nil, memory: Int? = nil,
                                         aliyunVisible: Bool = true) -> NSImage {
         let content = HStack(spacing: 3) {
             if aliyunVisible {
-                if fiveHour != nil || oneWeek == nil {
+                if fiveHour != nil || mainWindow == nil {
                     Text(pctText(fiveHour)).font(.system(size: 12, weight: .medium)).monospacedDigit()
                     Text("·").font(.system(size: 12, weight: .medium))
                 }
-                Text(pctText(oneWeek)).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                Text(pctText(mainWindow)).font(.system(size: 12, weight: .medium)).monospacedDigit()
             }
             if cpu != nil || memory != nil {
                 if aliyunVisible {
@@ -363,13 +377,13 @@ enum MenuBarTextRenderer {
         return render(content)
     }
 
-    /// 仅图标:小圆环(外环=7d,内环=5h 的填充比例)。
+    /// 仅图标:小圆环(外环=主窗 30d/7d,内环=5h 的填充比例)。
     /// 取两窗口较高 band 作为整体风险色:warning 橙、critical 红(模板图仍自动适配明暗)。
     @MainActor
-    private static func iconOnlyImage(fiveHour: Int, oneWeek: Int,
+    private static func iconOnlyImage(fiveHour: Int, mainWindow: Int,
                                       thresholdConfig: ThresholdConfig = ThresholdConfig()) -> NSImage {
         let size: CGFloat = 18
-        let worseBand = max(thresholdConfig.band(for: fiveHour), thresholdConfig.band(for: oneWeek))
+        let worseBand = max(thresholdConfig.band(for: fiveHour), thresholdConfig.band(for: mainWindow))
         let ringColor: Color = {
             switch worseBand {
             case .safe: return .black
@@ -385,8 +399,8 @@ enum MenuBarTextRenderer {
             // 外环底
             ctx.stroke(Path(ellipseIn: CGRect(x: center.x-outerR, y: center.y-outerR, width: outerR*2, height: outerR*2)),
                        with: .color(ringColor.opacity(0.25)), lineWidth: 1.5)
-            // 外环进度(7d)
-            drawArc(ctx: ctx, center: center, radius: outerR, pct: Double(oneWeek)/100, color: ringColor, width: 1.5)
+            // 外环进度(主窗:30d/7d)
+            drawArc(ctx: ctx, center: center, radius: outerR, pct: Double(mainWindow)/100, color: ringColor, width: 1.5)
             // 内环底
             ctx.stroke(Path(ellipseIn: CGRect(x: center.x-innerR, y: center.y-innerR, width: innerR*2, height: innerR*2)),
                        with: .color(ringColor.opacity(0.25)), lineWidth: 1.5)
@@ -454,6 +468,23 @@ struct AliyunTokenBarApp: App {
     init() {
         // 注入图标渲染闭包:数据更新时 Core 预渲染缓存,NSStatusItem 按钮只读缓存
         // (避免每次渲染都走 ImageRenderer,保持菜单栏响应)。
+        TokenPlanModel.shared.stepfunConsoleFetchSink = { accountID in
+            await StepFunSessionController.shared.fetchQuota(accountID: accountID)
+        }
+        // 阶跃鉴权自愈通道:401 时重载会话页(SPA 用 refresh token 换发新 access)
+        TokenPlanModel.shared.stepfunSessionReload = { accountID in
+            StepFunSessionController.shared.reloadSessionPage(accountID: accountID)
+        }
+        // 阶跃账户身份通道:读会话 cookie 的 oasis_id(多账户去重/防重复登录)
+        TokenPlanModel.shared.stepfunIdentitySink = { accountID in
+            await StepFunSessionController.shared.currentOasisID(accountID: accountID)
+        }
+        // 阶跃账户手机号通道:账户中心 GetAccountBinding(面板身份展示优先手机号尾号)
+        TokenPlanModel.shared.stepfunPhoneSink = { accountID in
+            await StepFunSessionController.shared.currentPhoneTail(accountID: accountID)
+        }
+        // 冷启动:阶跃已登记账户全部预载常驻会话页(WebView 保持 Cookie 轮换)
+        StepFunSessionController.shared.warmUpIfConfigured()
         TokenPlanModel.shared.renderIconSink = { model in
             // 当前可见的菜单栏列(已统一过滤停用/未配置/无数据);
             // 非 compact 样式同样遵循「数据源停用」语义,以可见列集合为准。
@@ -472,7 +503,8 @@ struct AliyunTokenBarApp: App {
                 scheme = .cloudPercent   // 本机列停用 → 云朵样式回退(阿里云段自行按开关显隐)
             }
             let fiveHour: Int? = aliyunOn ? model.quota?.usage.fiveHour?.percentageInt : nil
-            let oneWeek: Int? = aliyunOn ? model.quota?.usage.oneWeek.percentageInt : nil
+            let oneWeek: Int? = aliyunOn ? model.quota?.usage.oneWeek?.percentageInt : nil
+            let oneMonth: Int? = aliyunOn ? model.quota?.usage.oneMonth?.percentageInt : nil
             // OpenCode:已配置但出错时传 Optional(nil) → 菜单栏显示横杠;
             // 未配置/停用(不可见)时整个 OpenCode 部分不显示。
             let ocRolling: Int?? = ocOn
@@ -493,6 +525,7 @@ struct AliyunTokenBarApp: App {
                 scheme: scheme,
                 fiveHour: fiveHour,
                 oneWeek: oneWeek,
+                oneMonth: oneMonth,
                 openCodeRolling: ocRolling ?? nil,
                 openCodeWeekly: ocWeekly ?? nil,
                 kimiFiveHour: kimiFiveHour ?? nil,
@@ -515,7 +548,32 @@ struct AliyunTokenBarApp: App {
     var body: some Scene {
         // 注意:不再用 MenuBarExtra——macOS 26 会因系统隐藏状态项而回收进程。
         // 状态项由 AppDelegate 手动管理(NSStatusItem + NSPopover)。
-        // 设置窗口走自定义 NSPanel(SettingsWindowManager),不再挂 SwiftUI Settings scene(避免重复入口)。
-        Settings { EmptyView() }
+        //
+        // Settings scene 必须存在(App 至少需要一个 Scene),但设置实体走
+        // 自定义 NSPanel(SettingsWindowManager)。二者曾同时出现(白窗 + 真面板):
+        // SwiftUI 会为 Settings scene 自动生成 app 菜单的「设置…」(⌘,),点它
+        // 就创建一个内容为空的占位窗。这里用 CommandGroup 把该项**整个换掉**,
+        // 指向真面板,占位窗从此不会被创建(bridge 仅作兜底)。
+        Settings { SettingsSceneBridge() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("设置…") { SettingsWindowManager.shared.show() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+            }
+    }
+}
+
+/// Settings scene 的兜底内容:正常情况下 CommandGroup 已把入口改指向真面板,
+/// 本 bridge 不会被触发;若 SwiftUI 仍以其他方式激活该 scene,则转发到真面板
+/// 并关掉刚创建的占位窗,避免出现白窗。
+private struct SettingsSceneBridge: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                SettingsWindowManager.shared.show()
+                DispatchQueue.main.async { SettingsWindow.dismissSwiftUIPlaceholders() }
+            }
     }
 }

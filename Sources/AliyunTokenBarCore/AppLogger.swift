@@ -20,6 +20,8 @@ public enum AppLog {
         case zhipu
         case mimo
         case minimax
+        case ollama
+        case stepfun
         case keychain
         case history
         case process

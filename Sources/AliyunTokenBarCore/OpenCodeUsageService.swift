@@ -1,157 +1,160 @@
 import Foundation
 
-/// OpenCode Go 用量查询:带 auth cookie 请求页面,正则提取 SolidJS 注入的用量数据。
+/// OpenCode Go 用量查询:console JSON API(2026-10-17 重写;原 SSR 抓取路线已废弃)。
 ///
-/// 原理(逆向自社区工具 brfid/quotactl 的 scraper_go.py):
-/// OpenCode Go 无公开 API,但 workspace "Go" 页面是 SSR 的,用量百分比/reset 时间
-/// 内联在 HTML 的 <script> 里,形如:
-///   rollingUsage:$R[N]={status:"ok",resetInSec:12345,usagePercent:43}
-/// 带 auth cookie 请求页面 + 正则提取即可。
+/// 背景:opencode.ai 控制台从 SSR vanity 路由(`/workspace/{id}/go` + `auth` cookie)
+/// 迁到 `/console` SPA + `__Host-console_session` 会话 cookie 后(2026-10-17 实测):
+/// - 旧 vanity 路由(`/auth`、`/workspace/{id}/go`)对 console 会话一律 302 到
+///   `/console/login`,SSR 正则抓取与"auth cookie 名假设"同时作废;
+/// - 现行数据源 = console JSON API(同一会话 cookie):
+///   * `GET /console/api/user/workspaces` → 账户下全部 workspace
+///     (多 workspace 监控的基础,响应 `[{id,name,...}]`);
+///   * `GET /console/api/go/status` + `x-org-id: <workspaceID>` → 该 workspace 的
+///     Go 订阅三窗口用量(`access.meters.{fiveHour,week,month}` 各含
+///     `limitMicroCents`/`usedMicroCents`/`resetsAt`)。
 ///
-/// 鉴权:浏览器 opencode.ai 的 `auth` cookie(用户手动提供,会过期)。
+/// 鉴权:opencode.ai 网页登录的会话 cookie(整段 Cookie 头)。登录窗从 WKWebView
+/// cookieStore 打包该域**全部** cookie——会话 cookie 名(实测 `__Host-console_session`)
+/// 可能变化,不假设具体名字,由服务端自选。
 public final class OpenCodeUsageService {
     private static let baseURL = "https://opencode.ai"
+    private static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
-    /// 三窗口在页面里的 JS 属性名
-    private static let windowKeys: [(name: String, key: String)] = [
-        ("rolling", "rollingUsage"),
-        ("weekly", "weeklyUsage"),
-        ("monthly", "monthlyUsage"),
-    ]
+    /// 规范化 cookie:允许传整段 Cookie 头("a=1; b=2")或纯值
+    static func cookieHeader(_ cookie: String) -> String {
+        cookie.contains("=") ? cookie : "auth=\(cookie)"
+    }
 
-    /// 抓取 OpenCode Go 用量。
+    // MARK: - 用量(console go/status)
+
+    /// 拉取某 workspace 的 Go 三窗口用量。
     /// - Parameters:
-    ///   - cookie: 浏览器 auth cookie 值(整个 Cookie 头,或仅 auth=xxx)
-    ///   - workspaceID: wrk_xxx 工作区 ID(在 Go 页面 URL 里)
+    ///   - cookie: 登录会话 cookie(整段 Cookie 头)
+    ///   - workspaceID: wrk_xxx / org_xxx(同时作为 x-org-id 头)
     public static func fetchQuota(cookie: String, workspaceID: String) async -> Result<OpenCodeQuota, UsageError> {
-        guard !workspaceID.isEmpty else { return .failure(.unknown("缺少 workspace ID(wrk_xxx)")) }
-        guard !cookie.isEmpty else { return .failure(.unknown("缺少 auth cookie")) }
-
-        // 规范化 cookie:允许用户传 "auth=xxx" 或纯 "xxx"
-        let cookieHeader = cookie.contains("=") ? cookie : "auth=\(cookie)"
-        guard let url = URL(string: "\(baseURL)/workspace/\(workspaceID)/go") else {
-            return .failure(.unknown("无效的 workspace ID"))
+        guard !workspaceID.isEmpty else { return .failure(.unknown("缺少 workspace ID(wrk_xxx/org_xxx)")) }
+        guard !cookie.isEmpty else { return .failure(.unknown("缺少登录 cookie")) }
+        guard let url = URL(string: "\(baseURL)/console/api/go/status") else {
+            return .failure(.unknown("无效的 endpoint"))
         }
 
         var request = URLRequest(url: url)
-        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.setValue(cookieHeader(cookie), forHTTPHeaderField: "Cookie")
+        request.setValue(workspaceID, forHTTPHeaderField: "x-org-id")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 30
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { return .failure(.invalidResponse) }
-
-            // 登录态检查:重定向到 auth.opencode.ai 或页面无 wrk_ 内容
-            let finalURL = http.url?.absoluteString ?? ""
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if finalURL.contains("auth.opencode.ai") || !html.contains("wrk_") {
+            switch http.statusCode {
+            case 200:
+                return parseGoStatus(data).map { .success($0) } ?? .failure(.parse)
+            case 401, 403:
                 return .failure(.authExpired)
+            default:
+                return .failure(.invalidResponse)
             }
-            return parse(html).map { .success($0) } ?? .failure(.parse)
         } catch {
             return .failure(.network(error.localizedDescription))
         }
     }
 
-    /// 从页面 HTML 提取三窗口用量。
-    /// 正则匹配 `rollingUsage:$R[N]={status:"ok",resetInSec:12345,usagePercent:43}`。
+    /// 解析 go/status 响应(纯函数,Verify 覆盖;`now` 可注入保证断言确定性)。
     ///
-    /// P1-D6 加固:不再假设键序——先定位 `key:$R[n]={...}` 块,再在块内**独立**
-    /// 提取各字段(官方改键序/加空格不再整片失效);并校验 status=="ok"
-    /// (登录态异常按 .parse 失败呈现,不静默展示旧值)。
-    public static func parse(_ html: String) -> OpenCodeQuota? {
-        var rolling: OpenCodeWindow?
-        var weekly: OpenCodeWindow?
-        var monthly: OpenCodeWindow?
+    /// 形状:`{"access":{"meters":{"fiveHour":{"resetsAt":"2026-10-17T16:08:13.000Z",
+    /// "limitMicroCents":"1200000000","usedMicroCents":"886219"},"week":{...},"month":{...}}}}`
+    ///
+    /// - 百分比 = used/limit×100 取整(对齐控制台的整数 "x% used" 显示);
+    /// - `resetsAt` 缺省/为 null/已过去 → resetInSec=0(UI 隐藏倒计时);
+    /// - `access`/`meters` 缺失(未订阅 Go)→ nil(调用方按"无用量数据"呈现)。
+    public static func parseGoStatus(_ data: Data, now: Date = Date()) -> OpenCodeQuota? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let access = root["access"] as? [String: Any],
+              let meters = access["meters"] as? [String: Any] else { return nil }
 
-        for (name, key) in windowKeys {
-            guard let window = parseWindow(html, key: key) else { return nil }
-            switch name {
-            case "rolling": rolling = window
-            case "weekly": weekly = window
-            case "monthly": monthly = window
-            default: break
-            }
+        func window(_ key: String) -> OpenCodeWindow? {
+            guard let m = meters[key] as? [String: Any] else { return nil }
+            let limit = (m["limitMicroCents"] as? String).flatMap(Int64.init)
+                ?? (m["limitMicroCents"] as? Int).map(Int64.init) ?? 0
+            let used = (m["usedMicroCents"] as? String).flatMap(Int64.init)
+                ?? (m["usedMicroCents"] as? Int).map(Int64.init) ?? 0
+            let pct: Int = limit > 0 ? Int((Double(used) / Double(limit) * 100).rounded()) : 0
+            return OpenCodeWindow(pct: min(max(pct, 0), 100), resetInSec: resetInSec(from: m["resetsAt"], now: now))
         }
 
-        guard let r = rolling, let w = weekly, let mth = monthly else { return nil }
-        return OpenCodeQuota(rolling: r, weekly: w, monthly: mth)
+        guard let rolling = window("fiveHour"),
+              let weekly = window("week"),
+              let monthly = window("month") else { return nil }
+        return OpenCodeQuota(rolling: rolling, weekly: weekly, monthly: monthly)
     }
 
-    /// 单窗口解析:块定位 + 字段独立提取。
-    private static func parseWindow(_ html: String, key: String) -> OpenCodeWindow? {
-        let k = NSRegularExpression.escapedPattern(for: key)
-        let blockPattern = "\(k):\\$R\\[\\d+\\]=\\{([^}]*)\\}"
-        guard let blockRegex = try? NSRegularExpression(pattern: blockPattern),
-              let m = blockRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-              let r = Range(m.range(at: 1), in: html) else { return nil }
-        let block = String(html[r])
-        guard field("status", in: block) == "ok" else { return nil }
-        guard let reset = fieldInt("resetInSec", in: block),
-              let pct = fieldInt("usagePercent", in: block) else { return nil }
-        return OpenCodeWindow(pct: Int(pct), resetInSec: reset)
+    /// ISO8601(带/不带毫秒)时间戳 → 距重置秒数;过去/缺失/解析失败 → 0。
+    private static func resetInSec(from value: Any?, now: Date) -> Int64 {
+        guard let s = value as? String, !s.isEmpty else { return 0 }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        guard let date = fractional.date(from: s) ?? plain.date(from: s) else { return 0 }
+        return max(0, Int64(date.timeIntervalSince(now)))
     }
 
-    private static func field(_ name: String, in block: String) -> String? {
-        let pattern = "\(NSRegularExpression.escapedPattern(for: name)):\\s*\"([^\"]*)\""
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let m = regex.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)),
-              let r = Range(m.range(at: 1), in: block) else { return nil }
-        return String(block[r])
+    // MARK: - workspace 列表(2026-10-17:一个账户多个 workspace,各有独立订阅)
+
+    /// console SPA 的 me 组端点返回的单个 workspace(逆自 console bundle;
+    /// 额外字段 role/memberCount 等忽略)。
+    public struct OpenCodeWorkspaceInfo: Codable, Equatable {
+        public let id: String
+        public let name: String
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
     }
 
-    private static func fieldInt(_ name: String, in block: String) -> Int64? {
-        let pattern = "\(NSRegularExpression.escapedPattern(for: name)):\\s*(\\d+)"
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let m = regex.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)),
-              let r = Range(m.range(at: 1), in: block) else { return nil }
-        return Int64(String(block[r]))
-    }
-
-    // MARK: - 登录辅助
-
-    /// 用 auth cookie 自动发现 workspace ID(wrk_xxx)。
+    /// 列出账户下全部 workspace(与配额抓取共用同一会话 cookie)。
     ///
-    /// 请求 `/auth`:登录态下 opencode.ai 会 302 重定向到用户默认 workspace 页
-    /// (`/workspace/wrk_xxx/...`),该页 HTML 也含 wrk_。从**重定向最终 URL** 和
-    /// **HTML body** 双通道提取,任一命中即返回。
+    /// `GET /console/api/user/workspaces`(2026-10-17 逆自 console SPA bundle):
+    /// 响应为 JSON 数组 `[{id, name, avatarUrl, role, memberCount, ...}]`,
+    /// id 形如 wrk_xxx / org_xxx。
     ///
-    /// 注意:不能用 `/`(首页)——首页是营销落地页,不含登录用户的 workspace,
-    /// 会导致永远发现不到 workspace(历史 bug)。
-    public static func discoverWorkspaceID(cookie: String) async -> String? {
-        let cookieHeader = cookie.contains("=") ? cookie : "auth=\(cookie)"
-        guard let url = URL(string: "\(baseURL)/auth") else { return nil }
+    /// 端点失效(401/改版/网络)→ 返回空数组,调用方回落到手动填写。
+    public static func listWorkspaces(cookie: String) async -> [OpenCodeWorkspaceInfo] {
+        guard !cookie.isEmpty,
+              let url = URL(string: "\(baseURL)/console/api/user/workspaces") else { return [] }
         var request = URLRequest(url: url)
-        request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue(cookieHeader(cookie), forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            // 通道 1:重定向后的最终 URL(URLSession 默认跟随重定向)
-            if let http = response as? HTTPURLResponse,
-               let finalURL = http.url?.absoluteString,
-               let wsID = firstWorkspaceID(in: finalURL) {
-                return wsID
-            }
-            // 通道 2:HTML body
-            let html = String(data: data, encoding: .utf8) ?? ""
-            return firstWorkspaceID(in: html)
-        } catch { return nil }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+            return parseWorkspaceList(data)
+        } catch {
+            return []
+        }
     }
 
-    /// 从任意文本提取第一个 wrk_xxx 标识。无则 nil。
-    private static func firstWorkspaceID(in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: "wrk_[A-Za-z0-9]+") else { return nil }
-        let range = NSRange(text.startIndex..., in: text)
-        guard let m = regex.firstMatch(in: text, range: range),
-              let r = Range(m.range, in: text) else { return nil }
-        return String(text[r])
-    }
-
-    /// 验证 cookie 是否有效(能发现 workspace 即视为有效)。
-    public static func validateCookie(_ cookie: String) async -> Bool {
-        await discoverWorkspaceID(cookie: cookie) != nil
+    /// 宽容解析 workspace 列表:直接数组,或 {workspaces:[...]}/{data:[...]} 包装。
+    /// 纯函数(Verify 覆盖):坏 JSON/空数组 → 空;缺 name 用 id 兜底。
+    public static func parseWorkspaceList(_ data: Data) -> [OpenCodeWorkspaceInfo] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        let array: [[String: Any]]
+        if let direct = root as? [[String: Any]] {
+            array = direct
+        } else if let obj = root as? [String: Any],
+                  let wrapped = (obj["workspaces"] as? [[String: Any]]) ?? (obj["data"] as? [[String: Any]]) {
+            array = wrapped
+        } else {
+            return []
+        }
+        return array.compactMap { item in
+            guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+            let name = (item["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id
+            return OpenCodeWorkspaceInfo(id: id, name: name)
+        }
     }
 }

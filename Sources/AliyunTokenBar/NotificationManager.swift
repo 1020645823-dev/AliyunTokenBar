@@ -41,6 +41,8 @@ final class NotificationManager: NSObject, ObservableObject {
         case "kimi": providerName = "Kimi Code"
         case "zhipu": providerName = "智谱 GLM"
         case "minimax": providerName = "MiniMax"
+        case "ollama": providerName = "Ollama Cloud"
+        case "stepfun": providerName = "阶跃 Step Plan"
         default: providerName = key.provider
         }
         let windowName: String
@@ -51,6 +53,7 @@ final class NotificationManager: NSObject, ObservableObject {
         case "weekly": windowName = "每周限额"
         case "monthly": windowName = "每月限额"
         case "interval": windowName = "当前窗口"
+        case "topup": windowName = "加油包额度"
         default: windowName = key.window
         }
         let isCritical = band == .critical
