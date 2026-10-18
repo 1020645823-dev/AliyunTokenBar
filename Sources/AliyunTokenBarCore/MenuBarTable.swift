@@ -318,20 +318,6 @@ public enum MenuBarTable {
     private static func islandPct(_ col: MenuBarTableColumn) -> Int {
         max(col.primary.pct ?? 0, col.secondary.pct ?? 0)
     }
-
-    /// 灵动岛展开态概览:按列的最高 band 计数(汇总行「2 项告警」用)。
-    public static func islandRiskCounts(columns: [MenuBarTableColumn],
-                                        config: ThresholdConfig) -> (critical: Int, warning: Int) {
-        var critical = 0, warning = 0
-        for col in columns {
-            switch band(col, config: config) {
-            case .critical: critical += 1
-            case .warning: warning += 1
-            case .safe: break
-            }
-        }
-        return (critical, warning)
-    }
 }
 
 // MARK: - 灵动岛汇总(状态 / 剩余 / 计数 / 排序)

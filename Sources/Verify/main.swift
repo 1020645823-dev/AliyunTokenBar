@@ -2361,9 +2361,6 @@ check("island focus 仅剩money列→兜底首列",
       MenuBarTable.islandFocus(columns: mtCols(dis: ["aliyun", "kimi", "openCode", "minimax", "system"]),
                                config: islCfg)?.kind == .deepSeek)
 // 风险计数按列最高 band(Kimi 95=critical,智谱 85=warning)
-let islCounts = MenuBarTable.islandRiskCounts(columns: mtCols(kW: 95, zConf: true, z5: 85, zW: 2), config: islCfg)
-check("island 风险计数 critical1+warning1", islCounts.critical == 1 && islCounts.warning == 1)
-check("island 风险计数 全safe", MenuBarTable.islandRiskCounts(columns: mtCols(), config: islCfg) == (critical: 0, warning: 0))
 check("island 列band取主/次高者", {
     let col = mtCols(k5: 10, kW: 92).first { $0.kind == .kimi }!
     return MenuBarTable.band(col, config: islCfg) == .critical

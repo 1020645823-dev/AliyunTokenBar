@@ -25,8 +25,9 @@ import AliyunTokenBarCore
 // MARK: - 度量常量(面板帧与内容高度共用同一组公式,避免错位)
 
 enum IslandMetrics {
-    /// 展开态宽度:logo 15 + 名称 52 + 双窗口段(~150)+ 水平内边距 28 ≈ 240,260 留余量。
-    static let expandedWidth: CGFloat = 260
+    /// 展开态宽度:logo 15 + 名称 52 + 剩余口径窗口段(「5小时 剩 100% · 周 剩 22%」)
+    /// + 需处理行的「重登」徽标 + 水平内边距 28,260 会挤 → 280。
+    static let expandedWidth: CGFloat = 280
     static let paddingH: CGFloat = 14
     static let paddingV: CGFloat = 11
     static let headerHeight: CGFloat = 20      // 字标 + 概览 chip 行
@@ -51,13 +52,15 @@ enum IslandMetrics {
 @MainActor
 final class IslandState: ObservableObject {
     @Published var expanded = false
-    @Published var columns: [MenuBarTableColumn] = []
-    @Published var focus: MenuBarTableColumn?
+    /// 已按紧迫度排序的源行(需处理 → 告急 → 预警 → 正常,同级剩余升序)。
+    @Published var rows: [MenuBarTableColumn] = []
+    @Published var health = IslandHealth(needAction: 0, critical: 0, warning: 0)
     /// 收起态胶囊 rect(面板坐标系,左上原点 y 向下)。
     @Published var collapsedRect: CGRect = .zero
     /// 展开态卡片 rect(面板坐标系)。
     @Published var expandedRect: CGRect = .zero
     var config = ThresholdConfig()
+    var moneyFloor: Double = 0
     var updated: Date?
 }
 
@@ -65,6 +68,8 @@ final class IslandState: ObservableObject {
 
 struct IslandRootView: View {
     @ObservedObject var state: IslandState
+    /// 点行 → 打开主面板并落在该源 tab(由 App 层注入的 sink 真正打开面板)。
+    let onTapRow: (MenuBarColumnKind) -> Void
 
     var body: some View {
         let rect = state.expanded ? state.expandedRect : state.collapsedRect
@@ -77,8 +82,9 @@ struct IslandRootView: View {
             .frame(width: rect.width, height: rect.height)
             .offset(x: rect.minX, y: rect.minY)
             IslandExpandedContent(
-                columns: state.columns, focus: state.focus,
-                config: state.config, updated: state.updated
+                rows: state.rows, health: state.health,
+                config: state.config, moneyFloor: state.moneyFloor, updated: state.updated,
+                onTapRow: onTapRow
             )
             .frame(width: state.expandedRect.width, height: state.expandedRect.height,
                    alignment: .topLeading)
@@ -92,13 +98,29 @@ struct IslandRootView: View {
     }
 }
 
+/// 岛宿主视图:**只让展开卡矩形吃鼠标事件**。覆盖面板叠在状态项之上,
+/// 整窗收事件会让点胶囊再也打不开主面板——所以 hitTest 白名单之外一律透传。
+@MainActor
+final class IslandHostingView: NSHostingView<IslandRootView> {
+    /// 事件白名单(视图坐标,左上原点 y 向下);nil = 全窗透传。
+    var hitRect: CGRect?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hitRect else { return nil }
+        let p = isFlipped ? point : NSPoint(x: point.x, y: bounds.height - point.y)
+        return hitRect.contains(p) ? super.hitTest(point) : nil
+    }
+}
+
 // MARK: - 展开态内容
 
 private struct IslandExpandedContent: View {
-    let columns: [MenuBarTableColumn]
-    let focus: MenuBarTableColumn?
+    let rows: [MenuBarTableColumn]
+    let health: IslandHealth
     let config: ThresholdConfig
+    let moneyFloor: Double
     let updated: Date?
+    let onTapRow: (MenuBarColumnKind) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -107,57 +129,28 @@ private struct IslandExpandedContent: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white.opacity(0.55))
                 Spacer(minLength: 4)
+                Text("口径:剩余")
+                    .font(.system(size: 8.5)).foregroundStyle(.white.opacity(0.35))
                 statusChip
             }
             .frame(height: IslandMetrics.headerHeight)
             Rectangle().fill(Color.white.opacity(0.14)).frame(height: 0.5)
                 .padding(.bottom, IslandMetrics.gapHeaderRows)
-            ForEach(columns, id: \.kind) { col in
-                IslandRow(col: col, config: config, highlighted: col.kind == focus?.kind)
+            ForEach(rows, id: \.kind) { col in
+                IslandRow(col: col, config: config, moneyFloor: moneyFloor) { onTapRow(col.kind) }
             }
         }
         .padding(.horizontal, IslandMetrics.paddingH)
         .padding(.vertical, IslandMetrics.paddingV)
     }
 
-    /// 概览 chip:告急(红)/ 预警(橙)/ 一切正常(绿)。
+    /// 与胶囊**同一套**计数文案(需处理/告急/预警),颜色取最严重类别。
     private var statusChip: some View {
-        let (c, w) = MenuBarTable.islandRiskCounts(columns: columns, config: config)
-        let color: Color
-        let text: String
-        if c > 0 {
-            color = IslandPalette.critical
-            text = "\(c) 项告急"
-        } else if w > 0 {
-            color = IslandPalette.warning
-            text = "\(w) 项预警"
-        } else {
-            color = IslandPalette.safe
-            text = "一切正常"
-        }
+        let tint = IslandStateColor.color(health.worst)
         return HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 5, height: 5)
-            Text(text).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(color)
-        }
-    }
-}
-
-/// 黑底专用配色(比面板版亮一档,保证小黑底上的可读性)。
-enum IslandPalette {
-    static let warning = Color(red: 1.0, green: 0.65, blue: 0.24)
-    static let critical = Color(red: 1.0, green: 0.40, blue: 0.36)
-    static let safe = Color(red: 0.30, green: 0.85, blue: 0.45)
-}
-
-/// 岛状态色(黑底上更亮一档)。胶囊圆点/文字、展开卡行底条与行底色共用同一套,
-/// 避免两处色值各写一遍后漂移。
-enum IslandStateColor {
-    static func color(_ s: ColumnState) -> Color {
-        switch s {
-        case .needsAction: return Color(red: 0.55, green: 0.68, blue: 1.0)   // 蓝紫:需要你动手
-        case .critical: return Color(red: 1.0, green: 0.40, blue: 0.36)      // 红
-        case .warning: return Color(red: 1.0, green: 0.65, blue: 0.24)       // 橙
-        case .ok: return Color(red: 0.30, green: 0.85, blue: 0.45)           // 绿
+            Circle().fill(tint).frame(width: 5, height: 5)
+            Text(MenuBarTable.islandHealthText(health))
+                .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(tint)
         }
     }
 }
@@ -165,9 +158,18 @@ enum IslandStateColor {
 private struct IslandRow: View {
     let col: MenuBarTableColumn
     let config: ThresholdConfig
-    let highlighted: Bool
+    let moneyFloor: Double
+    let onTap: () -> Void
 
-    private var band: UsageBand { MenuBarTable.band(col, config: config) }
+    @State private var hovering = false
+
+    private var state: ColumnState { MenuBarTable.state(col, config: config, moneyFloor: moneyFloor) }
+
+    /// 最紧窗口的剩余比例(0…1);纯金额列无 pct → nil(不画底条)。
+    private var remainingFraction: Double? {
+        guard let worst = [col.primary.pct, col.secondary.pct].compactMap({ $0 }).max() else { return nil }
+        return Double(max(0, min(100, 100 - worst))) / 100
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -187,54 +189,70 @@ private struct IslandRow: View {
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .frame(width: 52, alignment: .leading)
             Spacer(minLength: 2)
-            segments
-        }
-        .frame(height: IslandMetrics.rowHeight)
-        .background(rowBackground)
-    }
-
-    @ViewBuilder
-    private var segments: some View {
-        HStack(spacing: 5) {
-            segment(label: col.primaryLabel, value: col.primary)
-            // 单值列(次标签 nil)或次行横杠 → 只显主窗口,行宽更透气
-            if let sl = col.secondaryLabel,
-               col.secondary.pct != nil || col.secondary.text != "—" {
-                Text("·").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
-                segment(label: sl, value: col.secondary)
+            Text(MenuBarTable.islandRowText(col))
+                .font(.system(size: 10.5)).monospacedDigit()
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1).minimumScaleFactor(0.85)
+            if state == .needsAction {
+                Text("重登")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(IslandStateColor.color(.needsAction))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(IslandStateColor.color(.needsAction).opacity(0.18)))
             }
         }
-    }
-
-    private func segment(label: String, value: MenuBarTableValue) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .font(.system(size: 8.5, weight: .medium))
-                .foregroundStyle(.white.opacity(0.45))
-                .lineLimit(1)
-            Text(value.text)
-                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(value.pct.map { valueColor($0) } ?? .white.opacity(0.92))
-                .lineLimit(1)
+        .padding(.horizontal, 6)
+        .frame(height: IslandMetrics.rowHeight)
+        .background(rowBackground)
+        .overlay(alignment: .bottom) { meterBar }
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            // 手型光标(项目 floor 是 macOS 14,没有 .pointerStyle):push/pop 必须成对
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
+        .onTapGesture { onTap() }
     }
 
-    /// 行底色:critical 淡红 / warning 淡橙 / 聚焦列淡白,平铺无色。
+    /// 行底色:需处理淡蓝紫 / 告急淡红 / 预警淡橙;正常行仅 hover 时微亮。
     private var rowBackground: some View {
         let fill: Color
-        switch band {
-        case .critical: fill = IslandPalette.critical.opacity(0.16)
-        case .warning: fill = IslandPalette.warning.opacity(0.10)
-        case .safe: fill = highlighted ? .white.opacity(0.07) : .clear
+        switch state {
+        case .needsAction: fill = IslandStateColor.color(.needsAction).opacity(0.14)
+        case .critical: fill = IslandStateColor.color(.critical).opacity(0.16)
+        case .warning: fill = IslandStateColor.color(.warning).opacity(0.10)
+        case .ok: fill = hovering ? .white.opacity(0.07) : .clear
         }
         return RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill)
     }
 
-    private func valueColor(_ pct: Int) -> Color {
-        switch config.band(for: pct) {
-        case .safe: return .white.opacity(0.92)
-        case .warning: return IslandPalette.warning
-        case .critical: return IslandPalette.critical
+    /// 行底部 2pt 剩余条(不占横向空间):长度 = 最紧窗口的剩余,颜色随状态。
+    @ViewBuilder
+    private var meterBar: some View {
+        if let fraction = remainingFraction {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10))
+                    Capsule().fill(IslandStateColor.color(state))
+                        .frame(width: max(1, geo.size.width * fraction))
+                }
+            }
+            .frame(height: 2)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 2)
+        }
+    }
+}
+
+/// 岛状态色(黑底上更亮一档)。胶囊圆点/文字、展开卡行底条与行底色共用同一套,
+/// 避免两处色值各写一遍后漂移。
+enum IslandStateColor {
+    static func color(_ s: ColumnState) -> Color {
+        switch s {
+        case .needsAction: return Color(red: 0.55, green: 0.68, blue: 1.0)   // 蓝紫:需要你动手
+        case .critical: return Color(red: 1.0, green: 0.40, blue: 0.36)      // 红
+        case .warning: return Color(red: 1.0, green: 0.65, blue: 0.24)       // 橙
+        case .ok: return Color(red: 0.30, green: 0.85, blue: 0.45)           // 绿
         }
     }
 }
@@ -292,9 +310,10 @@ final class IslandOverlayController {
         )
         let panelRect = pill.union(frameExpanded).insetBy(dx: -10, dy: -10)
 
-        state.columns = columns
-        state.focus = MenuBarTable.islandFocus(columns: columns, config: config)
+        state.rows = MenuBarTable.islandRows(columns: columns, config: config, moneyFloor: model.moneyFloor)
+        state.health = MenuBarTable.islandHealth(columns: columns, config: config, moneyFloor: model.moneyFloor)
         state.config = config
+        state.moneyFloor = model.moneyFloor
         state.updated = model.lastUpdated
 
         hideWorkItem?.cancel()
@@ -306,6 +325,10 @@ final class IslandOverlayController {
         state.collapsedRect = relRect(pill, in: panelRect)
         state.expandedRect = relRect(expandedRect, in: panelRect)
         panel.setFrame(panelRect, display: true)
+        // 展开态才吃鼠标事件(外扩 6pt 兼容 spring 回弹);hitTest 白名单之外仍透传
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
+        (panel.contentView as? IslandHostingView)?.hitRect = state.expandedRect.insetBy(dx: -6, dy: -6)
         panel.orderFrontRegardless()
         keepRect = panelRect
 
@@ -327,6 +350,8 @@ final class IslandOverlayController {
         modelCancellable = nil
         guard let panel, panel.isVisible else { return }
         state.expanded = false
+        panel.ignoresMouseEvents = true
+        (panel.contentView as? IslandHostingView)?.hitRect = nil
         let work = DispatchWorkItem { [weak self] in
             self?.panel?.orderOut(nil)
         }
@@ -341,9 +366,23 @@ final class IslandOverlayController {
         hideWorkItem?.cancel()
         hideWorkItem = nil
         modelCancellable = nil
+        panel?.ignoresMouseEvents = true
+        (panel?.contentView as? IslandHostingView)?.hitRect = nil
         panel?.orderOut(nil)
         state.expanded = false
     }
+
+    // MARK: 行点击(岛 → 面板)
+
+    /// 点行 → 收起岛并请求打开主面板(实际打开由 App 层注入的 sink 完成)。
+    func openPanel(for kind: MenuBarColumnKind) {
+        collapseNow()
+        setSuppressed(true)
+        openPanelSink?(kind)
+    }
+
+    /// App 层注入:打开面板并落在该源 tab。
+    var openPanelSink: ((MenuBarColumnKind) -> Void)?
 
     /// 主面板显示期间抑制展开(popover 与岛同区,不能同时存在)。
     func setSuppressed(_ v: Bool) {
@@ -391,7 +430,9 @@ final class IslandOverlayController {
         // 尺寸锁死:内容(SwiftUI fitting size)不得再改动窗口帧,只允许搬原点
         panel.contentMinSize = size
         panel.contentMaxSize = size
-        let host = NSHostingView(rootView: IslandRootView(state: state))
+        let host = IslandHostingView(rootView: IslandRootView(state: state) { [weak self] kind in
+            self?.openPanel(for: kind)
+        })
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         return panel
@@ -437,8 +478,11 @@ final class IslandOverlayController {
                 guard let self, let panel = self.panel, panel.isVisible else { return }
                 let model = TokenPlanModel.shared
                 let columns = model.menuBarColumns()
-                self.state.columns = columns
-                self.state.focus = MenuBarTable.islandFocus(columns: columns, config: model.thresholdConfig)
+                self.state.rows = MenuBarTable.islandRows(columns: columns, config: model.thresholdConfig,
+                                                          moneyFloor: model.moneyFloor)
+                self.state.health = MenuBarTable.islandHealth(columns: columns, config: model.thresholdConfig,
+                                                              moneyFloor: model.moneyFloor)
+                self.state.moneyFloor = model.moneyFloor
                 self.state.updated = model.lastUpdated
             }
     }
