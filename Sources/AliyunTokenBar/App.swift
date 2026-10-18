@@ -148,6 +148,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
     case systemStats   // 仅本机 CPU/内存
+    case island        // 灵动岛:黑色胶囊,悬停展开实时卡片
 
     var id: String { rawValue }
     var displayName: String {
@@ -157,6 +158,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
         case .singleLine: return "单行(35%·61%)"
         case .iconOnly: return "仅图标"
         case .systemStats: return "本机 CPU/内存"
+        case .island: return "灵动岛(悬停展开)"
         }
     }
 }
@@ -203,7 +205,8 @@ enum MenuBarTextRenderer {
                       cpu: Int? = nil, memory: Int? = nil,
                       columns: [MenuBarTableColumn]? = nil, isDark: Bool = false,
                       thresholdConfig: ThresholdConfig = ThresholdConfig(),
-                      aliyunVisible: Bool = true) -> NSImage {
+                      aliyunVisible: Bool = true,
+                      moneyFloor: Double = 0) -> NSImage {
         let mainWindow = oneMonth ?? oneWeek
         let mainWindowLabel = oneMonth != nil ? "30d" : "7d"
         switch scheme {
@@ -220,6 +223,8 @@ enum MenuBarTextRenderer {
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, mainWindow: mainWindow ?? 0,
                                               thresholdConfig: thresholdConfig)
         case .systemStats: return systemStatsImage(cpu: cpu, memory: memory)
+        case .island: return islandPillImage(columns: columns ?? [], isDark: isDark,
+                                             thresholdConfig: thresholdConfig, moneyFloor: moneyFloor)
         }
     }
 
@@ -228,10 +233,10 @@ enum MenuBarTextRenderer {
         v.map { "\($0)%" } ?? "—"
     }
 
-    /// 云朵 + 阿里云双百分比 + OpenCode 双百分比 + Kimi 周百分比:
-    /// ☁ 5h 35% · 30d 61%  ⚡ 22% · 43%  ✨ 58%
+    /// 真实品牌 logo 剪影 + 阿里云双百分比 + OpenCode 双百分比 + Kimi 周百分比:
+    /// 〔阿里云标〕 5h 35% · 30d 61%  〔OpenCode 标〕 22% · 43%  〔Kimi 标〕 58%
     /// 用**模板图**(系统自动适配明暗:深色菜单栏自动染白)。
-    /// 三 Provider 区分靠**形状**(云朵 vs 闪电 vs 星星)而非颜色——符合 macOS 菜单栏规范。
+    /// 三 Provider 区分靠**真实 logo 形状**(阿里云括号 vs OpenCode 方框 vs Kimi K)而非颜色——符合 macOS 菜单栏规范。
     /// 阈值变色:百分比数字按风险变色(safe→黑/白 / warning→橙 / critical→红)。
     /// 服务不可用(nil)时数值显示为横杠(—)。
     @MainActor
@@ -244,9 +249,10 @@ enum MenuBarTextRenderer {
         // 模板图:SwiftUI 的 Color.black 在 ImageRenderer 里会被系统染成菜单栏适配色
         // (深色背景自动白)。形状用 .black 填充,系统只取 alpha 通道。
         let content = HStack(spacing: 4) {
-            // 阿里云:云朵 + 双百分比(5h 窗口被官方取消时只显主窗段;数据源停用时整段隐藏)
+            // 阿里云:真实品牌标(阿里云括号标,剪影模板)+ 双百分比
+            // (5h 窗口被官方取消时只显主窗段;数据源停用时整段隐藏)
             if aliyunVisible {
-                cloudShape.fill(Color.black).frame(width: 14, height: 11)
+                BrandMark.aliyun.silhouette(in: CGRect(x: 0, y: 0, width: 13, height: 13), tint: .black)
                 if fiveHour != nil || mainWindow == nil {
                     Text("5h").font(.system(size: 8, weight: .semibold)).monospacedDigit().foregroundStyle(.black)
                     Text(pctText(fiveHour)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
@@ -257,20 +263,20 @@ enum MenuBarTextRenderer {
                 Text(pctText(mainWindow)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(mainWindow.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
-            // OpenCode:闪电 + 双百分比(配置了才显示;服务不可用时也显示横杠)
+            // OpenCode:真实品牌标(官方标记:方框环+内方块)+ 双百分比(配置了才显示;服务不可用时也显示横杠)
             if openCodeRolling != nil || openCodeWeekly != nil {
                 if aliyunVisible { Spacer().frame(width: 6) }
-                Image(systemName: "bolt.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(.black)
+                BrandMark.openCode.silhouette(in: CGRect(x: 0, y: 0, width: 11, height: 11), tint: .black)
                 Text(pctText(openCodeRolling)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(openCodeRolling.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
                 Text("·").font(.system(size: 11)).foregroundStyle(.black.opacity(0.5))
                 Text(pctText(openCodeWeekly)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(openCodeWeekly.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
-            // Kimi:星星 + 周百分比(配置了才显示;服务不可用时显示横杠)
+            // Kimi:真实品牌标(白 K 剪影)+ 周百分比(配置了才显示;服务不可用时显示横杠)
             if kimiWeekly != nil {
                 Spacer().frame(width: 6)
-                Image(systemName: "sparkles").font(.system(size: 10, weight: .bold)).foregroundStyle(.black)
+                BrandMark.kimi.silhouette(in: CGRect(x: 0, y: 0, width: 11, height: 11), tint: .black)
                 Text(pctText(kimiWeekly)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(kimiWeekly.map { thresholdColor($0, config: thresholdConfig, base: .black) } ?? .black)
             }
@@ -289,29 +295,8 @@ enum MenuBarTextRenderer {
         return render(content)
     }
 
-    /// 可复用的云朵 Shape(阿里云风格三隆起)
-    private static var cloudShape: some Shape {
-        struct CloudShape: Shape {
-            func path(in rect: CGRect) -> Path {
-                let w = rect.width, h = rect.height
-                var p = Path()
-                p.move(to: CGPoint(x: w*0.10, y: h*0.70))
-                p.addQuadCurve(to: CGPoint(x: w*0.22, y: h*0.42), control: CGPoint(x: w*0.04, y: h*0.45))
-                p.addQuadCurve(to: CGPoint(x: w*0.38, y: h*0.28), control: CGPoint(x: w*0.24, y: h*0.22))
-                p.addQuadCurve(to: CGPoint(x: w*0.55, y: h*0.18), control: CGPoint(x: w*0.44, y: h*0.12))
-                p.addQuadCurve(to: CGPoint(x: w*0.70, y: h*0.28), control: CGPoint(x: w*0.66, y: h*0.14))
-                p.addQuadCurve(to: CGPoint(x: w*0.85, y: h*0.40), control: CGPoint(x: w*0.86, y: h*0.22))
-                p.addQuadCurve(to: CGPoint(x: w*0.90, y: h*0.70), control: CGPoint(x: w*1.00, y: h*0.50))
-                p.addLine(to: CGPoint(x: w*0.10, y: h*0.70))
-                p.closeSubpath()
-                return p
-            }
-        }
-        return CloudShape()
-    }
-
-    /// 默认紧凑:迷你表格——列=数据源(☁✨⚡🧠▣,顺序固定),行=主/次指标。
-    /// 每列固定宽:图标位 8pt + 图标-值距 1pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt、
+    /// 默认紧凑:迷你表格——列=数据源(真实品牌 logo 剪影,顺序固定),行=主/次指标。
+    /// 每列固定宽:图标位 10pt + 图标-值距 1pt + 值域 34pt("100%" @11pt 等宽数字实测 33pt、
     /// 金额无符号后 "12.3万" ≈34pt;过窄会截断破网格),值右对齐;金额列不再单独加宽(v1.0.48 去 ¥)。
     /// 下行宽=图标位+1+值域,8 个数字严格成网格。列间 4pt。
     /// 非模板渲染:基底色按菜单栏明暗手选;数字独立按阈值 band 变色
@@ -321,15 +306,21 @@ enum MenuBarTextRenderer {
     private static func miniTableImage(columns: [MenuBarTableColumn], isDark: Bool,
                                        thresholdConfig: ThresholdConfig) -> NSImage {
         let base: Color = isDark ? .white : .black
-        let iconWidth: CGFloat = 8
+        let iconWidth: CGFloat = 10
         let valueWidth: CGFloat = 34
         let content = HStack(alignment: .top, spacing: 4) {
             ForEach(columns, id: \.kind) { col in
                 VStack(spacing: -1) {
                     HStack(spacing: 1) {
-                        Image(systemName: col.kind.symbolName)
-                            .font(.system(size: 9, weight: .bold))
-                            .frame(width: iconWidth, alignment: .leading)
+                        // 真实品牌 logo 剪影(单色,随菜单栏明暗);「本机」回落 SF Symbol
+                        if let mark = col.kind.brandMark {
+                            mark.silhouette(in: CGRect(x: 0, y: 0, width: 10, height: 10), tint: base)
+                                .frame(width: iconWidth, alignment: .leading)
+                        } else {
+                            Image(systemName: col.kind.symbolName)
+                                .font(.system(size: 9, weight: .bold))
+                                .frame(width: iconWidth, alignment: .leading)
+                        }
                         Text(col.primary.text)
                             .font(.system(size: 11, weight: .semibold)).monospacedDigit()
                             .frame(width: valueWidth, alignment: .trailing)
@@ -430,6 +421,32 @@ enum MenuBarTextRenderer {
         .frame(height: 20)
         .fixedSize(horizontal: true, vertical: false)
         return render(content)
+    }
+
+    /// 灵动岛收起态:黑色胶囊(非模板,明暗菜单栏下都是黑底白字——动态岛语义),
+    /// 内容 = **全源健康度汇总**(需处理/告急/预警计数;全正常=「一切正常」)。
+    /// 判定见 MenuBarTable.islandHealth(鉴权类失败优先,余额按设置的下限)。
+    /// 全正常时文字保持白色、只有圆点是绿的——避免菜单栏常年挂一条绿字。
+    @MainActor
+    private static func islandPillImage(columns: [MenuBarTableColumn], isDark: Bool,
+                                        thresholdConfig: ThresholdConfig, moneyFloor: Double) -> NSImage {
+        let health = MenuBarTable.islandHealth(columns: columns, config: thresholdConfig, moneyFloor: moneyFloor)
+        let tint = IslandStateColor.color(health.worst)
+        let content = HStack(spacing: 4) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(MenuBarTable.islandHealthText(health))
+                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(health.total == 0 ? Color.white : tint)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 22)
+        .background(
+            Capsule().fill(.black)
+                .overlay(Capsule().strokeBorder(.white.opacity(isDark ? 0.16 : 0.08),
+                                                lineWidth: 0.5))
+        )
+        .fixedSize(horizontal: true, vertical: false)
+        return render(content, isTemplate: false)
     }
 
     @MainActor
@@ -535,7 +552,8 @@ struct AliyunTokenBarApp: App {
                 columns: columns,
                 isDark: MenuBarAppearance.shared.isDark,
                 thresholdConfig: model.thresholdConfig,
-                aliyunVisible: aliyunOn
+                aliyunVisible: aliyunOn,
+                moneyFloor: model.moneyFloor
             )
         }
         TokenPlanModel.shared.renderTooltipSink = { model in
@@ -549,31 +567,21 @@ struct AliyunTokenBarApp: App {
         // 注意:不再用 MenuBarExtra——macOS 26 会因系统隐藏状态项而回收进程。
         // 状态项由 AppDelegate 手动管理(NSStatusItem + NSPopover)。
         //
-        // Settings scene 必须存在(App 至少需要一个 Scene),但设置实体走
-        // 自定义 NSPanel(SettingsWindowManager)。二者曾同时出现(白窗 + 真面板):
-        // SwiftUI 会为 Settings scene 自动生成 app 菜单的「设置…」(⌘,),点它
-        // 就创建一个内容为空的占位窗。这里用 CommandGroup 把该项**整个换掉**,
-        // 指向真面板,占位窗从此不会被创建(bridge 仅作兜底)。
-        Settings { SettingsSceneBridge() }
+        // Settings scene 只作占位(App 至少需要一个 Scene):设置实体走自定义
+        // NSPanel(SettingsWindowManager)。曾经 scene 里放 bridge(onAppear 转发
+        // 真面板 + 关占位窗),但 macOS 26 上经 Apple 'oapp' 事件启动时,SwiftUI 会在
+        // applicationDidFinishLaunching 期间**主动求值 Settings scene 的 body**
+        // (调用栈:SwiftUI AppDelegate.applicationDidFinishLaunching →
+        // Update.dispatchActions → bridge onAppear),bridge 每次启动都把真设置窗
+        // 弹出来——`open` 启动(install-update.sh 即如此)必中。改为空内容:
+        // 求值只会造出不可见的占位窗(实测不可见),「设置…」(⌘,)由 CommandGroup
+        // 替换项直接打开真面板,scene 本身永不激活。
+        Settings { EmptyView() }
             .commands {
                 CommandGroup(replacing: .appSettings) {
                     Button("设置…") { SettingsWindowManager.shared.show() }
                         .keyboardShortcut(",", modifiers: .command)
                 }
-            }
-    }
-}
-
-/// Settings scene 的兜底内容:正常情况下 CommandGroup 已把入口改指向真面板,
-/// 本 bridge 不会被触发;若 SwiftUI 仍以其他方式激活该 scene,则转发到真面板
-/// 并关掉刚创建的占位窗,避免出现白窗。
-private struct SettingsSceneBridge: View {
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onAppear {
-                SettingsWindowManager.shared.show()
-                DispatchQueue.main.async { SettingsWindow.dismissSwiftUIPlaceholders() }
             }
     }
 }
