@@ -4,6 +4,14 @@ import Combine
 import UserNotifications
 import AliyunTokenBarCore
 
+/// 灵动岛悬停转发器:NSTrackingArea 的 owner 必须是 NSResponder 子类,
+/// AppDelegate 不是 responder,收不到 mouseEntered——用它接住再转回 AppDelegate。
+@MainActor
+private final class IslandHoverTracker: NSResponder {
+    var onEnter: (() -> Void)?
+    override func mouseEntered(with event: NSEvent) { onEnter?() }
+}
+
 /// 手动管理 NSStatusItem + NSPopover 的 AppDelegate。
 ///
 /// 为什么不用 MenuBarExtra:macOS 26 的「允许在菜单栏中显示」开关一旦被系统关闭,
@@ -27,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasSeenStatusItemVisible = false
     /// 上次采样的有效可见值(变化时落 OSLog,便于事后诊断)。
     private var lastLoggedEffectivelyVisible: Bool?
+    /// 灵动岛 scheme 下,状态项按钮上的悬停追踪区(进入 → 展开动态岛)。
+    private var islandTrackingArea: NSTrackingArea?
+    /// tracking area owner 必须是 NSResponder 子类(AppDelegate 不是),用它转发。
+    private let islandHoverTracker = IslandHoverTracker()
 
     /// P1-C10:URL scheme 触发刷新(codingtokenbar://refresh),供脚本/快捷指令调用;
     /// codingtokenbar://open 为救生索:状态项不可见时兜底弹设置窗。
@@ -84,6 +96,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .combineLatest(SystemMetricsMonitor.shared.$memoryPercent)
             .sink { _ in TokenPlanModel.shared.prerenderIcon() }
             .store(in: &cancellables)
+        // 菜单栏样式切换:即时重渲染图标(此前只有数据刷新才重建图),
+        // 并装/拆灵动岛的悬停追踪区。
+        MenuBarStyleManager.shared.$scheme
+            .receive(on: RunLoop.main)
+            .sink { [weak self] scheme in
+                TokenPlanModel.shared.prerenderIcon()
+                self?.updateIslandWiring(scheme)
+            }
+            .store(in: &cancellables)
+        updateIslandWiring(MenuBarStyleManager.shared.scheme)
+    }
+
+    // MARK: - 灵动岛(菜单栏悬停展开)
+
+    /// 按 scheme 装/拆状态项悬停追踪区;离开 island scheme 时立即收起动态岛。
+    private func updateIslandWiring(_ scheme: MenuBarDisplayScheme) {
+        if scheme == .island {
+            ensureIslandTrackingArea()
+            IslandOverlayController.shared.prewarm()
+        } else {
+            removeIslandTrackingArea()
+            IslandOverlayController.shared.collapseNow()
+        }
+    }
+
+    private func ensureIslandTrackingArea() {
+        guard let button = statusItem?.button, islandTrackingArea == nil else { return }
+        islandHoverTracker.onEnter = { [weak self] in
+            // 主面板打开中不展开(岛与弹层同区会叠在一起)
+            guard self?.popover?.isShown != true else { return }
+            self?.islandExpand()
+        }
+        // .inVisibleRect:rect 由按钮实际 bounds 决定(胶囊宽度随内容变)
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: islandHoverTracker)
+        button.addTrackingArea(area)
+        islandTrackingArea = area
+    }
+
+    private func removeIslandTrackingArea() {
+        if let area = islandTrackingArea {
+            statusItem?.button?.removeTrackingArea(area)
+            islandTrackingArea = nil
+        }
+    }
+
+    /// 鼠标进入胶囊 → 展开动态岛(由 IslandHoverTracker 转发)。
+    private func islandExpand() {
+        IslandOverlayController.shared.expandIfNeeded(statusItem?.button)
+    }
+
+    /// 岛行点击/重登:写路由 → 收起岛并抑制 → 打开面板(与状态项点击同一路径)。
+    func openPanel(tab: ProviderTab) {
+        PanelRouter.shared.open(tab: tab)
+        guard let popover, let button = statusItem?.button else { return }
+        IslandOverlayController.shared.collapseNow()
+        IslandOverlayController.shared.setSuppressed(true)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
 
     /// 检测已有实例:存在则激活它并退出自己(幂等,首启无副作用)。
@@ -125,6 +199,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSStatusBar.system.removeStatusItem(old)
             statusItem = nil
         }
+        // 旧按钮随 removeStatusItem 释放,其 tracking area 一并失效;引用清零后
+        // 由 updateIslandWiring 按当前 scheme 重装。动态岛面板锚在旧胶囊上,先收。
+        islandTrackingArea = nil
+        IslandOverlayController.shared.collapseNow()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.isVisible = true
         if let button = item.button {
@@ -134,10 +212,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
             button.action = #selector(togglePopover)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = TokenPlanModel.shared.menuBarTooltip
+            // 灵动岛模式下 tooltip 与展开卡片同区,省略(卡片本身信息更全)
+            button.toolTip = MenuBarStyleManager.shared.scheme == .island
+                ? nil : TokenPlanModel.shared.menuBarTooltip
             refreshMenuBarAppearance()
         }
         statusItem = item
+        updateIslandWiring(MenuBarStyleManager.shared.scheme)
     }
 
     /// 菜单栏明暗 = 系统外观(全局域 AppleInterfaceStyle,深色时存在,浅色时缺省)。
@@ -163,6 +244,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.popover?.appearance = appearance
             }
             .store(in: &cancellables)
+        // 弹层被 Esc/点外面关掉(不经 togglePopover)时解除动态岛抑制,
+        // 否则悬停胶囊再也不展开。
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.didCloseNotification, object: popover, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.islandPopoverDidClose()
+            }
+        }
+    }
+
+    private func islandPopoverDidClose() {
+        IslandOverlayController.shared.setSuppressed(false)
     }
 
     /// 订阅模型:renderedIcon 更新时同步到状态项按钮(含 tooltip)。
@@ -178,7 +272,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     button.image = self.fallbackIcon()
                     button.image?.isTemplate = true
                 }
-                button.toolTip = model.menuBarTooltip
+                button.toolTip = MenuBarStyleManager.shared.scheme == .island
+                    ? nil : model.menuBarTooltip
             }
             .store(in: &cancellables)
     }
@@ -187,7 +282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let popover, let button = statusItem?.button else { return }
         if popover.isShown {
             popover.performClose(nil)
+            IslandOverlayController.shared.setSuppressed(false)
         } else {
+            // 开主面板前收起动态岛,并抑制期间再展开(岛与弹层同区)
+            IslandOverlayController.shared.collapseNow()
+            IslandOverlayController.shared.setSuppressed(true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

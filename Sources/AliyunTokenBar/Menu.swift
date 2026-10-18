@@ -91,6 +91,19 @@ enum ProviderTab: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 面板路由(岛 → 面板 tab 跳转)
+
+/// 岛行点击 → 面板落在指定 tab。App 层原本没有跨视图状态通道,
+/// 用一个只有单字段的 ObservableObject 承载,避免给 TokenPlanModel 塞 UI 状态。
+@MainActor
+final class PanelRouter: ObservableObject {
+    static let shared = PanelRouter()
+    /// 待切换目标;面板消费后置 nil。
+    @Published var pendingTab: ProviderTab?
+    func open(tab: ProviderTab) { pendingTab = tab }
+    private init() {}
+}
+
 // MARK: - 主面板外壳(NSPopover 装入此)
 
 struct TokenPlanMenu: View {
@@ -111,6 +124,7 @@ struct TokenPlanMenuContent: View {
     @StateObject private var model = TokenPlanModel.shared
     @State private var selectedTab: ProviderTab = .aliyun
     @State private var updatingBl = false
+    @ObservedObject private var router = PanelRouter.shared
     private let consoleURL = URL(string: "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal")!
 
     /// 当前可用的标签(统一 registry 驱动:停用的数据源不出 tab;
@@ -148,6 +162,15 @@ struct TokenPlanMenuContent: View {
             .padding(.bottom, DesignTokens.spacingM)
         }
         .frame(maxWidth: .infinity)
+        .onAppear { consumePendingTab() }
+        .onChange(of: router.pendingTab) { _, _ in consumePendingTab() }
+    }
+
+    /// 消费岛的行点击路由:目标 tab 可用则切过去,不可用(被停用/未配置)则忽略。
+    private func consumePendingTab() {
+        guard let tab = router.pendingTab else { return }
+        if availableTabs.contains(tab) { selectedTab = tab }
+        router.pendingTab = nil
     }
 
     // MARK: 顶部品牌头
@@ -234,9 +257,18 @@ struct TokenPlanMenuContent: View {
                 ZStack {
                     Circle().fill(isSelected ? Color.white.opacity(0.25) : brand.opacity(0.18))
                         .frame(width: 14, height: 14)
-                    Image(systemName: tab.icon)
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(isSelected ? .white : brand)
+                    if let mark = tab.kind.brandMark {
+                        // 真实品牌 logo:未选中=原色(蓝点/白方块等细节保留),选中=白剪影
+                        if isSelected {
+                            mark.silhouette(in: CGRect(x: 0, y: 0, width: 10, height: 10), tint: .white)
+                        } else {
+                            mark.mark(in: CGRect(x: 0, y: 0, width: 10, height: 10))
+                        }
+                    } else {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(isSelected ? .white : brand)
+                    }
                 }
                 Text(tab.title)
                     .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
