@@ -2446,5 +2446,11 @@ let kimiCol = islCols.first { $0.kind == .kimi }!
 check("columns:需处理集合命中→needsAttention", kimiCol.needsAttention)
 check("columns:不在集合→false", !dsCol.needsAttention)
 
+// --- 鉴权类失败归类(岛「需处理」判定) ---
+check("attention:UsageError.authExpired→鉴权类", AuthIssueClass.isAuth(UsageError.authExpired))
+check("attention:网络错误不算", !AuthIssueClass.isAuth(UsageError.network("timeout")))
+check("attention:MiMo loginRequired→鉴权类", AuthIssueClass.isMiMoAuth(.loginRequired))
+check("attention:MiMo network 不算", !AuthIssueClass.isMiMoAuth(.network("x")))
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

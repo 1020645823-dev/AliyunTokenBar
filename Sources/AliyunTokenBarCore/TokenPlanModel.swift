@@ -3,6 +3,22 @@ import SwiftUI
 import Combine
 import Network
 
+/// 鉴权类失败归类:只有这类才算灵动岛的「需处理」(未登录/过期/凭据无效)。
+/// 网络/解析类失败保留旧数据、不打扰用户——否则网络一抖胶囊就常年报「需处理」。
+public enum AuthIssueClass {
+    public static func isAuth(_ e: UsageError) -> Bool {
+        if case .authExpired = e { return true }
+        return false
+    }
+    /// MiMo 的三类鉴权失败(它的错误类型独立于 UsageError)。
+    public static func isMiMoAuth(_ e: MiMoUsageService.MiMoError) -> Bool {
+        switch e {
+        case .loginRequired, .invalidCredentials, .invalidCookie: return true
+        case .network, .parse, .unknown: return false
+        }
+    }
+}
+
 @MainActor
 public final class TokenPlanModel: ObservableObject {
     public static let shared = TokenPlanModel()
@@ -195,6 +211,7 @@ public final class TokenPlanModel: ObservableObject {
         stepfunAuthFailures[account.id] = 0
         stepfunRetryNotBefore[account.id] = nil
         stepfunLastGood[account.id] = nil
+        stepfunPageStalls[account.id] = 0
     }
 
     /// 移除某账户(UI 层同时调 StepFunSessionController.logout(accountID:) 清该仓库)。
@@ -205,6 +222,7 @@ public final class TokenPlanModel: ObservableObject {
         stepfunAuthFailures[id] = nil
         stepfunRetryNotBefore[id] = nil
         stepfunLastGood[id] = nil
+        stepfunPageStalls[id] = nil
         notificationTracker.clear(provider: "stepfun")
         if stepfunAccounts.isEmpty {
             stepfunSessionActive = false
@@ -530,6 +548,7 @@ public final class TokenPlanModel: ObservableObject {
             credentialStore.write(stepfunConsoleToken, account: Self.stepfunConsoleTokenAccount)
             stepfunAuthFailures.removeAll()
             stepfunRetryNotBefore.removeAll()
+            stepfunPageStalls.removeAll()
         }
     }
     /// 阶跃是否已配置(任一账户已登录,或遗留 token 非空)。
@@ -565,6 +584,11 @@ public final class TokenPlanModel: ObservableObject {
     /// 每账户独立鉴权失败计数 + 冷却截止(键=账户 id;单账户过期不连坐其他账户)
     private var stepfunAuthFailures: [String: Int] = [:]
     private var stepfunRetryNotBefore: [String: Date] = [:]
+    /// 每账户连续「会话页未就绪」次数(键=账户 id;**进程内**有效)。
+    /// 2026-10-18:页面软卡死(加载失败/SPA wedged,非鉴权失败)此前永不重载,
+    /// 会永远卡在「会话页面加载中」。连续 2 次即触发重载自愈,连续 4 次升级为
+    /// 明确的重登提示。
+    private var stepfunPageStalls: [String: Int] = [:]
     /// 每账户 last-good 快照(本轮失败时保留展示旧值,标 isStale;进程内有效)
     private var stepfunLastGood: [String: StepFunAccountSnapshot] = [:]
     /// 手机号尾号补抓次数(键=账户 id;**进程内**有效,不持久化):
@@ -584,6 +608,30 @@ public final class TokenPlanModel: ObservableObject {
     @Published public var thresholdConfig: ThresholdConfig = ThresholdConfig() {
         didSet { UserDefaults.standard.set(thresholdConfig.warning, forKey: UserDefaultsKeys.thresholdWarning)
                  UserDefaults.standard.set(thresholdConfig.critical, forKey: UserDefaultsKeys.thresholdCritical) }
+    }
+    /// 灵动岛「余额告急下限」(¥):DeepSeek/MiMo 余额低于该值 → 岛判告急;0 = 不参与。
+    @Published public var moneyFloor: Double = 50 {
+        didSet {
+            UserDefaults.standard.set(moneyFloor, forKey: UserDefaultsKeys.moneyFloor)
+            prerenderIcon()
+        }
+    }
+    /// 当前处于「需处理」(鉴权类失败)的源(ProviderKind.rawValue)。
+    /// 由各 provider 刷新路径登记(阿里云不在此列:它按 authState 推导,见 attentionProviders)。
+    @Published public private(set) var authIssueProviders: Set<String> = []
+
+    /// 登记/清除鉴权失败标记。**变化即重渲染**——多数失败路径不经过 recordAndNotify,
+    /// 不主动重渲染胶囊就还是旧计数。
+    private func noteAuthIssue(_ kind: ProviderKind, _ active: Bool) {
+        let raw = kind.rawValue
+        if active {
+            guard !authIssueProviders.contains(raw) else { return }
+            authIssueProviders.insert(raw)
+        } else {
+            guard authIssueProviders.contains(raw) else { return }
+            authIssueProviders.remove(raw)
+        }
+        prerenderIcon()
     }
     /// 是否启用接近上限通知(默认开)。用户可在设置关。
     @Published public var notificationsEnabled: Bool = true {
@@ -744,6 +792,7 @@ public final class TokenPlanModel: ObservableObject {
         let w = defaults.object(forKey: UserDefaultsKeys.thresholdWarning) as? Int ?? 80
         let c = defaults.object(forKey: UserDefaultsKeys.thresholdCritical) as? Int ?? 90
         thresholdConfig = ThresholdConfig(warning: w, critical: c)
+        moneyFloor = defaults.object(forKey: UserDefaultsKeys.moneyFloor) as? Double ?? 50
         if defaults.object(forKey: UserDefaultsKeys.notificationsEnabled) != nil {
             notificationsEnabled = defaults.bool(forKey: UserDefaultsKeys.notificationsEnabled)
         }
@@ -1023,12 +1072,14 @@ public final class TokenPlanModel: ObservableObject {
                 snapshots.append(OpenCodeWorkspaceSnapshot(id: ws.id, label: ws.label, quota: q))
             case .failure(let e):
                 errors[ws.id] = openCodeErrorMessage(e)
+                if AuthIssueClass.isAuth(e) { noteAuthIssue(.openCode, true) }
             }
         }
 
         if anySucceeded {
             openCodeQuota = OpenCodeQuota.aggregate(snapshots.map(\.quota))
             openCodeError = nil
+            noteAuthIssue(.openCode, false)
             openCodeLastUpdated = Date()
             openCodeWorkspaceQuotas = snapshots
             AppLog.debug("OpenCode 用量刷新成功 \(snapshots.count) workspace rolling=\(openCodeQuota.map { "\($0.rolling.pct)%" } ?? "无") weekly=\(openCodeQuota.map { "\($0.weekly.pct)%" } ?? "无")", category: .opencode)
@@ -1072,12 +1123,14 @@ public final class TokenPlanModel: ObservableObject {
                 snapshots.append(KimiAccountSnapshot(id: account.id, label: account.label, quota: q))
             case .failure(let e):
                 errors[account.id] = kimiErrorMessage(e)
+                if AuthIssueClass.isAuth(e) { noteAuthIssue(.kimi, true) }
             }
         }
 
         if anySucceeded {
             kimiQuota = KimiQuota.aggregate(snapshots.map(\.quota))
             kimiError = nil
+            noteAuthIssue(.kimi, false)
             kimiLastUpdated = Date()
             kimiAccountQuotas = snapshots
             AppLog.debug("Kimi 用量刷新成功 \(snapshots.count) 账户 5h=\(kimiQuota.map { "\($0.fiveHour.pct)%" } ?? "无") weekly=\(kimiQuota.map { "\($0.weekly.pct)%" } ?? "无")", category: .kimi)
@@ -1109,6 +1162,7 @@ public final class TokenPlanModel: ObservableObject {
         kimiAccountErrors = [:]
         kimiQuota = nil
         kimiError = nil
+        noteAuthIssue(.kimi, false)
         notificationTracker.clear(provider: "kimi")
     }
 
@@ -1139,12 +1193,14 @@ public final class TokenPlanModel: ObservableObject {
                 snapshots.append(ZhipuAccountSnapshot(id: account.id, label: account.label, quota: q))
             case .failure(let e):
                 errors[account.id] = zhipuErrorMessage(e)
+                if case .authExpired = e { noteAuthIssue(.zhipu, true) }
             }
         }
 
         if anySucceeded {
             zhipuQuota = ZhipuQuota.aggregate(snapshots.map(\.quota))
             zhipuError = nil
+            noteAuthIssue(.zhipu, false)
             zhipuLastUpdated = Date()
             zhipuAccountQuotas = snapshots
             AppLog.debug("智谱用量刷新成功 \(snapshots.count) 账户 5h=\(zhipuQuota?.fiveHour.map { "\($0.pctInt)%" } ?? "无") weekly=\(zhipuQuota?.weekly.map { "\($0.pctInt)%" } ?? "无") level=\(zhipuQuota?.level ?? "?")", category: .zhipu)
@@ -1180,6 +1236,7 @@ public final class TokenPlanModel: ObservableObject {
         zhipuAccountErrors = [:]
         zhipuQuota = nil
         zhipuError = nil
+        noteAuthIssue(.zhipu, false)
         notificationTracker.clear(provider: "zhipu")
     }
 
@@ -1198,13 +1255,16 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let b):
             deepSeekBalance = b
             deepSeekError = nil
+            noteAuthIssue(.deepSeek, false)
             deepSeekLastUpdated = Date()
             deepSeekTodayCost = deepSeekDailyStore.record(balance: b.totalBalance, at: Date())
             AppLog.debug("DeepSeek 余额刷新成功 total=\(b.totalBalance) currency=\(b.currency) 今日=\(deepSeekTodayCost?.cost ?? 0)", category: .deepseek)
             recordAndNotify()
         case .failure(let e):
             switch e {
-            case .authExpired: deepSeekError = "API Key 无效或已失效,请在设置更新"
+            case .authExpired:
+                deepSeekError = "API Key 无效或已失效,请在设置更新"
+                noteAuthIssue(.deepSeek, true)
             case .network(let s): deepSeekError = "DeepSeek 网络错误: \(s)"
             case .parse: deepSeekError = "DeepSeek 响应格式变化,解析失败"
             case .invalidResponse: deepSeekError = "DeepSeek 响应异常"
@@ -1222,6 +1282,7 @@ public final class TokenPlanModel: ObservableObject {
         deepSeekTodayCost = nil
         deepSeekError = nil
         deepSeekLastUpdated = nil
+        noteAuthIssue(.deepSeek, false)
     }
 
     // MARK: - 小米 MiMo API
@@ -1257,6 +1318,7 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let usage):
             mimoUsage = usage
             mimoError = nil
+            noteAuthIssue(.mimo, false)
             mimoLastUpdated = Date()
             mimoAuthFailures = 0
             mimoRetryNotBefore = nil
@@ -1278,6 +1340,7 @@ public final class TokenPlanModel: ObservableObject {
             // 鉴权类失败才降频;网络抖动仍按正常间隔重试
             switch e {
             case .loginRequired, .invalidCredentials, .invalidCookie:
+                noteAuthIssue(.mimo, true)
                 mimoAuthFailures += 1
                 let cooldown = MiMoUsageService.authRetryCooldownSeconds(consecutiveFailures: mimoAuthFailures)
                 mimoRetryNotBefore = Date().addingTimeInterval(cooldown)
@@ -1328,6 +1391,7 @@ public final class TokenPlanModel: ObservableObject {
         mimoLastUpdated = nil
         mimoAuthFailures = 0
         mimoRetryNotBefore = nil
+        noteAuthIssue(.mimo, false)
     }
 
     // MARK: - MiniMax Coding Plan
@@ -1341,11 +1405,14 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let q):
             minimaxQuota = q
             minimaxError = nil
+            noteAuthIssue(.minimax, false)
             AppLog.debug("MiniMax 用量刷新成功 本窗=\(q.interval.map { "\($0.pctInt)%" } ?? "无") 周=\(q.weekly.map { "\($0.pctInt)%" } ?? "无") plan=\(q.planName ?? "?")", category: .minimax)
             recordAndNotify()
         case .failure(let e):
             switch e {
-            case .authExpired: minimaxError = "MiniMax API Key 无效或已失效,请在设置更新"
+            case .authExpired:
+                minimaxError = "MiniMax API Key 无效或已失效,请在设置更新"
+                noteAuthIssue(.minimax, true)
             case .noSubscription: minimaxError = "Key 有效,但当前无生效中的 Coding Plan 订阅(订阅后自动恢复显示)"
             case .network(let s): minimaxError = "MiniMax 网络错误: \(s)"
             case .parse: minimaxError = "MiniMax 响应格式变化,解析失败"
@@ -1362,6 +1429,7 @@ public final class TokenPlanModel: ObservableObject {
         minimaxAPIKey = ""
         minimaxQuota = nil
         minimaxError = nil
+        noteAuthIssue(.minimax, false)
         notificationTracker.clear(provider: "minimax")
     }
 
@@ -1377,13 +1445,16 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let q):
             ollamaQuota = q
             ollamaError = nil
+            noteAuthIssue(.ollama, false)
             // 诊断:记录近 30 天消费(美元)+ 请求数 + 档位/额度。2026-10-09 起
             // /api/usage 只回报绝对美元(totals.usage_usd),不再有 0-1 小数口径歧义。
             AppLog.debug("Ollama 用量刷新成功 近30天=$\(String(format: "%.2f", q.spentUSD30d))(\(q.requests30d) 次) 近7天=$\(String(format: "%.2f", q.spentUSD7d)) 额度=\(q.capUSD.map { "$\($0)" } ?? "未知") 占比=\(q.usagePct.map { "\(Int($0.rounded()))%" } ?? "无") plan=\(q.plan ?? "?")", category: .ollama)
             recordAndNotify()
         case .failure(let e):
             switch e {
-            case .authExpired: ollamaError = "API Key 无效或已吊销,请在设置更新"
+            case .authExpired:
+                ollamaError = "API Key 无效或已吊销,请在设置更新"
+                noteAuthIssue(.ollama, true)
             case .rateLimited: ollamaError = "请求被限流(用量可能已耗尽),稍后自动重试"
             case .network(let s): ollamaError = "Ollama 网络错误: \(s)"
             case .parse(let s): ollamaError = "Ollama 响应格式变化,解析失败(\(s))"
@@ -1400,6 +1471,7 @@ public final class TokenPlanModel: ObservableObject {
         ollamaAPIKey = ""
         ollamaQuota = nil
         ollamaError = nil
+        noteAuthIssue(.ollama, false)
         notificationTracker.clear(provider: "ollama")
     }
 
@@ -1477,16 +1549,25 @@ public final class TokenPlanModel: ObservableObject {
             var raw: String
             switch outcome {
             case .pageNotReady:
-                // 页面/webView 未就绪:软错误,不消耗鉴权冷却
-                errors[account.id] = "会话页面加载中,稍后自动重试"
+                // 页面/webView 未就绪:软错误,不消耗鉴权冷却。连续卡死累计到
+                // stepfunPageStalls(fetchStepFunAccount 据此触发重载自愈);
+                // 重载后仍不就绪且连续 ≥4 次 → 明确要求重登,不再假装"稍后自动重试"。
+                let stalls = stepfunPageStalls[account.id, default: 0] + 1
+                stepfunPageStalls[account.id] = stalls
+                errors[account.id] = stalls >= 4
+                    ? "会话页无响应,请重登该账户(或重启 App)"
+                    : "会话页面加载中,稍后自动重试"
                 continue
             case .sessionExpired:
                 // 重载后仍停在登录域:会话真的死了(区别于「加载中」,给重登入口)
                 errors[account.id] = "登录态已过期,请重新登录该账户"
                 noteStepFunAuthFailure(accountID: account.id)
+                noteAuthIssue(.stepfun, true)
+                stepfunPageStalls[account.id] = 0
                 continue
             case .json(let text):
                 raw = text
+                stepfunPageStalls[account.id] = 0
             }
             let data = Data(raw.utf8)
             if let envelope = StepFunUsageService.classifyEnvelope(data: data) {
@@ -1494,9 +1575,11 @@ public final class TokenPlanModel: ObservableObject {
                 case .authExpired:
                     errors[account.id] = "登录态已过期,请重新登录该账户"
                     noteStepFunAuthFailure(accountID: account.id)
+                    noteAuthIssue(.stepfun, true)
                 case .tokenNotPermitted:
                     errors[account.id] = "凭证类型不对:API Key 查不了额度"
                     noteStepFunAuthFailure(accountID: account.id)
+                    noteAuthIssue(.stepfun, true)
                 default:
                     errors[account.id] = "平台返回异常(\(raw.prefix(50)))"
                 }
@@ -1526,6 +1609,7 @@ public final class TokenPlanModel: ObservableObject {
         if anyFresh {
             stepfunQuota = counted.isEmpty ? nil : StepFunQuota.aggregate(counted.map(\.quota))
             stepfunError = nil
+            noteAuthIssue(.stepfun, false)
             stepfunLastUpdated = Date()
             stepfunSessionActive = true
             AppLog.debug("阶跃用量刷新成功 \(fresh.count)/\(stepfunAccounts.count) 账户(\(merged.count - fresh.count) 个旧数据) 月池=\(stepfunQuota?.subscription.map { "\($0.usedPctInt)%" } ?? "无") 加油包=\(stepfunQuota?.topup.map { "\($0.usedPctInt)%" } ?? "无")", category: .stepfun)
@@ -1561,14 +1645,20 @@ public final class TokenPlanModel: ObservableObject {
                                      sink: @escaping (String) async -> StepFunUsageService.StepFunFetchOutcome)
     async -> StepFunUsageService.StepFunFetchOutcome {
         let first = await sink(accountID)
-        let needsHeal: Bool
+        var needsHeal: Bool
         if case .json(let raw) = first {
             needsHeal = StepFunUsageService.classifyEnvelope(data: Data(raw.utf8)) == .authExpired
         } else {
             needsHeal = first == .sessionExpired
         }
+        // 页面软卡死自愈(2026-10-18):连续 pageNotReady 说明页面加载失败或 SPA
+        // wedged(非鉴权问题),同样值得重载会话页——此前只有鉴权失败才重载,
+        // 卡死即永久停在「会话页面加载中」。上一轮已累计 stepfunPageStalls,≥1 触发。
+        if case .pageNotReady = first, stepfunPageStalls[accountID, default: 0] >= 1 {
+            needsHeal = true
+        }
         guard needsHeal, let reload = stepfunSessionReload else { return first }
-        AppLog.info("阶跃[\(accountID)]鉴权失败,重载会话页自愈", category: .stepfun)
+        AppLog.info("阶跃[\(accountID)]会话页重载自愈(鉴权失败或页面卡死)", category: .stepfun)
         await reload(accountID)
         var last: StepFunUsageService.StepFunFetchOutcome = .pageNotReady
         for _ in 0..<4 {
@@ -1589,17 +1679,23 @@ public final class TokenPlanModel: ObservableObject {
         case .success(let q):
             stepfunQuota = q
             stepfunError = nil
+            noteAuthIssue(.stepfun, false)
             stepfunLastUpdated = Date()
             stepfunAuthFailures.removeAll()
             stepfunRetryNotBefore.removeAll()
+            stepfunPageStalls.removeAll()
             stepfunSessionActive = true
             if !snapshots.isEmpty { stepfunAccountQuotas = snapshots }
             AppLog.debug("阶跃用量刷新成功 \(snapshots.count) 账户 月池=\(q.subscription.map { "\($0.usedPctInt)%" } ?? "无") 加油包=\(q.topup.map { "\($0.usedPctInt)%" } ?? "无")", category: .stepfun)
             recordAndNotify()
         case .failure(let e):
             switch e {
-            case .authExpired: stepfunError = "阶跃控制台登录态已过期,请重新登录 platform.stepfun.com"
-            case .tokenNotPermitted: stepfunError = "阶跃凭证类型不对:API Key 查不了额度,需要网页登录态"
+            case .authExpired:
+                stepfunError = "阶跃控制台登录态已过期,请重新登录 platform.stepfun.com"
+                noteAuthIssue(.stepfun, true)
+            case .tokenNotPermitted:
+                stepfunError = "阶跃凭证类型不对:API Key 查不了额度,需要网页登录态"
+                noteAuthIssue(.stepfun, true)
             case .network(let s): stepfunError = "阶跃网络错误: \(s)"
             case .parse(let s): stepfunError = "阶跃响应格式变化,解析失败(\(s))"
             case .invalidResponse(let s): stepfunError = "阶跃响应异常: \(s)"
@@ -1626,6 +1722,8 @@ public final class TokenPlanModel: ObservableObject {
         stepfunAuthFailures.removeAll()
         stepfunRetryNotBefore.removeAll()
         stepfunLastGood.removeAll()
+        stepfunPageStalls.removeAll()
+        noteAuthIssue(.stepfun, false)
         notificationTracker.clear(provider: "stepfun")
     }
 

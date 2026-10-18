@@ -21,6 +21,8 @@ public enum UserDefaultsKeys {
     /// 已停用数据源(ProviderKind.rawValue 数组)。停用语义 = 全面停用:
     /// 菜单栏不出列、面板不出 tab、停止轮询刷新、不参与告警与每日摘要。
     public static let disabledProviders = "disabledProviders"
+    /// 灵动岛「余额告急下限」(¥)。0 = 余额类不参与岛的告急计数(默认 50)。
+    public static let moneyFloor = "moneyFloor"
     /// 阿里云套餐到期提醒"今日已提醒"标记(P1-B2)
     public static let subscriptionExpiryWarnedDay = "subscriptionExpiryWarnedDay"
     /// 每日用量摘要开关(P2-B7)

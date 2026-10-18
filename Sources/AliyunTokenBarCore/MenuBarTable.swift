@@ -450,6 +450,17 @@ public extension MenuBarTable {
 }
 
 extension TokenPlanModel {
+    /// 需处理的源集合:各 provider 刷新路径已登记 + 阿里云按登录态推导
+    /// (阿里云的失败通道是 AuthState,不走错误字符串)。
+    private var attentionProviders: Set<String> {
+        var set = authIssueProviders
+        switch authState {
+        case .notLoggedIn, .expired, .blNotInstalled: set.insert(ProviderKind.aliyun.rawValue)
+        default: break
+        }
+        return set
+    }
+
     /// 从模型现值计算迷你表格列(菜单栏渲染与 tooltip 共用这一个映射)。
     /// 可见性语义与原 renderIconSink 内联逻辑一致:
     /// Kimi/OpenCode = 有数据,或已配置且出错(→横杠列);本机 = 开关开。
@@ -480,6 +491,8 @@ extension TokenPlanModel {
             stepfunSecondary: stepfunQuota?.secondaryPct, stepfunSecondaryLabel: stepfunQuota?.secondaryLabel,
             systemEnabled: systemStatsEnabled && isEnabled(.system),
             cpu: monitor.cpuPercent, memory: monitor.memoryPercent,
-            disabled: disabledProviders)
+            disabled: disabledProviders,
+            moneyFloor: moneyFloor,
+            needsAttention: attentionProviders)
     }
 }
