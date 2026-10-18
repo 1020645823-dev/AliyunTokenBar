@@ -35,14 +35,23 @@ final class StepFunSessionController: NSObject, ObservableObject {
         super.init()
     }
 
-    /// 账户 id → 会话仓库(首账户=默认仓库,其余=UUID 命名仓库,各自持久化隔离)。
+    /// 账户 id → 会话仓库(main=固定 UUID 命名仓库,其余=各账户 UUID,各自持久化隔离)。
+    ///
+    /// ⚠️ 2026-10-18:main 从 `WKWebsiteDataStore.default()` 迁到固定 UUID 命名仓库。
+    /// 实勘定论:默认仓库的 cookie 落盘文件(WebsiteData/Default/Cookies/)会整文件
+    /// 丢失(本次 2026-10-17 20:45 复现),此后登录态只存活于一个僵尸 WebKit 网络
+    /// 进程的内存里——app 重启能"续命"只因该进程还活着,进程一死(实测:僵尸退出
+    /// 后默认仓库 cookie 从 21 条变 0 条)全部登录态灰飞烟灭。UUID 命名仓库的
+    /// cookie 一直稳定落盘(账户2 的仓库文件跨月正常),故全部账户统一走命名仓库。
+    static let mainStoreIdentifier = UUID(uuidString: "6C2E1A50-3D4B-4E5F-8A9B-0C1D2E3F4A5B")!
+
     static func dataStore(accountID: String) -> WKWebsiteDataStore {
         if accountID == "main" {
-            return .default()
+            return WKWebsiteDataStore(forIdentifier: mainStoreIdentifier)
         }
         guard let uuid = UUID(uuidString: accountID) else {
-            AppLog.warning("阶跃账户 id 非法,退回默认仓库: \(accountID)", category: .stepfun)
-            return .default()
+            AppLog.warning("阶跃账户 id 非法,退回 main 仓库: \(accountID)", category: .stepfun)
+            return WKWebsiteDataStore(forIdentifier: mainStoreIdentifier)
         }
         return WKWebsiteDataStore(forIdentifier: uuid)
     }

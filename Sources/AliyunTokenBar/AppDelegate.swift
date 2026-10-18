@@ -106,6 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
         updateIslandWiring(MenuBarStyleManager.shared.scheme)
+        // 岛行点击 → 面板跳转:由 AppDelegate 自己注入。**不要**在别处用
+        // `NSApp.delegate as? AppDelegate` —— SwiftUI 的 NSApplicationDelegateAdaptor
+        // 会把 delegate 包一层代理,强转必然失败(实测 delegate=false,点击静默无效果)。
+        IslandOverlayController.shared.openPanelSink = { [weak self] kind in
+            guard let self,
+                  let tab = ProviderTab(kind: ProviderKind.from(menuBarColumnKind: kind)) else { return }
+            self.openPanel(tab: tab)
+        }
     }
 
     // MARK: - 灵动岛(菜单栏悬停展开)
@@ -149,12 +157,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 岛行点击/重登:写路由 → 收起岛并抑制 → 打开面板(与状态项点击同一路径)。
+    /// 弹出**延后一拍**:触发这次跳转的点击落在岛的覆盖面板上(popover 之外),
+    /// transient popover 的事件监视器会把同一次点击当成「点外面」而立刻关闭(实测)。
     func openPanel(tab: ProviderTab) {
         PanelRouter.shared.open(tab: tab)
         guard let popover, let button = statusItem?.button else { return }
         IslandOverlayController.shared.collapseNow()
         IslandOverlayController.shared.setSuppressed(true)
-        if !popover.isShown {
+        guard !popover.isShown else { return }
+        DispatchQueue.main.async {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

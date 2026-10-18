@@ -414,8 +414,8 @@ public extension MenuBarTable {
         return text
     }
 
-    /// 展开卡行序:需处理 → 告急 → 预警 → 正常;同级按「最紧窗口」已用升序
-    /// (最紧的在上);金额等无 pct 的列置于该档末尾;再同级按固定列序。
+    /// 展开卡行序:需处理 → 告急 → 预警 → 正常;同级按「最紧窗口」已用**降序**
+    /// (剩余最少的最上);纯金额列(无 pct)置于该档末尾;再同级按固定列序。
     static func islandRows(columns: [MenuBarTableColumn],
                            config: ThresholdConfig,
                            moneyFloor: Double) -> [MenuBarTableColumn] {
@@ -424,7 +424,11 @@ public extension MenuBarTable {
                             state(b.element, config: config, moneyFloor: moneyFloor))
             if sa != sb { return sa > sb }
             let (ta, tb) = (tightness(a.element), tightness(b.element))
-            if ta != tb { return ta < tb }
+            if ta != tb {
+                if ta == Int.max { return false }   // 无 pct 的列排同档末尾
+                if tb == Int.max { return true }
+                return ta > tb                      // 已用多的在前(= 剩余少的在前)
+            }
             return a.offset < b.offset
         }.map(\.element)
     }

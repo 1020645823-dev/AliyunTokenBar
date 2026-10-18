@@ -268,6 +268,10 @@ final class IslandOverlayController {
     private var pollTimer: Timer?
     private var hideWorkItem: DispatchWorkItem?
     private var keepRect: CGRect = .zero
+    /// 展开卡 rect(屏幕坐标 y 向上,外扩 6pt):**只有指针落在卡内时才吃鼠标事件**。
+    /// 系统按窗口帧挑事件接收者,`hitTest` 返回 nil 不会把点击转交下层状态项 ——
+    /// 若整窗收事件,点胶囊就再也打不开主面板(实测)。
+    private var cardScreenRect: CGRect = .zero
     private var modelCancellable: AnyCancellable?
     /// 主面板(popover)打开期间不展开,避免岛与弹层重叠。
     private var suppressed = false
@@ -291,12 +295,14 @@ final class IslandOverlayController {
         let config = model.thresholdConfig
 
         // 几何(屏幕坐标 y 向上 → 面板内左上原点 y 向下):
-        // 展开态顶边对齐胶囊顶边(从菜单栏向下生长),水平居中对齐胶囊并夹在屏内。
+        // 展开态**从胶囊下沿向下生长**(卡顶 = 胶囊底 pill.minY):卡若与胶囊顶对齐会
+        // 把胶囊整个盖住——而悬停即展开,于是「点胶囊开面板」这条既有动线会被吃掉。
+        // 水平居中对齐胶囊并夹在屏内。
         let expandedRect = CGRect(
             x: min(max(pill.midX - IslandMetrics.expandedWidth / 2,
                        screen.frame.minX + 6),
                    screen.frame.maxX - IslandMetrics.expandedWidth - 6),
-            y: pill.maxY - IslandMetrics.height(rows: columns.count),
+            y: pill.minY - IslandMetrics.height(rows: columns.count),
             width: IslandMetrics.expandedWidth,
             height: IslandMetrics.height(rows: columns.count)
         )
@@ -304,7 +310,7 @@ final class IslandOverlayController {
         let frameExpanded = CGRect(
             x: min(max(pill.midX - IslandMetrics.expandedWidth / 2, screen.frame.minX + 6),
                    screen.frame.maxX - IslandMetrics.expandedWidth - 6),
-            y: pill.maxY - IslandMetrics.height(rows: IslandMetrics.maxRows),
+            y: pill.minY - IslandMetrics.height(rows: IslandMetrics.maxRows),
             width: IslandMetrics.expandedWidth,
             height: IslandMetrics.height(rows: IslandMetrics.maxRows)
         )
@@ -325,10 +331,11 @@ final class IslandOverlayController {
         state.collapsedRect = relRect(pill, in: panelRect)
         state.expandedRect = relRect(expandedRect, in: panelRect)
         panel.setFrame(panelRect, display: true)
-        // 展开态才吃鼠标事件(外扩 6pt 兼容 spring 回弹);hitTest 白名单之外仍透传
-        panel.ignoresMouseEvents = false
+        // 展开卡外扩 6pt(兼容 spring 回弹):指针在卡内才吃事件,否则透传给状态项
+        cardScreenRect = expandedRect.insetBy(dx: -6, dy: -6)
         panel.acceptsMouseMovedEvents = true
         (panel.contentView as? IslandHostingView)?.hitRect = state.expandedRect.insetBy(dx: -6, dy: -6)
+        panel.ignoresMouseEvents = !cardScreenRect.contains(NSEvent.mouseLocation)
         panel.orderFrontRegardless()
         keepRect = panelRect
 
@@ -376,6 +383,7 @@ final class IslandOverlayController {
 
     /// 点行 → 收起岛并请求打开主面板(实际打开由 App 层注入的 sink 完成)。
     func openPanel(for kind: MenuBarColumnKind) {
+        AppLog.info("岛行点击 \(kind.rawValue) sink=\(openPanelSink != nil)", category: .general)
         collapseNow()
         setSuppressed(true)
         openPanelSink?(kind)
@@ -464,7 +472,10 @@ final class IslandOverlayController {
 
     private func checkMouse() {
         guard let panel, panel.isVisible else { stopPolling(); return }
-        if !keepRect.contains(NSEvent.mouseLocation) {
+        let mouse = NSEvent.mouseLocation
+        // 事件开关随指针位置翻转:卡内吃事件(行 hover/点击),卡外透传(胶囊仍可点)
+        panel.ignoresMouseEvents = !cardScreenRect.contains(mouse)
+        if !keepRect.contains(mouse) {
             collapse(animated: true)
         }
     }

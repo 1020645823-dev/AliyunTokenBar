@@ -2413,6 +2413,13 @@ check("island 排序:状态优先+同级剩余升序", {
                                  config: islCfg, moneyFloor: 0)
     return rows.map(\.kind) == [.mimo, .kimi, .zhipu, .aliyun]
 }())
+check("island 排序:同档内已用多的在前(剩余少的最上)", {
+    let rows = MenuBarTable.islandRows(columns: [islCol(.minimax, 0, 49),   // 正常 剩51
+                                                 islCol(.aliyun, 64, nil),  // 正常 剩36 ← 该在最上
+                                                 islCol(.stepfun, 20, nil)],// 正常 剩80
+                                 config: islCfg, moneyFloor: 0)
+    return rows.map(\.kind) == [.aliyun, .minimax, .stepfun]
+}())
 check("island 排序:金额列进档但不抢档内位次", {
     let rows = MenuBarTable.islandRows(columns: [islCol(.deepSeek, nil, nil, amount: 5),  // 告急但无 pct
                                                  islCol(.kimi, 0, 90)],                  // 告急 剩10

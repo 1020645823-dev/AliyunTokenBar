@@ -183,7 +183,7 @@ struct ATBStatusDot: View {
     }
 }
 
-// MARK: - Provider 标识徽标
+// MARK: - Provider 标识徽标(真实品牌 logo 剪影;「本机」回落 SF Symbol)
 struct ATBProviderMark: View {
     let tab: ProviderTab
     var size: CGFloat = 32
@@ -193,9 +193,14 @@ struct ATBProviderMark: View {
         ZStack {
             Circle().fill(brand.opacity(0.14)).frame(width: size, height: size)
             Circle().fill(brand).frame(width: size * 0.62, height: size * 0.62)
-            Image(systemName: tab.icon)
-                .font(.system(size: size * 0.32, weight: .heavy))
-                .foregroundStyle(.white)
+            if let mark = tab.kind.brandMark {
+                mark.silhouette(in: CGRect(x: 0, y: 0, width: size * 0.36, height: size * 0.36),
+                                tint: .white)
+            } else {
+                Image(systemName: tab.icon)
+                    .font(.system(size: size * 0.32, weight: .heavy))
+                    .foregroundStyle(.white)
+            }
         }
         .frame(width: size, height: size)
     }

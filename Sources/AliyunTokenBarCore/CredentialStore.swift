@@ -29,6 +29,11 @@ public final class KeychainCredentialStore: CredentialStore {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        // 读永不应弹授权框:ad-hoc 签名每次构建 cdhash 都变,钥匙串 ACL 不认识
+        // 新二进制,UI 允许模式下 SecItemCopyMatching 会弹「想要使用钥匙串中的
+        // 机密信息」并阻塞(迁移期/启动期都可能中招)。改用 Fail 模式:读不到
+        // 就返回 nil,迁移静默跳过该项(凭证文件才是事实源)。
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var item: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess, let data = item as? Data,

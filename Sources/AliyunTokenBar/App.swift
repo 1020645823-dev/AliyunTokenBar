@@ -559,11 +559,8 @@ struct AliyunTokenBarApp: App {
         TokenPlanModel.shared.renderTooltipSink = { model in
             MenuBarTable.tooltip(columns: model.menuBarColumns())
         }
-        // 灵动岛点行 → 打开面板并落在对应 tab(岛活在独立覆盖面板里,拿不到 AppDelegate)
-        IslandOverlayController.shared.openPanelSink = { kind in
-            guard let tab = ProviderTab(kind: ProviderKind.from(menuBarColumnKind: kind)) else { return }
-            (NSApp.delegate as? AppDelegate)?.openPanel(tab: tab)
-        }
+        // 岛行点击 → 面板跳转的注入在 AppDelegate(它才是 popover 的持有者;
+        // SwiftUI 的 adaptor 会包一层 delegate 代理,NSApp.delegate 强转拿不到 AppDelegate)
         // 应用保存的主题
         NSApplication.shared.appearance = ThemeManager.shared.theme.nsAppearance
     }
