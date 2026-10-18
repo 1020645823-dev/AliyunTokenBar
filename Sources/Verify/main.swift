@@ -2345,5 +2345,83 @@ check("stepfun 其他 Set-Cookie 不误读", {
     return StepFunUsageService.rotatedToken(from: resp) == nil
 }())
 
+// --- 灵动岛:聚焦列选择 + 风险计数 ---
+let islCfg = ThresholdConfig()
+check("island focus 空列→nil", MenuBarTable.islandFocus(columns: [], config: islCfg) == nil)
+// 默认 mtCols 全 safe:Kimi 周 58% 占比最高 → 聚焦 Kimi
+check("island focus 全safe取占比最高", MenuBarTable.islandFocus(columns: mtCols(), config: islCfg)?.kind == .kimi)
+// critical 优先:safe 占比更高也不抢
+check("island focus critical 优先", MenuBarTable.islandFocus(columns: mtCols(kW: 95), config: islCfg)?.kind == .kimi)
+// warning 高于 safe(主值 85 触发 warning,次值 10 无所谓)
+check("island focus warning 高于 safe", MenuBarTable.islandFocus(columns: mtCols(k5: 85, kW: 10), config: islCfg)?.kind == .kimi)
+// money 列(DeepSeek)pct=0 不参与百分比竞争
+check("island focus money列不抢聚焦", MenuBarTable.islandFocus(columns: mtCols(), config: islCfg)?.kind != .deepSeek)
+// 只剩 money 列时按固定列序兜底
+check("island focus 仅剩money列→兜底首列",
+      MenuBarTable.islandFocus(columns: mtCols(dis: ["aliyun", "kimi", "openCode", "minimax", "system"]),
+                               config: islCfg)?.kind == .deepSeek)
+// 风险计数按列最高 band(Kimi 95=critical,智谱 85=warning)
+let islCounts = MenuBarTable.islandRiskCounts(columns: mtCols(kW: 95, zConf: true, z5: 85, zW: 2), config: islCfg)
+check("island 风险计数 critical1+warning1", islCounts.critical == 1 && islCounts.warning == 1)
+check("island 风险计数 全safe", MenuBarTable.islandRiskCounts(columns: mtCols(), config: islCfg) == (critical: 0, warning: 0))
+check("island 列band取主/次高者", {
+    let col = mtCols(k5: 10, kW: 92).first { $0.kind == .kimi }!
+    return MenuBarTable.band(col, config: islCfg) == .critical
+}())
+
+// --- 灵动岛汇总:状态 / 剩余 / 计数 / 排序(2026-10-18) ---
+func islCol(_ kind: MenuBarColumnKind, _ p: Int?, _ s: Int?,
+            attention: Bool = false, amount: Double? = nil) -> MenuBarTableColumn {
+    var col = MenuBarTableColumn(kind: kind,
+                                 primary: MenuBarTableValue(text: p.map { "\($0)%" } ?? "—", pct: p),
+                                 secondary: MenuBarTableValue(text: s.map { "\($0)%" } ?? "—", pct: s,
+                                                              amount: amount))
+    col.needsAttention = attention
+    return col
+}
+check("island state:已用90→告急", MenuBarTable.state(islCol(.kimi, 90, nil), config: islCfg, moneyFloor: 0) == .critical)
+check("island state:已用80→预警", MenuBarTable.state(islCol(.kimi, 80, nil), config: islCfg, moneyFloor: 0) == .warning)
+check("island state:已用79→正常", MenuBarTable.state(islCol(.kimi, 79, nil), config: islCfg, moneyFloor: 0) == .ok)
+check("island state:两窗口取最严重(次窗更紧)", MenuBarTable.state(islCol(.kimi, 0, 88), config: islCfg, moneyFloor: 0) == .warning)
+check("island state:次窗触顶→告急", MenuBarTable.state(islCol(.kimi, 0, 95), config: islCfg, moneyFloor: 0) == .critical)
+check("island state:需处理压过告急", MenuBarTable.state(islCol(.kimi, 95, nil, attention: true), config: islCfg, moneyFloor: 0) == .needsAction)
+check("island state:余额低于下限→告急", MenuBarTable.state(islCol(.mimo, nil, nil, amount: 30), config: islCfg, moneyFloor: 50) == .critical)
+check("island state:下限 0→余额不参与", MenuBarTable.state(islCol(.mimo, nil, nil, amount: 30), config: islCfg, moneyFloor: 0) == .ok)
+check("island 剩余文案:78→剩 22%", MenuBarTable.remainingText(MenuBarTableValue(text: "78%", pct: 78)) == "剩 22%")
+check("island 剩余文案:横杠原样", MenuBarTable.remainingText(MenuBarTableValue(text: "—", pct: nil)) == "—")
+check("island 剩余文案:金额原样", MenuBarTable.remainingText(MenuBarTableValue(text: "12.3万", pct: nil, amount: 123_000)) == "12.3万")
+check("island 行文案:双窗口剩余", MenuBarTable.islandRowText(islCol(.kimi, 0, 78)) == "5小时 剩 100% · 周 剩 22%")
+check("island 行文案:单值列只要主段", {
+    let col = MenuBarTableColumn(singleValueKind: .aliyun,
+                                 primary: MenuBarTableValue(text: "64%", pct: 64),
+                                 primaryLabel: "30天",
+                                 secondary: MenuBarTableValue(text: "—", pct: nil))
+    return MenuBarTable.islandRowText(col) == "30天 剩 36%"
+}())
+check("island 汇总计数", MenuBarTable.islandHealth(columns: [islCol(.kimi, 95, nil),
+                                                              islCol(.zhipu, 85, nil),
+                                                              islCol(.aliyun, 10, nil)],
+                                                    config: islCfg, moneyFloor: 0)
+      == IslandHealth(needAction: 0, critical: 1, warning: 1))
+check("island 文案:全正常", MenuBarTable.islandHealthText(IslandHealth(needAction: 0, critical: 0, warning: 0)) == "一切正常")
+check("island 文案:单类带量词", MenuBarTable.islandHealthText(IslandHealth(needAction: 0, critical: 2, warning: 0)) == "2 项告急")
+check("island 文案:两类去量词", MenuBarTable.islandHealthText(IslandHealth(needAction: 1, critical: 1, warning: 0)) == "1 需处理 · 1 告急")
+check("island 文案:三类省略为 +n", MenuBarTable.islandHealthText(IslandHealth(needAction: 1, critical: 1, warning: 1)) == "1 需处理 · 1 告急 +1")
+check("island worst:需处理优先", IslandHealth(needAction: 1, critical: 3, warning: 9).worst == .needsAction)
+check("island 排序:状态优先+同级剩余升序", {
+    let rows = MenuBarTable.islandRows(columns: [islCol(.aliyun, 10, nil),        // 正常 剩90
+                                                 islCol(.kimi, 0, 90),           // 告急 剩10
+                                                 islCol(.zhipu, 0, 85),          // 预警 剩15
+                                                 islCol(.mimo, nil, nil, attention: true)],  // 需处理
+                                 config: islCfg, moneyFloor: 0)
+    return rows.map(\.kind) == [.mimo, .kimi, .zhipu, .aliyun]
+}())
+check("island 排序:金额列进档但不抢档内位次", {
+    let rows = MenuBarTable.islandRows(columns: [islCol(.deepSeek, nil, nil, amount: 5),  // 告急但无 pct
+                                                 islCol(.kimi, 0, 90)],                  // 告急 剩10
+                                 config: islCfg, moneyFloor: 50)
+    return rows.map(\.kind) == [.kimi, .deepSeek]
+}())
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

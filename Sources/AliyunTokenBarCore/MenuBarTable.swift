@@ -5,13 +5,17 @@ import Foundation
 // 列过滤/横杠/tooltip 文案全部在此,Verify 无 UI 全覆盖;
 // 渲染层(App 目标 miniTableImage)只负责把 [MenuBarTableColumn] 画出来。
 
-/// 单个值:展示文本 + 原始百分比(pct 供阈值变色;nil = 横杠,不着色)。
+/// 单个值:展示文本 + 原始百分比(pct 供阈值变色;nil = 横杠,不着色)+ 余额原始值。
 public struct MenuBarTableValue: Equatable {
     public let text: String
     public let pct: Int?
-    public init(text: String, pct: Int?) {
+    /// 余额类金额原始值(**仅「余额」行携带**;花费行/百分比行恒 nil)。
+    /// 「余额低于下限 → 告急」用它判定——展示文本已格式化,不能再反解析。
+    public let amount: Double?
+    public init(text: String, pct: Int?, amount: Double? = nil) {
         self.text = text
         self.pct = pct
+        self.amount = amount
     }
 }
 
@@ -108,6 +112,9 @@ public struct MenuBarTableColumn: Equatable {
         self.primaryLabel = primaryLabel
         self.secondaryLabel = secondaryLabel
     }
+    /// 该源是否处于「需处理」状态(鉴权类失败:未登录/过期/凭据无效)。
+    /// 构造后由 `MenuBarTable.columns(…, needsAttention:)` 置位。
+    public var needsAttention: Bool = false
 }
 
 public enum MenuBarTable {
@@ -260,6 +267,161 @@ public enum MenuBarTable {
             }
             return text
         }.joined(separator: " | ")
+    }
+
+    /// 列的最高风险 band(主/次两值取高者;两值均无百分比 → safe)。
+    public static func band(_ col: MenuBarTableColumn, config: ThresholdConfig) -> UsageBand {
+        [col.primary.pct, col.secondary.pct].compactMap { $0 }
+            .map { config.band(for: $0) }.max() ?? .safe
+    }
+
+    /// 灵动岛收起态聚焦列:胶囊只放得下一项,选「最该看」的那列。
+    /// 排序:band 高者优先(critical > warning > safe);同 band 取百分比高者;
+    /// 再同则按固定列序(声明顺序,阿里云恒最前)。全列无百分比(纯金额列)
+    /// 时天然落到第一列——money 列不参与百分比竞争,只作兜底。
+    public static func islandFocus(columns: [MenuBarTableColumn],
+                                   config: ThresholdConfig) -> MenuBarTableColumn? {
+        columns.enumerated().min { a, b in
+            let (ba, bb) = (band(a.element, config: config), band(b.element, config: config))
+            if ba != bb { return ba > bb }
+            let (pa, pb) = (islandPct(a.element), islandPct(b.element))
+            if pa != pb { return pa > pb }
+            return a.offset < b.offset
+        }?.element
+    }
+
+    /// 列的最高百分比(主/次取高;无百分比 → 0)。money 列恒 0,不参与聚焦竞争。
+    private static func islandPct(_ col: MenuBarTableColumn) -> Int {
+        max(col.primary.pct ?? 0, col.secondary.pct ?? 0)
+    }
+
+    /// 灵动岛展开态概览:按列的最高 band 计数(汇总行「2 项告警」用)。
+    public static func islandRiskCounts(columns: [MenuBarTableColumn],
+                                        config: ThresholdConfig) -> (critical: Int, warning: Int) {
+        var critical = 0, warning = 0
+        for col in columns {
+            switch band(col, config: config) {
+            case .critical: critical += 1
+            case .warning: warning += 1
+            case .safe: break
+            }
+        }
+        return (critical, warning)
+    }
+}
+
+// MARK: - 灵动岛汇总(状态 / 剩余 / 计数 / 排序)
+
+/// 岛视角的单列状态:比 UsageBand 多一档「需处理」(鉴权类失败)。
+public enum ColumnState: Int, Comparable, Equatable {
+    case ok = 0, warning = 1, critical = 2, needsAction = 3
+
+    public static func < (lhs: ColumnState, rhs: ColumnState) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+/// 岛收起态胶囊的汇总计数(展开卡头部 chip 共用同一套文案)。
+public struct IslandHealth: Equatable {
+    public let needAction: Int
+    public let critical: Int
+    public let warning: Int
+    public init(needAction: Int, critical: Int, warning: Int) {
+        self.needAction = needAction
+        self.critical = critical
+        self.warning = warning
+    }
+    public var total: Int { needAction + critical + warning }
+    /// 最严重的一类(决定胶囊圆点/文字与展开卡的取色)。
+    public var worst: ColumnState {
+        if needAction > 0 { return .needsAction }
+        if critical > 0 { return .critical }
+        if warning > 0 { return .warning }
+        return .ok
+    }
+}
+
+public extension MenuBarTable {
+    /// 单列状态:需处理 > 告急 > 预警 > 正常(两窗口取最严重;余额按下限判定)。
+    static func state(_ col: MenuBarTableColumn, config: ThresholdConfig, moneyFloor: Double) -> ColumnState {
+        if col.needsAttention { return .needsAction }
+        var worst = ColumnState.ok
+        for v in [col.primary, col.secondary] {
+            if let p = v.pct {
+                let s: ColumnState = p >= config.critical ? .critical : (p >= config.warning ? .warning : .ok)
+                if s > worst { worst = s }
+            }
+            if moneyFloor > 0, let a = v.amount, a < moneyFloor, worst < .critical {
+                worst = .critical
+            }
+        }
+        return worst
+    }
+
+    /// 剩余口径文案:"剩 22%";金额与横杠原样返回(金额不折算成百分比)。
+    static func remainingText(_ v: MenuBarTableValue) -> String {
+        guard let p = v.pct else { return v.text }
+        return "剩 \(max(0, min(100, 100 - p)))%"
+    }
+
+    /// 展开卡行文案:"5小时 剩 100% · 周 剩 22%";单值列/次行横杠时只显主段。
+    static func islandRowText(_ col: MenuBarTableColumn) -> String {
+        var text = "\(col.primaryLabel) \(remainingText(col.primary))"
+        if let sl = col.secondaryLabel, col.secondary.pct != nil || col.secondary.text != "—" {
+            text += " · \(sl) \(remainingText(col.secondary))"
+        }
+        return text
+    }
+
+    /// 汇总计数:单位是**列**(源)不是窗口(Kimi 周剩 22% + 5h 剩 100% → 该源记 1 项预警)。
+    static func islandHealth(columns: [MenuBarTableColumn],
+                             config: ThresholdConfig,
+                             moneyFloor: Double) -> IslandHealth {
+        var need = 0, crit = 0, warn = 0
+        for c in columns {
+            switch state(c, config: config, moneyFloor: moneyFloor) {
+            case .needsAction: need += 1
+            case .critical: crit += 1
+            case .warning: warn += 1
+            case .ok: break
+            }
+        }
+        return IslandHealth(needAction: need, critical: crit, warning: warn)
+    }
+
+    /// 胶囊/头部文案:单类带量词(「2 项告急」),多类去量词省菜单栏宽度
+    /// (「1 需处理 · 1 告急」,第三类省略为「+1」)。
+    static func islandHealthText(_ h: IslandHealth) -> String {
+        if h.total == 0 { return "一切正常" }
+        var parts: [String] = []
+        if h.needAction > 0 { parts.append("\(h.needAction) 需处理") }
+        if h.critical > 0 { parts.append("\(h.critical) 告急") }
+        if h.warning > 0 { parts.append("\(h.warning) 预警") }
+        if parts.count == 1 {
+            let label = h.needAction > 0 ? "需处理" : (h.critical > 0 ? "告急" : "预警")
+            return "\(h.total) 项\(label)"
+        }
+        var text = parts[0] + " · " + parts[1]
+        if parts.count == 3 { text += " +\(h.warning)" }   // 第三类必是预警(优先级顺序固定)
+        return text
+    }
+
+    /// 展开卡行序:需处理 → 告急 → 预警 → 正常;同级按「最紧窗口」已用升序
+    /// (最紧的在上);金额等无 pct 的列置于该档末尾;再同级按固定列序。
+    static func islandRows(columns: [MenuBarTableColumn],
+                           config: ThresholdConfig,
+                           moneyFloor: Double) -> [MenuBarTableColumn] {
+        columns.enumerated().sorted { a, b in
+            let (sa, sb) = (state(a.element, config: config, moneyFloor: moneyFloor),
+                            state(b.element, config: config, moneyFloor: moneyFloor))
+            if sa != sb { return sa > sb }
+            let (ta, tb) = (tightness(a.element), tightness(b.element))
+            if ta != tb { return ta < tb }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+
+    /// 「最紧窗口」的已用百分比;无百分比(纯金额列)→ Int.max(同档末尾)。
+    private static func tightness(_ col: MenuBarTableColumn) -> Int {
+        [col.primary.pct, col.secondary.pct].compactMap { $0 }.max() ?? Int.max
     }
 }
 
