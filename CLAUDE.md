@@ -61,7 +61,7 @@ StepFun 卡 v1.0.65 验证过的设计语言已泛化,**所有订阅卡共用底
 - **展开卡**:行文案剩余口径(`islandRowText` →「5小时 剩 90% · 周 剩 20%」)+ 头部「口径:剩余」;排序 `islandRows` = 状态优先 → 同级**已用降序**(剩余少的最上;纯金额列同档末尾)→ 固定列序。面板卡片与其余 scheme 一律保持已用%。
 - ⚠️ **覆盖面板事件三坑**(踩过,别再踩):① 卡顶若与胶囊顶对齐会盖住胶囊,而悬停即展开 → 「点胶囊开面板」动线被吃掉,卡必须**从胶囊下沿向下生长**;② 系统按**窗口帧**挑事件接收者,`NSView.hitTest` 返回 nil **不会**把点击转交下层状态项 → 必须用 `ignoresMouseEvents` 随指针位置翻转(`checkMouse` 轮询里做),卡内才吃事件;③ `NSApp.delegate as? AppDelegate` **恒为 nil**(SwiftUI `NSApplicationDelegateAdaptor` 会包一层代理)→ 岛行跳转的 sink 由 AppDelegate 自己注入,别处不要强转。
 - 行点击 → `PanelRouter.shared.pendingTab` → 面板 `consumePendingTab()` 落该源 tab;弹 popover 要**延后一拍** `DispatchQueue.main.async`,否则触发跳转的那次点击会被 transient 弹层当成「点外面」立刻关掉。
-- 已知独立问题(非本特性引入):app 被**激活**时(如 `open .app`、安装脚本重启)SwiftUI 的 `Settings { EmptyView() }` scene 会自动弹一个空白设置窗(标题「CodingTokenBar设置」);`open -g` 不激活则不弹。实际设置窗是自绘 NSPanel(`SettingsWindowManager`),两者并存。
+- **占位 scene 空白窗(已修)**:SwiftUI 在启动/激活时会自动打开 App 声明的 scene,`Settings { EmptyView() }` 因此表现为一个空白白窗(CG/NSWindow 名都是「CodingTokenBar设置」,恢复上次窗口帧;`open -g -j` 隐藏启动不弹,普通 `open`——install-update.sh 即如此——就弹)。⚠️ macOS 15+ 的 `.defaultLaunchBehavior(.suppressed)` 本可关掉它,但 **SceneBuilder 不支持 `if #available` 分支**(编译报 "closure containing control flow statement"),macOS 14 又必须保留 Settings 场景 → 现由 AppDelegate 从 AppKit 侧关:`closePlaceholderWindows()` 按标题精确匹配(orderOut),启动后连扫四次(0/0.5/1.5/3s)+ 激活通知补扫;`didBecomeVisibleNotification`/`didOrderOnScreenNotification` 在本 SDK 里**不存在**(可用的只有 didBecomeKey/Main/Expose/Update 等)。真设置面板是自绘 NSPanel(标题「设置」),⌘, 由 `CommandGroup(replacing: .appSettings)` 打开,与占位窗无关。
 
 ### 数据契约(⚠️ 重要)
 

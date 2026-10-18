@@ -569,15 +569,16 @@ struct AliyunTokenBarApp: App {
         // 注意:不再用 MenuBarExtra——macOS 26 会因系统隐藏状态项而回收进程。
         // 状态项由 AppDelegate 手动管理(NSStatusItem + NSPopover)。
         //
-        // Settings scene 只作占位(App 至少需要一个 Scene):设置实体走自定义
-        // NSPanel(SettingsWindowManager)。曾经 scene 里放 bridge(onAppear 转发
-        // 真面板 + 关占位窗),但 macOS 26 上经 Apple 'oapp' 事件启动时,SwiftUI 会在
-        // applicationDidFinishLaunching 期间**主动求值 Settings scene 的 body**
-        // (调用栈:SwiftUI AppDelegate.applicationDidFinishLaunching →
-        // Update.dispatchActions → bridge onAppear),bridge 每次启动都把真设置窗
-        // 弹出来——`open` 启动(install-update.sh 即如此)必中。改为空内容:
-        // 求值只会造出不可见的占位窗(实测不可见),「设置…」(⌘,)由 CommandGroup
-        // 替换项直接打开真面板,scene 本身永不激活。
+        // 占位 Scene:App 协议要求至少一个 Scene;设置实体走自定义 NSPanel
+        // (SettingsWindowManager)。scene 里放 EmptyView 而不是 bridge——macOS 26
+        // 经 Apple 'oapp' 事件启动时 SwiftUI 会在 applicationDidFinishLaunching 期间
+        // **主动求值 Settings scene 的 body**,bridge 的 onAppear 会顺手把真设置窗弹出来。
+        // ⚠️ 但空 scene 的窗口本身仍会在 app「被激活且无窗口」时被 SwiftUI 自动打开
+        // (实测:`open .app`/安装脚本重启/Dock 激活都弹一个空白窗;`open -g` 不激活则不弹。
+        //  `Window` 场景同样会弹,`Settings` 与 `Window` 行为一致)。
+        // macOS 15+ 的 `.defaultLaunchBehavior(.suppressed)` 本可关掉它,但 SceneBuilder
+        // 不支持 `if #available` 分支(编译不过)→ 改由 AppDelegate 从 AppKit 侧按标题关
+        // (closePlaceholderWindows)。
         Settings { EmptyView() }
             .commands {
                 CommandGroup(replacing: .appSettings) {

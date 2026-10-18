@@ -114,6 +114,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let tab = ProviderTab(kind: ProviderKind.from(menuBarColumnKind: kind)) else { return }
             self.openPanel(tab: tab)
         }
+        // 占位 scene 的空白窗:SwiftUI 在启动/激活时自动打开它 → 出现即关(见方法注释)。
+        // ⚠️ 启动期而不是「激活通知」才是主路径:实测 `open -g -j`(隐藏启动)不弹,
+        // 普通 `open` 就弹,且此时 NSApplication.didBecomeActiveNotification 未必发。
+        // 故启动后连扫四次(0/0.5/1.5/3s)兜住 SwiftUI 稍后才 orderFront 的情况。
+        Task { @MainActor in
+            let delays: [UInt64] = [0, 500_000_000, 1_500_000_000, 3_000_000_000]
+            for d in delays {
+                if d > 0 { try? await Task.sleep(nanoseconds: d) }
+                self.closePlaceholderWindows()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closePlaceholderWindows()
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                self?.closePlaceholderWindows()
+            }
+        }
+        // 该窗口若成为 key/main(用户点了它),也立刻关掉
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let w = note.object as? NSWindow else { return }
+                Task { @MainActor in
+                    guard let self, self.isPlaceholderWindowTitle(w.title) else { return }
+                    AppLog.info("关闭 SwiftUI 占位空白窗(\(w.title))", category: .general)
+                    w.orderOut(nil)
+                }
+            }
+        }
     }
 
     // MARK: - 灵动岛(菜单栏悬停展开)
@@ -268,6 +299,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func islandPopoverDidClose() {
         IslandOverlayController.shared.setSuppressed(false)
+    }
+
+    // MARK: - 占位 scene 空白窗(唤醒即弹)
+
+    /// SwiftUI 在 app「被激活且没有任何窗口」时会自动打开它声明的 scene —— 我们的
+    /// 占位 `Settings { EmptyView() }` 因此表现为一个空白白窗(标题「CodingTokenBar设置」,
+    /// 恢复上次窗口帧)。触发场景:`open .app`(install-update.sh 即如此)、Dock/Finder
+    /// 激活;`open -g` 不激活则不弹。本 app 的 UI 全在 AppKit,不需要任何 SwiftUI 窗口,
+    /// 出现即关。macOS 15+ 本可用 `.defaultLaunchBehavior(.suppressed)`,但 SceneBuilder
+    /// 不支持 `if #available` 分支(编译不过)。
+    /// 按**标题精确匹配**,不误伤登录窗(「CodingTokenBar · 阿里云登录」)与设置面板(「设置」)。
+    private func isPlaceholderWindowTitle(_ title: String) -> Bool {
+        title == "CodingTokenBar" || title == "CodingTokenBar设置"
+    }
+
+    private func closePlaceholderWindows() {
+        for w in NSApp.windows where w.isVisible && isPlaceholderWindowTitle(w.title) {
+            AppLog.info("关闭 SwiftUI 占位空白窗(\(w.title))", category: .general)
+            w.orderOut(nil)
+        }
     }
 
     /// 订阅模型:renderedIcon 更新时同步到状态项按钮(含 tooltip)。
