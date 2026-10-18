@@ -30,33 +30,6 @@ final class SettingsWindow {
     static let shared = SettingsWindow()
     private var panel: NSPanel?
 
-    /// 真正设置面板的窗口引用(供占位窗排除法使用;nil = 尚未创建)。
-    static var panelWindow: NSWindow? { shared.panel }
-
-    /// 关闭 SwiftUI `Settings` scene 造出的占位窗。
-    ///
-    /// 为什么需要:app 平时是 .accessory(无 app 菜单),但状态项不可见时
-    /// 「救生索」会切到 .regular,app 菜单随之出现;其中 SwiftUI 自动生成的
-    /// 「设置…」(⌘,)绑定 `Settings { SettingsSceneBridge() }`。该 scene 每次
-    /// 激活都会新建一个内容为空的窗口 —— 本方法在转发手势后立刻把它关掉,
-    /// 用户只会看到一张真正的设置面板。
-    ///
-    /// 判据:排除真正的 NSPanel,并匹配 SwiftUI 占位窗的两个特征之一 ——
-    /// ① 标题为「<App名>设置」(真正面板标题恰为「设置」);
-    /// ② 内容尺寸极小(0×0,Color.clear)。
-    static func dismissSwiftUIPlaceholders() {
-        guard let real = panelWindow else { return }
-        for window in NSApp.windows where window !== real {
-            guard window.isVisible else { continue }
-            let titleLooksLikePlaceholder = window.title != "设置" && window.title.hasSuffix("设置")
-            let tooSmall = window.frame.width < 40 && window.frame.height < 40
-            if titleLooksLikePlaceholder || tooSmall {
-                AppLog.info("关闭 SwiftUI Settings 占位窗(标题=\(window.title))", category: .general)
-                window.close()
-            }
-        }
-    }
-
     func show() {
         if panel == nil {
             let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
@@ -198,12 +171,17 @@ private struct AppearanceSettingsPage: View {
                     }
                 }
             }
-            Section("菜单栏") {
+            Section {
                 Picker("菜单栏样式", selection: $menuBarStyle.scheme) {
                     ForEach(MenuBarDisplayScheme.allCases) { s in
                         Text(s.displayName).tag(s)
                     }
                 }
+            } header: {
+                Text("菜单栏")
+            } footer: {
+                Text("灵动岛:菜单栏常驻一枚黑色胶囊,汇总全部已启用数据源的健康度(需处理/告急/预警计数);鼠标悬停即弹簧展开为剩余口径实时卡片,点某一行直接跳到该数据源标签页,点胶囊仍打开主面板。")
+                    .font(.system(size: 10))
             }
             Section {
                 ForEach(ProviderKind.allCases) { kind in
@@ -211,7 +189,16 @@ private struct AppearanceSettingsPage: View {
                         get: { model.isEnabled(kind) },
                         set: { model.setEnabled(kind, $0) }
                     )) {
-                        Label(kind.displayName, systemImage: kind.settingsIconName)
+                        Label {
+                            Text(kind.displayName)
+                        } icon: {
+                            // 真实品牌 logo(原色);「本机」回落 SF Symbol
+                            if let mark = kind.brandMark {
+                                mark.mark(in: CGRect(x: 0, y: 0, width: 14, height: 14))
+                            } else {
+                                Image(systemName: kind.settingsIconName)
+                            }
+                        }
                     }
                 }
             } header: {
@@ -219,6 +206,21 @@ private struct AppearanceSettingsPage: View {
             } footer: {
                 Text("关闭后:菜单栏不出列、面板不出标签页、停止该数据源的后台刷新,并不再参与告警与每日摘要。全部关闭时菜单栏降级为仅图标。")
                     .font(.system(size: 10))
+            }
+            Section {
+                HStack {
+                    Text("余额告急下限")
+                    Spacer()
+                    TextField("", value: $model.moneyFloor, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .monospacedDigit()
+                    Text("¥").foregroundStyle(.secondary)
+                }
+                Text("判定对象:DeepSeek 余额、MiMo 余额(「今日花费」不参与)。填 0 关闭余额判定。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            } header: {
+                Text("灵动岛")
             }
             Section("面板") {
                 Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
