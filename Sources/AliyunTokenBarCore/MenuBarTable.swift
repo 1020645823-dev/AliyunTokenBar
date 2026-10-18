@@ -123,15 +123,20 @@ public enum MenuBarTable {
         MenuBarTableValue(text: pct.map { "\($0)%" } ?? "—", pct: pct)
     }
 
-    /// 金额 → 展示文本(DeepSeek 列专用):nil → 横杠;紧凑格式 ≤5 字符(无币种符号,值域 34pt 与百分比列统一)。
-    /// pct 恒为 nil(金额不做阈值变色)。
+    /// 金额 → 展示文本(DeepSeek 花费行等**展示类**金额):nil → 横杠;紧凑格式 ≤5 字符
+    /// (无币种符号,值域 34pt 与百分比列统一)。`amount` 恒 nil —— 花费不参与余额下限判定。
     static func moneyValue(_ v: Double?) -> MenuBarTableValue {
         MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compactDigits($0) } ?? "—", pct: nil)
     }
 
-    /// 金额 → 展示文本(MiMo 余额行专用):nil → 横杠;紧凑格式 ≤5 字符(同 DeepSeek 契约,菜单栏省币种符号)。
-    static func mimoMoney(_ v: Double?) -> MenuBarTableValue {
-        MenuBarTableValue(text: v.map { MiMoMoneyFormat.compactDigits($0) } ?? "—", pct: nil)
+    /// 余额 → 展示文本 + 原始值(参与「余额低于下限 → 告急」判定;DeepSeek 余额行用)。
+    static func balanceValue(_ v: Double?) -> MenuBarTableValue {
+        MenuBarTableValue(text: v.map { DeepSeekMoneyFormat.compactDigits($0) } ?? "—", pct: nil, amount: v)
+    }
+
+    /// 余额 → 展示文本 + 原始值(MiMo 余额行用;紧凑格式契约同 DeepSeek,formatter 各自独立)。
+    static func mimoBalanceValue(_ v: Double?) -> MenuBarTableValue {
+        MenuBarTableValue(text: v.map { MiMoMoneyFormat.compactDigits($0) } ?? "—", pct: nil, amount: v)
     }
 
     /// 计算可见列(输出顺序恒为 ☁→✨→⚡→🧠→∞→▣,与配置无关;本机恒最后)。
@@ -151,55 +156,74 @@ public enum MenuBarTable {
         stepfunConfigured: Bool, stepfunHasError: Bool, stepfunPrimary: Int?, stepfunPrimaryLabel: String?,
         stepfunSecondary: Int?, stepfunSecondaryLabel: String?,
         systemEnabled: Bool, cpu: Int?, memory: Int?,
-        disabled: Set<String> = []
+        disabled: Set<String> = [],
+        /// 余额告急下限(¥);0 = 余额类不参与岛的告急判定(岛的其余语义不受影响)。
+        moneyFloor: Double = 0,
+        /// 需处理的源(ProviderKind.rawValue 集合);命中即该列 needsAttention = true。
+        needsAttention: Set<String> = []
     ) -> [MenuBarTableColumn] {
         func off(_ kind: MenuBarColumnKind) -> Bool {
             disabled.contains(ProviderKind.from(menuBarColumnKind: kind).rawValue)
         }
+        /// 命中需处理集合 → 在列上打标(岛据此计入「需处理」并给「重登」入口)。
+        func marked(_ col: MenuBarTableColumn, _ kind: MenuBarColumnKind) -> MenuBarTableColumn {
+            guard needsAttention.contains(ProviderKind.from(menuBarColumnKind: kind).rawValue) else { return col }
+            var c = col
+            c.needsAttention = true
+            return c
+        }
         var cols: [MenuBarTableColumn] = []
         if !off(.aliyun) {
-            cols.append(aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek, oneMonth: aliyunOneMonth))
+            cols.append(marked(aliyunColumn(fiveHour: aliyunFiveHour, oneWeek: aliyunOneWeek,
+                                            oneMonth: aliyunOneMonth), .aliyun))
         }
         if !off(.kimi) && kimiConfigured && (kimiHasError || kimiFiveHour != nil || kimiWeekly != nil) {
-            cols.append(MenuBarTableColumn(kind: .kimi,
-                                           primary: value(kimiFiveHour), secondary: value(kimiWeekly)))
+            cols.append(marked(MenuBarTableColumn(kind: .kimi,
+                                                  primary: value(kimiFiveHour),
+                                                  secondary: value(kimiWeekly)), .kimi))
         }
         if !off(.openCode) && openCodeConfigured && (openCodeHasError || openCodeRolling != nil || openCodeWeekly != nil) {
-            cols.append(MenuBarTableColumn(kind: .openCode,
-                                           primary: value(openCodeRolling), secondary: value(openCodeWeekly)))
+            cols.append(marked(MenuBarTableColumn(kind: .openCode,
+                                                  primary: value(openCodeRolling),
+                                                  secondary: value(openCodeWeekly)), .openCode))
         }
         if !off(.deepSeek) && deepSeekConfigured && (deepSeekHasError || deepSeekTodayCost != nil || deepSeekBalance != nil) {
-            cols.append(MenuBarTableColumn(kind: .deepSeek,
-                                           primary: moneyValue(deepSeekTodayCost), secondary: moneyValue(deepSeekBalance)))
+            cols.append(marked(MenuBarTableColumn(kind: .deepSeek,
+                                                  primary: moneyValue(deepSeekTodayCost),
+                                                  secondary: balanceValue(deepSeekBalance)), .deepSeek))
         }
         if !off(.zhipu) && zhipuConfigured && (zhipuHasError || zhipuFiveHour != nil || zhipuWeekly != nil) {
-            cols.append(MenuBarTableColumn(kind: .zhipu,
-                                           primary: value(zhipuFiveHour), secondary: value(zhipuWeekly)))
+            cols.append(marked(MenuBarTableColumn(kind: .zhipu,
+                                                  primary: value(zhipuFiveHour),
+                                                  secondary: value(zhipuWeekly)), .zhipu))
         }
-        // MiMo:主行=Token 套餐已用%(无套餐→横杠),次行=余额紧凑金额(无币种符号,同 DeepSeek 列宽契约)。
+        // MiMo:主行=Token 套餐已用%(无套餐→横杠),次行=余额(带原始值,参与余额下限判定)。
         if !off(.mimo) && mimoConfigured && (mimoHasError || mimoPlanPct != nil || mimoBalance != nil) {
-            cols.append(MenuBarTableColumn(kind: .mimo,
-                                           primary: value(mimoPlanPct),
-                                           secondary: mimoMoney(mimoBalance)))
+            cols.append(marked(MenuBarTableColumn(kind: .mimo,
+                                                  primary: value(mimoPlanPct),
+                                                  secondary: mimoBalanceValue(mimoBalance)), .mimo))
         }
         if !off(.minimax) && minimaxConfigured && (minimaxHasError || minimaxInterval != nil || minimaxWeekly != nil) {
-            cols.append(MenuBarTableColumn(kind: .minimax,
-                                           primary: value(minimaxInterval), secondary: value(minimaxWeekly)))
+            cols.append(marked(MenuBarTableColumn(kind: .minimax,
+                                                  primary: value(minimaxInterval),
+                                                  secondary: value(minimaxWeekly)), .minimax))
         }
         // Ollama:新计费只有月度窗口 → 单值列(主=月度,标签改「月度」,次行横杠);
         // 旧计费套餐返回 session+weekly → 双值列(主=5h,次=周)。窗口子集由数据决定。
         if !off(.ollama) && ollamaConfigured && (ollamaHasError || ollamaPrimary != nil || ollamaSecondary != nil) {
-            cols.append(ollamaColumn(primary: ollamaPrimary, secondary: ollamaSecondary))
+            cols.append(marked(ollamaColumn(primary: ollamaPrimary, secondary: ollamaSecondary), .ollama))
         }
         // 阶跃 Step Plan:标签随计费形态(月池/加油包 或 5小时/周),由调用方按数据传入;
         // 无次窗口(仅订阅月池)→ 单值列。
         if !off(.stepfun) && stepfunConfigured && (stepfunHasError || stepfunPrimary != nil || stepfunSecondary != nil) {
-            cols.append(stepfunColumn(primary: stepfunPrimary, primaryLabel: stepfunPrimaryLabel,
-                                      secondary: stepfunSecondary, secondaryLabel: stepfunSecondaryLabel))
+            cols.append(marked(stepfunColumn(primary: stepfunPrimary, primaryLabel: stepfunPrimaryLabel,
+                                             secondary: stepfunSecondary,
+                                             secondaryLabel: stepfunSecondaryLabel), .stepfun))
         }
         if !off(.system) && systemEnabled {
-            cols.append(MenuBarTableColumn(kind: .system,
-                                           primary: value(cpu), secondary: value(memory)))
+            cols.append(marked(MenuBarTableColumn(kind: .system,
+                                                  primary: value(cpu),
+                                                  secondary: value(memory)), .system))
         }
         return cols
     }

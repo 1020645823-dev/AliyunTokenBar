@@ -2423,5 +2423,28 @@ check("island 排序:金额列进档但不抢档内位次", {
     return rows.map(\.kind) == [.kimi, .deepSeek]
 }())
 
+// --- 余额行携带原始值(花费行不携带) + 需处理标记注入 ---
+let islCols = MenuBarTable.columns(
+    aliyunFiveHour: nil, aliyunOneWeek: nil, aliyunOneMonth: nil,
+    kimiConfigured: true, kimiHasError: false, kimiFiveHour: 0, kimiWeekly: 78,
+    openCodeConfigured: false, openCodeHasError: false, openCodeRolling: nil, openCodeWeekly: nil,
+    deepSeekConfigured: true, deepSeekHasError: false, deepSeekTodayCost: 3.5, deepSeekBalance: 12,
+    zhipuConfigured: false, zhipuHasError: false, zhipuFiveHour: nil, zhipuWeekly: nil,
+    mimoConfigured: false, mimoHasError: false, mimoPlanPct: nil, mimoBalance: nil,
+    minimaxConfigured: false, minimaxHasError: false, minimaxInterval: nil, minimaxWeekly: nil,
+    ollamaConfigured: false, ollamaHasError: false, ollamaPrimary: nil, ollamaSecondary: nil,
+    stepfunConfigured: false, stepfunHasError: false, stepfunPrimary: nil, stepfunPrimaryLabel: nil,
+    stepfunSecondary: nil, stepfunSecondaryLabel: nil,
+    systemEnabled: false, cpu: nil, memory: nil,
+    disabled: ["aliyun"], moneyFloor: 50, needsAttention: ["kimi"])
+let dsCol = islCols.first { $0.kind == .deepSeek }!
+check("columns:余额行带 amount", dsCol.secondary.amount == 12)
+check("columns:花费行不带 amount", dsCol.primary.amount == nil)
+check("columns:余额低于下限→该列告急", MenuBarTable.state(dsCol, config: islCfg, moneyFloor: 50) == .critical)
+check("columns:余额下限 0→正常", MenuBarTable.state(dsCol, config: islCfg, moneyFloor: 0) == .ok)
+let kimiCol = islCols.first { $0.kind == .kimi }!
+check("columns:需处理集合命中→needsAttention", kimiCol.needsAttention)
+check("columns:不在集合→false", !dsCol.needsAttention)
+
 print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")
 exit(fails == 0 ? 0 : 1)
