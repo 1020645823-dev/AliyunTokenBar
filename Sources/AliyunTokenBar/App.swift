@@ -99,32 +99,6 @@ func thresholdColor(_ pct: Int, config: ThresholdConfig, base: Color) -> Color {
 
 // MARK: - 主题(跟随系统 / 浅色 / 深色)
 
-enum AppTheme: String, CaseIterable, Identifiable {
-    case system, light, dark
-    var id: String { rawValue }
-    var displayName: String {
-        switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
-        }
-    }
-    var iconName: String {
-        switch self {
-        case .system: return "circle.lefthalf.filled"
-        case .light: return "sun.max.fill"
-        case .dark: return "moon.fill"
-        }
-    }
-    var nsAppearance: NSAppearance? {
-        switch self {
-        case .system: return nil
-        case .light: return NSAppearance(named: .aqua)
-        case .dark: return NSAppearance(named: .darkAqua)
-        }
-    }
-}
-
 @MainActor
 final class ThemeManager: ObservableObject {
     static let shared = ThemeManager()
@@ -148,7 +122,7 @@ enum MenuBarDisplayScheme: String, CaseIterable, Identifiable {
     case singleLine    // 单行:35%·61%
     case iconOnly      // 仅图标(进度环)
     case systemStats   // 仅本机 CPU/内存
-    case island        // 灵动岛:黑色胶囊,悬停展开实时卡片
+    case island        // 灵动岛:主题色胶囊,悬停展开实时星图
 
     var id: String { rawValue }
     var displayName: String {
@@ -223,7 +197,8 @@ enum MenuBarTextRenderer {
         case .iconOnly: return iconOnlyImage(fiveHour: fiveHour ?? 0, mainWindow: mainWindow ?? 0,
                                               thresholdConfig: thresholdConfig)
         case .systemStats: return systemStatsImage(cpu: cpu, memory: memory)
-        case .island: return islandPillImage(columns: columns ?? [], isDark: isDark,
+        case .island: return islandPillImage(columns: columns ?? [],
+                                             isDark: ThemeManager.shared.theme.isDark(systemIsDark: isDark),
                                              thresholdConfig: thresholdConfig, moneyFloor: moneyFloor)
         }
     }
@@ -423,28 +398,42 @@ enum MenuBarTextRenderer {
         return render(content)
     }
 
-    /// 灵动岛收起态:黑色胶囊(非模板,明暗菜单栏下都是黑底白字——动态岛语义),
+    /// 灵动岛收起态:非模板胶囊,皮肤与全 App 主题一致。
     /// 内容 = **全源健康度汇总**(需处理/告急/预警计数;全正常=「一切正常」)。
     /// 判定见 MenuBarTable.islandHealth(鉴权类失败优先,余额按设置的下限)。
-    /// 全正常时文字保持白色、只有圆点是绿的——避免菜单栏常年挂一条绿字。
     @MainActor
     private static func islandPillImage(columns: [MenuBarTableColumn], isDark: Bool,
                                         thresholdConfig: ThresholdConfig, moneyFloor: Double) -> NSImage {
         let health = MenuBarTable.islandHealth(columns: columns, config: thresholdConfig, moneyFloor: moneyFloor)
-        let tint = IslandStateColor.color(health.worst)
-        let content = HStack(spacing: 4) {
-            Circle().fill(tint).frame(width: 6, height: 6)
+        let palette = IslandPalette(isDark: isDark)
+        let tint = palette.stateColor(health.worst)
+        let content = HStack(spacing: 5) {
+            ZStack {
+                Circle().fill(tint.opacity(0.20)).frame(width: 10, height: 10)
+                Circle().fill(tint).frame(width: 5, height: 5)
+            }
             Text(MenuBarTable.islandHealthText(health))
                 .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(health.total == 0 ? Color.white : tint)
+                .foregroundStyle(health.total == 0 ? palette.textPrimary : tint)
+            if columns.count > 1 {
+                IslandSourceHealthTicks(columns: columns, config: thresholdConfig,
+                                        moneyFloor: moneyFloor, subduedOK: true)
+            }
         }
         .padding(.horizontal, 9)
         .frame(height: 22)
         .background(
-            Capsule().fill(.black)
-                .overlay(Capsule().strokeBorder(.white.opacity(isDark ? 0.16 : 0.08),
-                                                lineWidth: 0.5))
+            Capsule()
+                .fill(LinearGradient(colors: [palette.pillTop, palette.pillBottom],
+                                     startPoint: .top, endPoint: .bottom))
+                .overlay(Capsule().strokeBorder(
+                    LinearGradient(colors: [palette.borderStrong, palette.borderWeak],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 0.55
+                ))
         )
+        .environment(\.islandPalette, palette)
+        .environment(\.colorScheme, isDark ? .dark : .light)
         .fixedSize(horizontal: true, vertical: false)
         return render(content, isTemplate: false)
     }

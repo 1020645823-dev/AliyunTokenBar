@@ -349,6 +349,18 @@ public struct IslandHealth: Equatable {
     }
 }
 
+/// 全源星图单格的主指标:标签 + 原始展示值。
+/// 百分比由 UI 转成剩余口径;金额/横杠原样展示。
+public struct IslandOverviewMetric: Equatable {
+    public let label: String
+    public let value: MenuBarTableValue
+
+    public init(label: String, value: MenuBarTableValue) {
+        self.label = label
+        self.value = value
+    }
+}
+
 public extension MenuBarTable {
     /// 单列状态:需处理 > 告急 > 预警 > 正常(两窗口取最严重;余额按下限判定)。
     static func state(_ col: MenuBarTableColumn, config: ThresholdConfig, moneyFloor: Double) -> ColumnState {
@@ -364,6 +376,29 @@ public extension MenuBarTable {
             }
         }
         return worst
+    }
+
+    /// 星图格子只放得下一个值:百分比取已用最高的窗口(同值保主窗),
+    /// 没有任何百分比时取携带原始金额的余额值,再兜底主值横杠。
+    static func islandOverviewMetric(_ col: MenuBarTableColumn) -> IslandOverviewMetric {
+        var label = col.primaryLabel
+        var value = col.primary
+        if let secondaryLabel = col.secondaryLabel,
+           let secondaryPct = col.secondary.pct,
+           secondaryPct > (col.primary.pct ?? Int.min) {
+            label = secondaryLabel
+            value = col.secondary
+        }
+        if value.pct == nil {
+            if col.primary.amount != nil {
+                label = col.primaryLabel
+                value = col.primary
+            } else if let secondaryLabel = col.secondaryLabel, col.secondary.amount != nil {
+                label = secondaryLabel
+                value = col.secondary
+            }
+        }
+        return IslandOverviewMetric(label: label, value: value)
     }
 
     /// 剩余口径文案:"剩 22%";金额与横杠原样返回(金额不折算成百分比)。

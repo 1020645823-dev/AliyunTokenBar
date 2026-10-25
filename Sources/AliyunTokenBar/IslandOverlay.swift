@@ -6,45 +6,55 @@ import AliyunTokenBarCore
 // MARK: - 灵动岛(菜单栏 Dynamic Island 形态)
 //
 // 形态语义(对照 iPhone 灵动岛):
-//   收起态 = 菜单栏里的黑色胶囊(状态项图片 islandPillImage),内容 = 聚焦列
-//           (风险最高/占比最高的一项):真实品牌 logo 剪影 + 主值。
-//   展开态 = 悬停时胶囊原地弹簧「生长」为一张实时用量卡:品牌彩色 logo +
-//           各数据源双窗口行 + 概览 chip;移开鼠标自动收回。
+//   收起态 = 菜单栏胶囊(浅/深皮肤跟随全 App 主题):全源健康度计数 + 每源健康刻度。
+//   展开态 = 从胶囊下沿生长的玻璃驾驶舱:全源品牌星图为主,悬停源在
+//           下方细节坞展示双窗口/多账户分段/绝对量;点击源进入主面板。
 //
 // 实现要点:
-//   - 展开态不用 NSPopover/NSPanel 交互面板:一个**透明、ignoresMouseEvents**
-//     的 NSPanel 叠在状态项上,SwiftUI 黑胶囊在其内部做 spring 变形。面板不吃
-//     点击、不抢焦点,鼠标交互完全照旧(点胶囊→主面板)。
+//   - 展开态使用透明 NSPanel;仅指针位于卡片内时吃事件,胶囊与其余区域
+//     保持透传,不抢焦点,也不破坏「点胶囊→主面板」。
 //   - 展开触发 = 状态项按钮的 NSTrackingArea(mouseEntered);收起 = 0.1s 轮询
 //     全局鼠标位置(比全局事件监视器可靠:自己进程内的事件不到 global monitor)。
-//   - 面板帧按满列数(10)一次预留,悬停期间数据到达补列不重建帧;内容行数
-//     随时更新(「live activity」语义)。
+//   - 面板帧按两行星图 + 固定细节坞一次预留,悬停切源/数据刷新不重建帧。
 //   - macOS 26 会把状态项停到屏幕外(-1,1113)→ 展开前校验胶囊 rect 在屏内,
 //     停死态不显示(恢复监控重建状态项后由新的 mouseEntered 再触发)。
 
 // MARK: - 度量常量(面板帧与内容高度共用同一组公式,避免错位)
 
 enum IslandMetrics {
-    /// 展开态宽度:logo 15 + 名称 52 + 剩余口径窗口段(「5小时 剩 100% · 周 剩 22%」)
-    /// + 需处理行的「重登」徽标 + 水平内边距 28,260 会挤 → 280。
-    static let expandedWidth: CGFloat = 280
+    static let expandedWidth: CGFloat = 360
     static let paddingH: CGFloat = 14
-    static let paddingV: CGFloat = 11
-    static let headerHeight: CGFloat = 20      // 字标 + 概览 chip 行
-    static let rowHeight: CGFloat = 21         // 单数据源行
-    static let gapHeaderRows: CGFloat = 8      // 分隔线到首行
-    static let collapsedCorner: CGFloat = 11   // 收起态胶囊圆角(与 islandPillImage 的 22pt 高胶囊一致)
-    static let expandedCorner: CGFloat = 18    // 展开态圆角
-    /// 面板帧按满列数预留(悬停期间补列不重建帧)。
+    static let paddingV: CGFloat = 12
+    static let headerHeight: CGFloat = 34
+    static let tileHeight: CGFloat = 64
+    static let gridGap: CGFloat = 6
+    static let detailHeight: CGFloat = 118
+    static let footerHeight: CGFloat = 16
+    static let gapHeaderGrid: CGFloat = 6
+    static let gapGridDetail: CGFloat = 8
+    static let gapDetailFooter: CGFloat = 4
+    static let collapsedCorner: CGFloat = 11
+    static let expandedCorner: CGFloat = 20
+    static let overviewColumns = 5
     static let maxRows = MenuBarColumnKind.allCases.count
-    static func height(rows: Int) -> CGFloat {
-        paddingV * 2 + headerHeight + 0.5 + gapHeaderRows + CGFloat(rows) * rowHeight
+
+    static func overviewRowCount(sourceCount: Int) -> Int {
+        max(1, min(2, Int(ceil(Double(sourceCount) / Double(overviewColumns)))))
     }
-    /// 面板**固定**尺寸(内容永不变):曾让面板跟随 SwiftUI 内容 fitting size
-    /// 自动适配,setFrame 会被内容尺寸变化覆盖、位置漂移(实测偏 281pt);
-    /// 固定尺寸 + contentMin/Max 同值后窗口不再被内容牵走,只搬原点。
+
+    static func gridHeight(sourceCount: Int) -> CGFloat {
+        let rows = overviewRowCount(sourceCount: sourceCount)
+        return CGFloat(rows) * tileHeight + CGFloat(rows - 1) * gridGap
+    }
+
+    static func height(sourceCount: Int) -> CGFloat {
+        paddingV * 2 + headerHeight + gapHeaderGrid + gridHeight(sourceCount: sourceCount)
+            + gapGridDetail + detailHeight + gapDetailFooter + footerHeight
+    }
+
+    /// 固定窗口尺寸只允许搬原点;内容 fitting size 不得改写窗口帧。
     static let panelWidth: CGFloat = expandedWidth + 20
-    static let panelHeight: CGFloat = height(rows: maxRows) + 20
+    static let panelHeight: CGFloat = height(sourceCount: maxRows) + 20
 }
 
 // MARK: - 岛状态(SwiftUI 侧唯一数据源)
@@ -52,8 +62,14 @@ enum IslandMetrics {
 @MainActor
 final class IslandState: ObservableObject {
     @Published var expanded = false
-    /// 已按紧迫度排序的源行(需处理 → 告急 → 预警 → 正常,同级剩余升序)。
-    @Published var rows: [MenuBarTableColumn] = []
+    /// 由全 App 主题与系统菜单栏明暗共同解析,驱动浅/深两套调色板。
+    @Published var isDark = true
+    /// 全源星图按 registry 固定顺序展示,避免刷新时格子漂移。
+    @Published var columns: [MenuBarTableColumn] = []
+    /// 细节坞跟随悬停源;每次展开默认落在风险最高源。
+    @Published var focusedKind: MenuBarColumnKind?
+    /// 每源的分段进度条(Kimi/智谱/阶跃=每账户一段,OpenCode=每 workspace 一段,其余=主/次窗口段)。
+    @Published var segmentsByKind: [MenuBarColumnKind: [IslandMeterSegment]] = [:]
     @Published var health = IslandHealth(needAction: 0, critical: 0, warning: 0)
     /// 收起态胶囊 rect(面板坐标系,左上原点 y 向下)。
     @Published var collapsedRect: CGRect = .zero
@@ -64,7 +80,138 @@ final class IslandState: ObservableObject {
     var updated: Date?
 }
 
-// MARK: - 岛根视图(黑胶囊 ↔ 实时卡片的 spring 变形)
+// MARK: - 分段进度(多套餐进度条)
+
+/// 一个进度段:短标签 + 已用% + 阈值状态色(+悬停详情:绝对用量/重置时间)。
+struct IslandMeterSegment: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let usedPct: Int
+    let state: ColumnState
+    /// 悬停段的补充信息(如「5h 已用 0/100 · 17分钟后重置」),没有则不显示 tooltip。
+    var detail: String? = nil
+
+    /// 链式补 detail(组装处一行搞定)。
+    func withDetail(_ d: String?) -> IslandMeterSegment {
+        var copy = self
+        copy.detail = d
+        return copy
+    }
+}
+
+@MainActor
+enum IslandMeters {
+    /// 组装某源的进度段。多账户源(Kimi/智谱/阶跃)=每账户一段(标签=套餐名/手机尾号/
+    /// 账户名);OpenCode 多 workspace=每 workspace(独立订阅)一段;单账户源=主/次窗口段;
+    /// 纯金额源(DeepSeek)→ 空,细节坞改画金额 pill。
+    static func segments(for col: MenuBarTableColumn,
+                         model: TokenPlanModel,
+                         config: ThresholdConfig) -> [IslandMeterSegment] {
+        func stateOf(_ pct: Int) -> ColumnState {
+            pct >= config.critical ? .critical : (pct >= config.warning ? .warning : .ok)
+        }
+        func seg(_ id: String, _ label: String, _ pct: Int?) -> IslandMeterSegment? {
+            guard let pct else { return nil }
+            let clamped = max(0, min(100, pct))
+            return IslandMeterSegment(id: id, label: label, usedPct: clamped, state: stateOf(clamped))
+        }
+        switch col.kind {
+        case .kimi:
+            // 每账户一段:套餐商品名优先(Pro/Alle),无套餐回落账户名尾段。
+            // ⚠️ 值取**最紧窗口**而非固定 5h——不同套餐活跃窗口不同
+            // (实测 Allegro 用量在周/月、5h 恒 0,固定 5h 会显示成误导性的 0%)。
+            return model.kimiAccountQuotas.compactMap { s in
+                let label = s.quota.planDisplayName.map { String($0.prefix(4)) }
+                    ?? String(s.label.suffix(3))
+                let worst = s.quota.worstWindow
+                var detail = "5h 已用 \(s.quota.fiveHour.used)/\(s.quota.fiveHour.limit)"
+                    + " · 周 \(s.quota.weekly.used)/\(s.quota.weekly.limit)"
+                if let m = s.quota.monthly {
+                    detail += " · 月 \(m.used)/\(m.limit)"
+                }
+                detail += "(最紧:\(worst.label))"
+                if let plan = s.quota.planDisplayName { detail = "\(plan) · " + detail }
+                return seg("kimi-\(s.id)", label, worst.pct)?.withDetail(detail)
+            }
+        case .zhipu:
+            // 多账户=每账户一段(账户名尾段区分);单账户=窗口段(5h/周更有信息量,
+            // 「账户1」标签无意义)。该账户最紧窗口:5h 优先,无则周。
+            if model.zhipuAccountQuotas.count > 1 {
+                return model.zhipuAccountQuotas.compactMap { s in
+                    let fiveH = s.quota.fiveHour
+                    let week = s.quota.weekly
+                    let pct = [fiveH?.pctInt, week?.pctInt].compactMap { $0 }.max()
+                    var detail = "5h \(fiveH?.pctInt ?? 0)% · 周 \(week?.pctInt ?? 0)%"
+                    if let lvl = s.quota.level { detail = "\(lvl) · " + detail }
+                    return seg("zhipu-\(s.id)", String(s.label.suffix(3)), pct)?.withDetail(detail)
+                }
+            }
+            var out: [IslandMeterSegment] = []
+            if let snap = model.zhipuAccountQuotas.first {
+                if let s = seg("zhipu-5h", "5h", snap.quota.fiveHour?.pctInt) {
+                    out.append(s.withDetail("5h 已用 \(snap.quota.fiveHour?.pctInt ?? 0)%\(snap.quota.fiveHour?.timeUntilReset.map { " · \($0)" } ?? "")"))
+                }
+                if let s = seg("zhipu-week", "周", snap.quota.weekly?.pctInt) {
+                    out.append(s.withDetail("周 已用 \(snap.quota.weekly?.pctInt ?? 0)%"))
+                }
+            }
+            return out
+        case .stepfun:
+            // 每账户一段:标签=手机尾号(****5678,与面板一致)回落账户名;值=主窗口
+            return model.stepfunAccountQuotas.compactMap { s in
+                let identity = model.stepfunAccounts.first(where: { $0.id == s.id })?.identityDisplay
+                let label = identity.map { String($0.suffix(6)) } ?? String(s.label.suffix(3))
+                var detail: String?
+                if let sub = s.quota.subscription, sub.total > 0 {
+                    detail = "月池 剩 \(Int(sub.residual))/\(Int(sub.total)) credits"
+                }
+                return seg("stepfun-\(s.id)", label, s.quota.primaryPct)?.withDetail(detail)
+            }
+        case .openCode:
+            // 多 workspace(每个是独立订阅)=每 workspace 一段:标签取尾段区分
+            // (同智谱/阶跃规格),详情前缀全名;值取该订阅三窗口最险的。
+            // 单 workspace=窗口段(滚动/周),与 default 同构(workspace 名标签无信息量)。
+            if model.openCodeWorkspaceQuotas.count > 1 {
+                return model.openCodeWorkspaceQuotas.compactMap { s in
+                    let pct = max(s.quota.rolling.pct, s.quota.weekly.pct, s.quota.monthly.pct)
+                    let detail = "\(s.label) · 滚动 \(s.quota.rolling.pct)% · 周 \(s.quota.weekly.pct)% · 月 \(s.quota.monthly.pct)%"
+                    return seg("openCode-\(s.id)", String(s.label.suffix(3)), pct)?.withDetail(detail)
+                }
+            }
+            var out: [IslandMeterSegment] = []
+            if let s = seg("openCode-p", short(col.primaryLabel), col.primary.pct) {
+                out.append(s.withDetail("\(short(col.primaryLabel)) 已用 \(col.primary.text)"))
+            }
+            if let s = seg("openCode-s", short(col.secondaryLabel ?? ""),
+                          col.secondary.pct) {
+                out.append(s.withDetail("\(short(col.secondaryLabel ?? "")) 已用 \(col.secondary.text)"))
+            }
+            return out
+        case .deepSeek:
+            return []
+        default:
+            // 单账户源:主/次窗口各一段(标签取列标签短版)
+            var out: [IslandMeterSegment] = []
+            if let s = seg("\(col.kind.rawValue)-p", short(col.primaryLabel), col.primary.pct) {
+                out.append(s.withDetail("\(short(col.primaryLabel)) 已用 \(col.primary.text)"))
+            }
+            if let s = seg("\(col.kind.rawValue)-s", short(col.secondaryLabel ?? ""),
+                          col.secondary.pct) {
+                out.append(s.withDetail("\(short(col.secondaryLabel ?? "")) 已用 \(col.secondary.text)"))
+            }
+            return out
+        }
+    }
+
+    /// 窗口标签短版(段宽有限):「5小时」→「5h」,「30天」保留(3 字不挤),其余取前 2 字。
+    private static func short(_ s: String) -> String {
+        if s == "5小时" { return "5h" }
+        if s == "30天" { return s }
+        return String(s.prefix(2))
+    }
+}
+
+// MARK: - 岛根视图(胶囊 ↔ 实时星图的 spring 变形)
 
 struct IslandRootView: View {
     @ObservedObject var state: IslandState
@@ -73,17 +220,21 @@ struct IslandRootView: View {
 
     var body: some View {
         let rect = state.expanded ? state.expandedRect : state.collapsedRect
+        let palette = IslandPalette(isDark: state.isDark)
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(
+            IslandAmbientBackground(
                 cornerRadius: state.expanded ? IslandMetrics.expandedCorner : IslandMetrics.collapsedCorner,
-                style: .continuous
+                elevated: state.expanded
             )
-            .fill(.black)
             .frame(width: rect.width, height: rect.height)
             .offset(x: rect.minX, y: rect.minY)
             IslandExpandedContent(
-                rows: state.rows, health: state.health,
+                columns: state.columns,
+                segmentsByKind: state.segmentsByKind,
+                health: state.health,
                 config: state.config, moneyFloor: state.moneyFloor, updated: state.updated,
+                focusedKind: state.focusedKind,
+                onFocus: { state.focusedKind = $0 },
                 onTapRow: onTapRow
             )
             .frame(width: state.expandedRect.width, height: state.expandedRect.height,
@@ -92,6 +243,8 @@ struct IslandRootView: View {
             .opacity(state.expanded ? 1 : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .environment(\.islandPalette, palette)
+        .environment(\.colorScheme, state.isDark ? .dark : .light)
         // 一个 spring 驱动全部衍生量:rect / 圆角 / 内容透明度同步变形,
         // dampingFraction 0.72 的轻微回弹即灵动岛的「呼吸感」。
         .animation(.spring(response: 0.42, dampingFraction: 0.72), value: state.expanded)
@@ -112,142 +265,17 @@ final class IslandHostingView: NSHostingView<IslandRootView> {
     }
 }
 
-// MARK: - 展开态内容
-
-private struct IslandExpandedContent: View {
-    let rows: [MenuBarTableColumn]
-    let health: IslandHealth
-    let config: ThresholdConfig
-    let moneyFloor: Double
-    let updated: Date?
-    let onTapRow: (MenuBarColumnKind) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Text("CodingTokenBar")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.55))
-                Spacer(minLength: 4)
-                Text("口径:剩余")
-                    .font(.system(size: 8.5)).foregroundStyle(.white.opacity(0.35))
-                statusChip
-            }
-            .frame(height: IslandMetrics.headerHeight)
-            Rectangle().fill(Color.white.opacity(0.14)).frame(height: 0.5)
-                .padding(.bottom, IslandMetrics.gapHeaderRows)
-            ForEach(rows, id: \.kind) { col in
-                IslandRow(col: col, config: config, moneyFloor: moneyFloor) { onTapRow(col.kind) }
-            }
-        }
-        .padding(.horizontal, IslandMetrics.paddingH)
-        .padding(.vertical, IslandMetrics.paddingV)
-    }
-
-    /// 与胶囊**同一套**计数文案(需处理/告急/预警),颜色取最严重类别。
-    private var statusChip: some View {
-        let tint = IslandStateColor.color(health.worst)
-        return HStack(spacing: 4) {
-            Circle().fill(tint).frame(width: 5, height: 5)
-            Text(MenuBarTable.islandHealthText(health))
-                .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(tint)
-        }
-    }
-}
-
-private struct IslandRow: View {
-    let col: MenuBarTableColumn
-    let config: ThresholdConfig
-    let moneyFloor: Double
-    let onTap: () -> Void
-
-    @State private var hovering = false
-
-    private var state: ColumnState { MenuBarTable.state(col, config: config, moneyFloor: moneyFloor) }
-
-    /// 最紧窗口的剩余比例(0…1);纯金额列无 pct → nil(不画底条)。
-    private var remainingFraction: Double? {
-        guard let worst = [col.primary.pct, col.secondary.pct].compactMap({ $0 }).max() else { return nil }
-        return Double(max(0, min(100, 100 - worst))) / 100
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if let mark = col.kind.brandMark {
-                    // 展开态用彩色版(黑底上品牌色最鲜活)
-                    mark.mark(in: CGRect(x: 0, y: 0, width: 13, height: 13))
-                } else {
-                    Image(systemName: col.kind.symbolName)
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                }
-            }
-            .frame(width: 15, alignment: .leading)
-            Text(col.kind.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1).minimumScaleFactor(0.8)
-                .frame(width: 52, alignment: .leading)
-            Spacer(minLength: 2)
-            Text(MenuBarTable.islandRowText(col))
-                .font(.system(size: 10.5)).monospacedDigit()
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1).minimumScaleFactor(0.85)
-            if state == .needsAction {
-                Text("重登")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(IslandStateColor.color(.needsAction))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(IslandStateColor.color(.needsAction).opacity(0.18)))
-            }
-        }
-        .padding(.horizontal, 6)
-        .frame(height: IslandMetrics.rowHeight)
-        .background(rowBackground)
-        .overlay(alignment: .bottom) { meterBar }
-        .contentShape(Rectangle())
-        .onHover { inside in
-            hovering = inside
-            // 手型光标(项目 floor 是 macOS 14,没有 .pointerStyle):push/pop 必须成对
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
-        .onTapGesture { onTap() }
-    }
-
-    /// 行底色:需处理淡蓝紫 / 告急淡红 / 预警淡橙;正常行仅 hover 时微亮。
-    private var rowBackground: some View {
-        let fill: Color
-        switch state {
-        case .needsAction: fill = IslandStateColor.color(.needsAction).opacity(0.14)
-        case .critical: fill = IslandStateColor.color(.critical).opacity(0.16)
-        case .warning: fill = IslandStateColor.color(.warning).opacity(0.10)
-        case .ok: fill = hovering ? .white.opacity(0.07) : .clear
-        }
-        return RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill)
-    }
-
-    /// 行底部 2pt 剩余条(不占横向空间):长度 = 最紧窗口的剩余,颜色随状态。
-    @ViewBuilder
-    private var meterBar: some View {
-        if let fraction = remainingFraction {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.10))
-                    Capsule().fill(IslandStateColor.color(state))
-                        .frame(width: max(1, geo.size.width * fraction))
-                }
-            }
-            .frame(height: 2)
-            .padding(.horizontal, 6)
-            .padding(.bottom, 2)
-        }
-    }
-}
-
-/// 岛状态色(黑底上更亮一档)。胶囊圆点/文字、展开卡行底条与行底色共用同一套,
-/// 避免两处色值各写一遍后漂移。
+/// 岛状态色:深底用亮色,浅底用更深的同语义色;胶囊与展开卡共用。
 enum IslandStateColor {
-    static func color(_ s: ColumnState) -> Color {
+    static func color(_ s: ColumnState, isDark: Bool = true) -> Color {
+        if !isDark {
+            switch s {
+            case .needsAction: return Color(red: 0.21, green: 0.35, blue: 0.78)
+            case .critical: return Color(red: 0.79, green: 0.16, blue: 0.14)
+            case .warning: return Color(red: 0.70, green: 0.32, blue: 0.02)
+            case .ok: return Color(red: 0.05, green: 0.42, blue: 0.20)
+            }
+        }
         switch s {
         case .needsAction: return Color(red: 0.55, green: 0.68, blue: 1.0)   // 蓝紫:需要你动手
         case .critical: return Color(red: 1.0, green: 0.40, blue: 0.36)      // 红
@@ -278,11 +306,19 @@ final class IslandOverlayController {
 
     private init() {}
 
+    /// 全 App 主题变化或系统明暗变化时,同时更新展开卡与材质外观。
+    func refreshAppearance() {
+        let dark = ThemeManager.shared.theme.isDark(systemIsDark: MenuBarAppearance.shared.isDark)
+        state.isDark = dark
+        panel?.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    }
+
     // MARK: 展开 / 收起
 
     /// 鼠标进入状态项胶囊(AppDelegate tracking area 转发)。
     /// 幂等:已展开→只刷数据;收合动画中→取消隐藏并回弹。
     func expandIfNeeded(_ button: NSStatusBarButton?) {
+        refreshAppearance()
         guard !suppressed, let button, let buttonWindow = button.window else { return }
         let pill = buttonWindow.frame
         guard pill.width > 2, pill.height > 2 else { return }
@@ -294,6 +330,9 @@ final class IslandOverlayController {
         guard !columns.isEmpty else { return }
         let config = model.thresholdConfig
 
+        let segmentsByKind = segmentsMap(columns: columns, model: model, config: config)
+        let contentHeight = IslandMetrics.height(sourceCount: columns.count)
+
         // 几何(屏幕坐标 y 向上 → 面板内左上原点 y 向下):
         // 展开态**从胶囊下沿向下生长**(卡顶 = 胶囊底 pill.minY):卡若与胶囊顶对齐会
         // 把胶囊整个盖住——而悬停即展开,于是「点胶囊开面板」这条既有动线会被吃掉。
@@ -302,21 +341,26 @@ final class IslandOverlayController {
             x: min(max(pill.midX - IslandMetrics.expandedWidth / 2,
                        screen.frame.minX + 6),
                    screen.frame.maxX - IslandMetrics.expandedWidth - 6),
-            y: pill.minY - IslandMetrics.height(rows: columns.count),
+            y: pill.minY - contentHeight,
             width: IslandMetrics.expandedWidth,
-            height: IslandMetrics.height(rows: columns.count)
+            height: contentHeight
         )
         // 面板帧按满列数预留(±10 给 spring 回弹留空间)
         let frameExpanded = CGRect(
             x: min(max(pill.midX - IslandMetrics.expandedWidth / 2, screen.frame.minX + 6),
                    screen.frame.maxX - IslandMetrics.expandedWidth - 6),
-            y: pill.minY - IslandMetrics.height(rows: IslandMetrics.maxRows),
+            y: pill.minY - IslandMetrics.height(sourceCount: IslandMetrics.maxRows),
             width: IslandMetrics.expandedWidth,
-            height: IslandMetrics.height(rows: IslandMetrics.maxRows)
+            height: IslandMetrics.height(sourceCount: IslandMetrics.maxRows)
         )
         let panelRect = pill.union(frameExpanded).insetBy(dx: -10, dy: -10)
 
-        state.rows = MenuBarTable.islandRows(columns: columns, config: config, moneyFloor: model.moneyFloor)
+        state.columns = columns
+        if state.focusedKind == nil || !columns.contains(where: { $0.kind == state.focusedKind }) {
+            state.focusedKind = MenuBarTable.islandRows(columns: columns, config: config,
+                                                        moneyFloor: model.moneyFloor).first?.kind
+        }
+        state.segmentsByKind = segmentsByKind
         state.health = MenuBarTable.islandHealth(columns: columns, config: config, moneyFloor: model.moneyFloor)
         state.config = config
         state.moneyFloor = model.moneyFloor
@@ -357,6 +401,7 @@ final class IslandOverlayController {
         modelCancellable = nil
         guard let panel, panel.isVisible else { return }
         state.expanded = false
+        state.focusedKind = nil
         panel.ignoresMouseEvents = true
         (panel.contentView as? IslandHostingView)?.hitRect = nil
         let work = DispatchWorkItem { [weak self] in
@@ -377,6 +422,7 @@ final class IslandOverlayController {
         (panel?.contentView as? IslandHostingView)?.hitRect = nil
         panel?.orderOut(nil)
         state.expanded = false
+        state.focusedKind = nil
     }
 
     // MARK: 行点击(岛 → 面板)
@@ -402,6 +448,7 @@ final class IslandOverlayController {
     /// 否则首次悬停要同时承担「建 NSHostingView + 首布局 + 品牌 SVG path 解析
     /// + spring」,实测可超过 1.5s 才可见——灵动岛的卖点就是即时响应。
     func prewarm() {
+        refreshAppearance()
         if panel == nil { panel = createPanel() }
         guard let panel else { return }
         // 固定尺寸,屏外一帧即撤(alpha 0 双保险)
@@ -429,8 +476,9 @@ final class IslandOverlayController {
         panel.level = .statusBar
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        panel.appearance = NSAppearance(named: state.isDark ? .darkAqua : .aqua)
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true   // 永远不吃点击/悬停,交互完全透传
+        panel.ignoresMouseEvents = true   // 初始透传;展开后由指针位置翻转
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
@@ -489,12 +537,30 @@ final class IslandOverlayController {
                 guard let self, let panel = self.panel, panel.isVisible else { return }
                 let model = TokenPlanModel.shared
                 let columns = model.menuBarColumns()
-                self.state.rows = MenuBarTable.islandRows(columns: columns, config: model.thresholdConfig,
-                                                          moneyFloor: model.moneyFloor)
+                self.state.columns = columns
+                if self.state.focusedKind == nil || !columns.contains(where: { $0.kind == self.state.focusedKind }) {
+                    self.state.focusedKind = MenuBarTable.islandRows(
+                        columns: columns, config: model.thresholdConfig, moneyFloor: model.moneyFloor
+                    ).first?.kind
+                }
+                self.state.config = model.thresholdConfig
+                self.state.segmentsByKind = self.segmentsMap(columns: columns, model: model,
+                                                             config: model.thresholdConfig)
                 self.state.health = MenuBarTable.islandHealth(columns: columns, config: model.thresholdConfig,
                                                               moneyFloor: model.moneyFloor)
                 self.state.moneyFloor = model.moneyFloor
                 self.state.updated = model.lastUpdated
             }
+    }
+
+    /// 组装全部源的分段进度(高度随段数变化只发生在下次展开;展开中行数不变帧不重建)。
+    private func segmentsMap(columns: [MenuBarTableColumn], model: TokenPlanModel,
+                             config: ThresholdConfig) -> [MenuBarColumnKind: [IslandMeterSegment]] {
+        var out: [MenuBarColumnKind: [IslandMeterSegment]] = [:]
+        for col in columns {
+            let segs = IslandMeters.segments(for: col, model: model, config: config)
+            if !segs.isEmpty { out[col.kind] = segs }
+        }
+        return out
     }
 }

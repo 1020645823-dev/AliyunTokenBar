@@ -19,6 +19,9 @@ public enum KimiUsageService {
     static let webRefreshURL = URL(string: "https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken")!
     static let webUsagesURL = URL(string: "https://www.kimi.com/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages")!
     static let webStatsURL = URL(string: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats")!
+    /// 订阅列表(2026-10-24 实勘):goods.title=套餐商品名("Pro"/"Max"…官网口径),
+    /// 多账户用「套餐名」区分账户的来源;响应含 ACTIVE 状态、价格、到期时间。
+    static let webSubscriptionsURL = URL(string: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/ListSubscriptions")!
     /// Keychain 中 web JWT 的 account 名(存 JSON 字符串)
     public static let webTokenAccount = KeychainAccounts.kimiWebToken
 
@@ -231,6 +234,44 @@ public enum KimiUsageService {
         return nil
     }
 
+    // MARK: - 登录身份判定(2026-10-24:防 main 槽静默覆盖/防同户重复登记)
+
+    /// 登录窗抓到新 JWT 后与既有账户槽比对的结果。
+    public enum KimiLoginIdentity: Equatable {
+        /// 目标槽为空或与槽内是同一账户 → 直接保存
+        case proceed
+        /// 与目标槽现有账户不同 → 需用户确认替换(newSub 解不出时为 nil,UI 显示"无法识别")
+        case replaceConfirmation(oldSub: String?, newSub: String?)
+        /// 该账户已登记在其他槽 → 不应保存
+        case duplicateOf(otherAccountID: String)
+    }
+
+    /// 其余账户槽的身份(id + 解出的 sub)。
+    public struct KimiSlotSubject {
+        public let id: String
+        public let sub: String?
+        public init(id: String, sub: String?) {
+            self.id = id
+            self.sub = sub
+        }
+    }
+
+    /// 纯函数判定本次登录该如何落槽。duplicate 判定优先于替换判定
+    /// (同一账户不应在列表里出现两次,即使登录入口选错了槽)。
+    public static func judgeLoginIdentity(
+        newSub: String?,
+        slotSub: String?,
+        otherSlots: [KimiSlotSubject]
+    ) -> KimiLoginIdentity {
+        if let new = newSub, let hit = otherSlots.first(where: { $0.sub == new }) {
+            return .duplicateOf(otherAccountID: hit.id)
+        }
+        if let slot = slotSub, slot != newSub {
+            return .replaceConfirmation(oldSub: slot, newSub: newSub)
+        }
+        return .proceed
+    }
+
     /// 某账户的身份标识(用于多账户在 UI 上区分):
     /// web JWT 的 sub 优先;main 无网页登录时回退本机 coding token 的 user_id。
     public static func accountSubject(accountID: String = "main") -> String? {
@@ -309,13 +350,18 @@ public enum KimiUsageService {
         public let monthly: KimiWindow?
         public let subscriptionExpireMs: Int64?
         public let subscriptionBalance: KimiSubscriptionBalance?
+        /// 套餐商品名(ListSubscriptions goods.title,如 "Pro"/"Max";
+        /// 免费户/接口失败为 nil)。展示优先于 LEVEL_* 枚举——官网口径,用户认得。
+        public let planTitle: String?
         public init(fiveHour: KimiWindow, weekly: KimiWindow, monthly: KimiWindow?,
-                    subscriptionExpireMs: Int64?, subscriptionBalance: KimiSubscriptionBalance? = nil) {
+                    subscriptionExpireMs: Int64?, subscriptionBalance: KimiSubscriptionBalance? = nil,
+                    planTitle: String? = nil) {
             self.fiveHour = fiveHour
             self.weekly = weekly
             self.monthly = monthly
             self.subscriptionExpireMs = subscriptionExpireMs
             self.subscriptionBalance = subscriptionBalance
+            self.planTitle = planTitle
         }
     }
 
@@ -344,10 +390,10 @@ public enum KimiUsageService {
         return await fetchWebQuota(token: token, accountID: "main")
     }
 
-    /// Web 用量 → KimiQuota(web 通道无加油包/等级字段,与旧行为一致)。
+    /// Web 用量 → KimiQuota(套餐名填 membershipLevel——多账户卡片档位 tag/账户区分用)。
     private static func webToQuota(_ wq: KimiWebQuota) -> KimiQuota {
         KimiQuota(fiveHour: wq.fiveHour, weekly: wq.weekly, monthly: wq.monthly,
-                  booster: nil, membershipLevel: nil,
+                  booster: nil, membershipLevel: wq.planTitle,
                   subscriptionExpireMs: wq.subscriptionExpireMs,
                   subscriptionBalance: wq.subscriptionBalance)
     }
@@ -389,10 +435,41 @@ public enum KimiUsageService {
             statsBalance = parseSubscriptionStats(data)
         }
 
+        // 3) ListSubscriptions → 套餐商品名(多账户区分;非致命,失败不挡用量)
+        var planTitle: String?
+        var subsReq = URLRequest(url: webSubscriptionsURL)
+        subsReq.httpMethod = "POST"
+        subsReq.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
+        subsReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        subsReq.setValue("web", forHTTPHeaderField: "x-msh-platform")
+        subsReq.setValue("2.0.0", forHTTPHeaderField: "x-msh-version")
+        subsReq.httpBody = try? JSONSerialization.data(withJSONObject: [:])
+        subsReq.timeoutInterval = 30
+        if let (data, response) = try? await URLSession.shared.data(for: subsReq),
+           let http = response as? HTTPURLResponse, http.statusCode == 200 {
+            planTitle = parseSubscriptions(data)
+        }
+
         return .success(KimiWebQuota(fiveHour: parsed.fiveHour, weekly: parsed.weekly,
                                      monthly: parsed.monthly,
                                      subscriptionExpireMs: statsBalance?.expireTimeMs,
-                                     subscriptionBalance: statsBalance))
+                                     subscriptionBalance: statsBalance,
+                                     planTitle: planTitle))
+    }
+
+    /// 纯函数:ListSubscriptions → 当前生效订阅的套餐商品名(goods.title)。
+    /// 优先 SUBSCRIPTION_STATUS_ACTIVE;无生效取首个有 title 的;免费户/形状不符 → nil。
+    public static func parseSubscriptions(_ data: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let subs = root["subscriptions"] as? [[String: Any]] else { return nil }
+        func title(_ sub: [String: Any]) -> String? {
+            ((sub["goods"] as? [String: Any])?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        if let active = subs.first(where: { ($0["status"] as? String) == "SUBSCRIPTION_STATUS_ACTIVE" }),
+           let t = title(active) {
+            return t
+        }
+        return subs.compactMap(title).first
     }
 
     /// 纯函数:解析 GetUsages 响应(usages[scope=FEATURE_CODING].detail=周,

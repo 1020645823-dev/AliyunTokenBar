@@ -16,9 +16,11 @@ import AliyunTokenBarCore
 // - 登录 cookie 全账户共享一份(Keychain 单槽);受监控 workspace 列表落 UserDefaults;
 // - 登录/「发现工作区」经 `GET /console/api/user/workspaces` 拉取账户下全部
 //   workspace 自动并入(端点失效可手动填 wrk_xxx);
-// - 合计口径(聚合纯函数 OpenCodeQuota.aggregate):三窗口都是独立订阅池的
+// - 聚合口径(聚合纯函数 OpenCodeQuota.aggregate):三窗口都是独立订阅池的
 //   百分比,**取 max**(最险的 workspace 决定会不会被限流);
-// - 面板:合计三环 + 每 workspace 细条行(滚动%主指标 + 周%副标,可重命名/移除)。
+// - 面板多 workspace 呈现(v1.0.122 起分工作区,2026-10-25 用户需求:取 max 的
+//   "全局%"其实只是最险一个 workspace 的数,有误解):**每 workspace 一块独立
+//   仪表**(头行 + 各自三环);聚合值仅菜单栏/历史/摘要继续使用。
 
 struct OpenCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -73,7 +75,7 @@ struct OpenCodeCard: View {
         var base = "Cloud IDE · 三窗口共用"
         let t = ATBTimeFormat.updated(model.openCodeLastUpdated ?? ATBTimeFormat.latestData(model))
         if !t.isEmpty { base += " · \(t) 更新" }
-        if model.openCodeWorkspaces.count > 1 { base += " · 合计" }
+        if model.openCodeWorkspaces.count > 1 { base += " · 分工作区统计" }
         return base
     }
 
@@ -85,13 +87,20 @@ struct OpenCodeCard: View {
             loginGuide
         } else if model.openCodeWorkspaces.isEmpty {
             emptyWorkspaceGuide
+        } else if model.openCodeWorkspaces.count > 1 {
+            // 多 workspace:每块独立仪表,聚合不上面板(取 max 有误解)
+            VStack(spacing: DesignTokens.spacingM) {
+                ForEach(model.openCodeWorkspaces) { ws in
+                    workspaceDashboard(ws)
+                }
+                if model.openCodeError != nil {
+                    accountErrorSummary
+                }
+            }
         } else if let q = model.openCodeQuota {
             VStack(spacing: DesignTokens.spacingM) {
-                multiRingSection(q: q)
+                ringCard(q)
                 forecastSection
-                if model.openCodeWorkspaces.count > 1 {
-                    workspaceList
-                }
                 if model.openCodeError != nil {
                     accountErrorSummary
                 }
@@ -168,8 +177,8 @@ struct OpenCodeCard: View {
         .atbCard()
     }
 
-    /// 三窗口一组(roll/week/month):横向三环卡片(保留 v3 打磨版式)。
-    private func multiRingSection(q: OpenCodeQuota) -> some View {
+    /// 三窗口一组(roll/week/month):横向三环卡片(单 workspace/每块共用)。
+    private func ringCard(_ q: OpenCodeQuota) -> some View {
         ATBMultiRingCard(slots: [
             ATBMultiRingCard.Slot(id: "rolling",
                                   title: "滚动4h",
@@ -261,66 +270,49 @@ struct OpenCodeCard: View {
         }
     }
 
-    // MARK: workspace 行(滚动%主指标 + 周%副标 + 3pt 条;右键重命名/移除)
+    // MARK: 每 workspace 仪表块(多 workspace 拆分:三环是该 workspace 自己的;
+    // 头行右键重命名/移除;错误 workspace 保留内联移除)
 
-    private var workspaceList: some View {
-        VStack(spacing: 4) {
-            ForEach(model.openCodeWorkspaces) { ws in
-                workspaceRow(ws)
-            }
-        }
-    }
-
+    /// 单 workspace 仪表块。快照缺失时按错误行/等待行兜底,块不消失。
     @ViewBuilder
-    private func workspaceRow(_ ws: OpenCodeWorkspace) -> some View {
-        if renamingID == ws.id {
-            ATBRenameField(initial: ws.label,
-                           onSave: { newLabel in
-                               model.renameOpenCodeWorkspace(id: ws.id, label: newLabel)
-                               renamingID = nil
-                           },
-                           onCancel: { renamingID = nil })
-                .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            workspaceRowContent(ws)
-                .contextMenu {
-                    ATBAccountMenu.items(rename: { renamingID = ws.id },
-                                         remove: { model.removeOpenCodeWorkspace(id: ws.id) })
+    private func workspaceDashboard(_ ws: OpenCodeWorkspace) -> some View {
+        let snap = model.openCodeWorkspaceQuotas.first(where: { $0.id == ws.id })
+        VStack(spacing: DesignTokens.spacingS) {
+            if renamingID == ws.id {
+                ATBRenameField(initial: ws.label,
+                               onSave: { newLabel in
+                                   model.renameOpenCodeWorkspace(id: ws.id, label: newLabel)
+                                   renamingID = nil
+                               },
+                               onCancel: { renamingID = nil })
+                    .atbCard(paddingV: DesignTokens.spacingS - 2)
+            } else {
+                ATBAccountDashHeader(label: ws.label, brand: brand, hint: ws.id)
+                    .contextMenu {
+                        ATBAccountMenu.items(rename: { renamingID = ws.id },
+                                             remove: { model.removeOpenCodeWorkspace(id: ws.id) })
+                    }
+            }
+            if let snap {
+                ringCard(snap.quota)
+            } else if let err = model.openCodeWorkspaceErrors[ws.id] {
+                HStack(spacing: DesignTokens.spacingS) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.atbTextSecondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Button("移除") { model.removeOpenCodeWorkspace(id: ws.id) }
+                        .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
+                        .font(.system(size: 9))
                 }
-        }
-    }
-
-    @ViewBuilder
-    private func workspaceRowContent(_ ws: OpenCodeWorkspace) -> some View {
-        if let snap = model.openCodeWorkspaceQuotas.first(where: { $0.id == ws.id }) {
-            let pct = snap.quota.rolling.pct
-            let band = thresholdBrand(pct, config: model.thresholdConfig, brand: brand)
-            ATBThinMeterRow(
-                label: ws.label,
-                pct: pct,
-                color: band,
-                valueText: "周 \(snap.quota.weekly.pct)%",
-                trailing: snap.quota.rolling.rollingResetCompactText,
-                help: "\(ws.label)(\(ws.id)):滚动 \(pct)% · 周 \(snap.quota.weekly.pct)% · 月 \(snap.quota.monthly.pct)%"
-            )
-        } else if let err = model.openCodeWorkspaceErrors[ws.id] {
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.orange)
-                Text("\(ws.label):\(err)")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.atbTextSecondary)
-                Spacer(minLength: 0)
-                Button("移除") { model.removeOpenCodeWorkspace(id: ws.id) }
-                    .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
-                    .font(.system(size: 9))
+                .atbCard(paddingV: DesignTokens.spacingS - 2)
+            } else {
+                ATBUnavailableRow(title: "三窗口用量")
             }
-            .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            ATBThinMeterRow(label: ws.label, pct: 0, color: Color.atbTextTertiary,
-                            valueText: nil, trailing: "等待刷新…",
-                            help: "\(ws.label):等待刷新")
         }
     }
 

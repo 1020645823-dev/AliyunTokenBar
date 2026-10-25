@@ -7,9 +7,11 @@ import AliyunTokenBarCore
 // v1.0.66 视觉语言 + v1.0.67 多账户(2026-10-04):
 // - 每个智谱账户 = 一把独立 API Key(按 id 分槽存 Keychain;首账户 "main"
 //   复用旧槽 + opencode 配置自动发现,零迁移);
-// - 合计口径(聚合纯函数 ZhipuQuota.aggregate):5h/周窗口**取 max**(风险最紧的
+// - 聚合口径(聚合纯函数 ZhipuQuota.aggregate):5h/周窗口**取 max**(最险的
 //   账户决定会不会被限流),MCP 月度按次**求和**(各账户独立计数);
-// - 面板:合计三环 + 每账户细条行(label/5h%/周%/条),错误账户内联提示可移除;
+// - 面板多账户呈现(v1.0.122 起分账户,2026-10-25 用户需求:取 max 的"全局 5h%"
+//   其实只是最险一个账户的数,有误解):**每账户一块独立仪表**(头行 + 各自
+//   5h/周/MCP 三环 + 各自 MCP 明细行);聚合值仅菜单栏/历史/摘要继续使用;
 // - 添加账户:卡内内联表单(粘 Key 即查,无需去设置页)。
 
 struct ZhipuCodeCard: View {
@@ -40,7 +42,9 @@ struct ZhipuCodeCard: View {
                     Text("智谱 GLM")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.atbTextPrimary)
-                    if let level = model.zhipuQuota?.level {
+                    // 多账户时聚合 level 只是首个非空值(会张冠李戴),
+                    // 真实档位在每账户块头行的徽章里;单账户才在品牌行露出
+                    if model.zhipuAccounts.count <= 1, let level = model.zhipuQuota?.level {
                         ATBBrandTag(text: levelDisplay(level), brand: brand)
                     }
                     if model.zhipuAccounts.count > 1 {
@@ -65,7 +69,7 @@ struct ZhipuCodeCard: View {
         let t = ATBTimeFormat.updated(model.zhipuLastUpdated ?? ATBTimeFormat.latestData(model))
         if !t.isEmpty { base += " · \(t) 更新" }
         if model.zhipuAccounts.count > 1 {
-            base += " · 合计"
+            base += " · 分账户统计"
         } else if let hint = model.zhipuAccountHint("main") {
             base += " · Key \(hint)"
         }
@@ -79,15 +83,22 @@ struct ZhipuCodeCard: View {
         if model.zhipuAccounts.isEmpty {
             // 有 Key(手动/自动发现)但无账户:用户移除过全部 → 直接给添加表单
             addAccountForm
+        } else if model.zhipuAccounts.count > 1 {
+            // 多账户:每账户一块独立仪表,聚合不上面板(取 max 有误解)
+            VStack(spacing: DesignTokens.spacingM) {
+                ForEach(model.zhipuAccounts) { account in
+                    accountDashboard(account)
+                }
+                if model.zhipuError != nil {
+                    accountErrorSummary
+                }
+            }
         } else if let q = model.zhipuQuota {
             VStack(spacing: DesignTokens.spacingM) {
-                multiRingSection(q: q)
+                ringCard(q)
                 forecastSection(q)
                 if let mcp = q.mcp, !mcp.details.isEmpty {
-                    mcpDetailRow(mcp)
-                }
-                if model.zhipuAccounts.count > 1 {
-                    accountList
+                    mcpDetailRow(mcp, accountLabel: nil)
                 }
                 if model.zhipuError != nil {
                     accountErrorSummary
@@ -111,7 +122,8 @@ struct ZhipuCodeCard: View {
         }
     }
 
-    private func multiRingSection(q: ZhipuQuota) -> some View {
+    /// 三环卡(单账户/每账户块共用):5h / 本周 / MCP 月度。
+    private func ringCard(_ q: ZhipuQuota) -> some View {
         ATBMultiRingCard(slots: [
             ATBMultiRingCard.Slot(id: "5h",
                                   title: "5h",
@@ -197,81 +209,67 @@ struct ZhipuCodeCard: View {
     }
 
     /// MCP 明细行:各通道本月已用次数(search-prime 2 · zread 3 …)。
-    private func mcpDetailRow(_ mcp: ZhipuMCPQuota) -> some View {
+    /// accountLabel 非 nil = 多账户分账户块内(按次是各账户独立计数,不再合计)。
+    private func mcpDetailRow(_ mcp: ZhipuMCPQuota, accountLabel: String?) -> some View {
         let detail = mcp.details
             .filter { $0.usage > 0 }
             .sorted { $0.usage > $1.usage }
             .map { "\($0.modelCode) \($0.usage)" }
             .joined(separator: " · ")
         let text = detail.isEmpty ? "本月暂无 MCP 调用" : detail
+        let who = accountLabel.map { "\($0) 的" } ?? ""
         return ATBInfoRow(icon: "wrench.and.screwdriver.fill", text: text, tint: brand,
-                          help: "MCP 通道(search-prime / web-reader / zread)本月已用次数;多账户为合计")
+                          help: "\(who)MCP 通道(search-prime / web-reader / zread)本月已用次数")
     }
 
-    // MARK: 多账户行(5h 为主指标 + 周副标 + 3pt 条;右键重命名/移除)
+    // MARK: 每账户仪表块(多账户拆分:三环/MCP 都是该账户自己的;
+    // 头行右键重命名/移除;错误账户保留内联移除)
 
-    private var accountList: some View {
-        VStack(spacing: 4) {
-            ForEach(model.zhipuAccounts) { account in
-                accountRow(account)
-            }
-        }
-    }
-
+    /// 单账户仪表块。快照缺失时按错误行/等待行兜底,块不消失。
     @ViewBuilder
-    private func accountRow(_ account: ZhipuAccount) -> some View {
-        if renamingID == account.id {
-            ATBRenameField(initial: account.label,
-                           onSave: { newLabel in
-                               model.renameZhipuAccount(id: account.id, label: newLabel)
-                               renamingID = nil
-                           },
-                           onCancel: { renamingID = nil })
-                .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            accountRowContent(account)
-                .contextMenu {
-                    ATBAccountMenu.items(rename: { renamingID = account.id },
-                                         remove: { model.removeZhipuAccount(id: account.id) })
+    private func accountDashboard(_ account: ZhipuAccount) -> some View {
+        let snap = model.zhipuAccountQuotas.first(where: { $0.id == account.id })
+        VStack(spacing: DesignTokens.spacingS) {
+            if renamingID == account.id {
+                ATBRenameField(initial: account.label,
+                               onSave: { newLabel in
+                                   model.renameZhipuAccount(id: account.id, label: newLabel)
+                                   renamingID = nil
+                               },
+                               onCancel: { renamingID = nil })
+                    .atbCard(paddingV: DesignTokens.spacingS - 2)
+            } else {
+                ATBAccountDashHeader(label: account.label, brand: brand,
+                                     tag: snap?.quota.level.map(levelDisplay),
+                                     hint: model.zhipuAccountHint(account.id))
+                    .contextMenu {
+                        ATBAccountMenu.items(rename: { renamingID = account.id },
+                                             remove: { model.removeZhipuAccount(id: account.id) })
+                    }
+            }
+            if let snap {
+                ringCard(snap.quota)
+                if let mcp = snap.quota.mcp, !mcp.details.isEmpty {
+                    mcpDetailRow(mcp, accountLabel: account.label)
                 }
-        }
-    }
-
-    @ViewBuilder
-    private func accountRowContent(_ account: ZhipuAccount) -> some View {
-        let hint = model.zhipuAccountHint(account.id)
-        if let snap = model.zhipuAccountQuotas.first(where: { $0.id == account.id }) {
-            let five = snap.quota.fiveHour
-            let pct = five?.pctInt ?? 0
-            let band = thresholdBrand(pct, config: model.thresholdConfig, brand: brand)
-            ATBThinMeterRow(
-                label: account.label,
-                pct: pct,
-                color: band,
-                hint: hint,
-                valueText: snap.quota.weekly.map { "周 \($0.pctInt)%" },
-                trailing: five.flatMap { ATBResetText.compact(fromMs: $0.resetTimeMs) },
-                help: "\(account.label)\(hint.map { " \($0)" } ?? ""):5h \(pct)%"
-                    + (snap.quota.weekly.map { " · 周 \($0.pctInt)%" } ?? "")
-                    + (snap.quota.level.map { " · 档位 \($0)" } ?? ""))
-        } else if let err = model.zhipuAccountErrors[account.id] {
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.orange)
-                Text("\(account.label):\(err)")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.atbTextSecondary)
-                Spacer(minLength: 0)
-                Button("移除") { model.removeZhipuAccount(id: account.id) }
-                    .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
-                    .font(.system(size: 9))
+            } else if let err = model.zhipuAccountErrors[account.id] {
+                HStack(spacing: DesignTokens.spacingS) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.atbTextSecondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Button("移除") { model.removeZhipuAccount(id: account.id) }
+                        .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
+                        .font(.system(size: 9))
+                }
+                .atbCard(paddingV: DesignTokens.spacingS - 2)
+            } else {
+                ATBUnavailableRow(title: "三窗口用量")
             }
-            .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            ATBThinMeterRow(label: account.label, pct: 0, color: Color.atbTextTertiary,
-                            hint: hint, valueText: nil, trailing: "等待刷新…",
-                            help: "\(account.label):等待刷新")
         }
     }
 
@@ -319,7 +317,7 @@ struct ZhipuCodeCard: View {
             if let saveError {
                 Text(saveError).font(.system(size: 10)).foregroundStyle(.atbCritical)
             }
-            Text("各账户独立统计;合计口径 = 5h/周取最险账户,MCP 按次求和。")
+            Text("各账户独立统计,面板分账户显示;菜单栏取最险账户。")
                 .font(.system(size: 9))
                 .foregroundStyle(Color.atbTextTertiary)
         }

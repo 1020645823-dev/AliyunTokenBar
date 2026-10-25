@@ -105,6 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateIslandWiring(scheme)
             }
             .store(in: &cancellables)
+        ThemeManager.shared.$theme
+            .receive(on: RunLoop.main)
+            .sink { _ in
+                TokenPlanModel.shared.prerenderIcon()
+                IslandOverlayController.shared.refreshAppearance()
+            }
+            .store(in: &cancellables)
         updateIslandWiring(MenuBarStyleManager.shared.scheme)
         // 岛行点击 → 面板跳转:由 AppDelegate 自己注入。**不要**在别处用
         // `NSApp.delegate as? AppDelegate` —— SwiftUI 的 NSApplicationDelegateAdaptor
@@ -227,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshMenuBarAppearance()
+                IslandOverlayController.shared.refreshAppearance()
                 TokenPlanModel.shared.prerenderIcon()
             }
         }
@@ -263,8 +271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateIslandWiring(MenuBarStyleManager.shared.scheme)
     }
 
-    /// 菜单栏明暗 = 系统外观(全局域 AppleInterfaceStyle,深色时存在,浅色时缺省)。
-    /// 与 app 内强制主题(ThemeManager)正交:菜单栏永远跟随系统,不跟随 app。
+    /// 系统菜单栏真实明暗:非岛 scheme 用它选基底色;AppTheme.system 的岛也共用。
+    /// 显式浅/深岛主题由 AppTheme.isDark 压过此值,其他菜单栏样式不受强制 app 主题影响。
     private func refreshMenuBarAppearance() {
         let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)
         MenuBarAppearance.shared.isDark = (global?["AppleInterfaceStyle"] as? String) == "Dark"

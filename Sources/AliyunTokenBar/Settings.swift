@@ -32,11 +32,12 @@ final class SettingsWindow {
 
     func show() {
         if panel == nil {
-            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
+            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620),
                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             p.title = "设置"
             p.isFloatingPanel = true
-            p.minSize = NSSize(width: 620, height: 500)
+            p.minSize = NSSize(width: CGFloat(SettingsPresentation.minimumWindowWidth),
+                               height: CGFloat(SettingsPresentation.minimumWindowHeight))
             p.center()
             panel = p
         }
@@ -52,27 +53,12 @@ final class SettingsWindow {
 enum SettingsPage: String, CaseIterable, Identifiable {
     case general, appearance, notifications, services, history
     var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .general: return "通用"
-        case .appearance: return "外观"
-        case .notifications: return "通知"
-        case .services: return "服务"
-        case .history: return "历史"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .general: return "gearshape"
-        case .appearance: return "paintpalette"
-        case .notifications: return "bell"
-        case .services: return "cloud"
-        case .history: return "chart.xyaxis.line"
-        }
-    }
+    var title: String { SettingsPresentation.page(rawValue).title }
+    var subtitle: String { SettingsPresentation.page(rawValue).subtitle }
+    var icon: String { SettingsPresentation.page(rawValue).icon }
 }
 
-// MARK: - 设置主页(侧边栏 + 详情)
+// MARK: - 设置主页(精致侧栏 + 详情)
 
 struct SettingsView: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -80,17 +66,14 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                ForEach(SettingsPage.allCases) { page in
-                    Label(page.title, systemImage: page.icon).tag(page)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 160, ideal: 160, max: 160)
+            SettingsSidebar(selection: $selection)
         } detail: {
-            detailView(selection ?? .general)
+            SettingsDetail(page: selection ?? .general) {
+                detailView(selection ?? .general)
+            }
         }
-        .frame(minWidth: 620, minHeight: 500)
+        .frame(minWidth: CGFloat(SettingsPresentation.minimumWindowWidth),
+               minHeight: CGFloat(SettingsPresentation.minimumWindowHeight))
         .onChange(of: model.notificationsEnabled) { on in
             // 打开通知开关时(重新)请求系统授权:用户可能首次拒绝过
             if on { NotificationManager.shared.requestAuthorization() }
@@ -109,6 +92,240 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - 设置页共享骨架
+
+private struct SettingsSidebar: View {
+    @Binding var selection: SettingsPage?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SettingsBrandHeader()
+                .padding(.top, DesignTokens.spacingL)
+                .padding(.horizontal, DesignTokens.spacingL)
+
+            List(selection: $selection) {
+                Section("配置") {
+                    ForEach(SettingsPage.allCases) { page in
+                        SettingsNavRow(page: page, isSelected: selection == page)
+                            .tag(page)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollDisabled(true)
+
+            Spacer(minLength: 0)
+            Divider()
+            HStack(spacing: DesignTokens.spacingXS) {
+                Text("CodingTokenBar")
+                    .font(.system(size: 10, weight: .medium))
+                Spacer()
+                Text(SelfUpdater.currentVersion())
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, DesignTokens.spacingL)
+            .padding(.vertical, DesignTokens.spacingM)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .navigationSplitViewColumnWidth(min: 220, ideal: 220, max: 220)
+    }
+}
+
+private struct SettingsBrandHeader: View {
+    var body: some View {
+        HStack(spacing: DesignTokens.spacingS) {
+            ZStack {
+                Circle().fill(Color.atbBlue.opacity(0.14))
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.atbBlue)
+            }
+            .frame(width: 36, height: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CodingTokenBar")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.atbTextPrimary)
+                Text("用量与主题设置")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct SettingsNavRow: View {
+    let page: SettingsPage
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: DesignTokens.spacingS) {
+            Image(systemName: page.icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(page.title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(page.subtitle)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(page.title)
+        .accessibilityHint(page.subtitle)
+    }
+}
+
+private struct SettingsDetail<Content: View>: View {
+    let page: SettingsPage
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(page.title)
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundStyle(.atbTextPrimary)
+                Text(page.subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, DesignTokens.spacingL)
+            .padding(.top, DesignTokens.spacingL)
+
+            ScrollView {
+                content()
+                    .padding(DesignTokens.spacingL)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+// MARK: - 共享设置零件
+
+private struct SettingsSectionCard<Content: View>: View {
+    let title: String
+    let systemImage: String
+    var tint: Color = .atbBlue
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.spacingS) {
+            HStack(spacing: DesignTokens.spacingS) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(tint.opacity(0.13))
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: 26, height: 26)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.atbTextPrimary)
+            }
+            content()
+        }
+        .padding(DesignTokens.spacingL)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.atbCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.radiusL)
+                .strokeBorder(Color.atbSeparator.opacity(0.5), lineWidth: DesignTokens.strokeHairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
+        .shadow(color: Color.black.opacity(0.035), radius: 3, y: 1)
+    }
+}
+
+private struct SettingsGrid<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: DesignTokens.spacingM),
+                                 count: CGFloat(SettingsPresentation.page("services").detailGridColumns).int),
+                  spacing: DesignTokens.spacingM) {
+            content()
+        }
+    }
+}
+
+private struct SettingsStatusPill: View {
+    enum Tone {
+        case ok, warning, critical
+        var color: Color {
+            switch self {
+            case .ok: return .green
+            case .warning: return Color(red: 0.95, green: 0.55, blue: 0.10)
+            case .critical: return .atbCritical
+            }
+        }
+    }
+    let text: String
+    var tone: Tone = .ok
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(tone.color).frame(width: 5, height: 5)
+            Text(text)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(tone.color)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(tone.color.opacity(0.13)))
+    }
+}
+
+private struct SettingsCaption: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.atbTextSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct SettingsInfoRow<Accessory: View>: View {
+    let title: String
+    var value: String = ""
+    @ViewBuilder var accessory: () -> Accessory
+
+    init(title: String, value: String = "", @ViewBuilder accessory: @escaping () -> Accessory) {
+        self.title = title
+        self.value = value
+        self.accessory = accessory
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.spacingS) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: DesignTokens.spacingXS)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.atbTextPrimary)
+                .monospacedDigit()
+            accessory()
+        }
+    }
+}
+
+private extension CGFloat {
+    var int: Int { Int(self) }
+}
+
 // MARK: - 通用
 
 private struct GeneralSettingsPage: View {
@@ -116,43 +333,48 @@ private struct GeneralSettingsPage: View {
     @StateObject private var launch = LaunchAtLoginManager.shared
     @State private var checkingUpdate = false
     var body: some View {
-        Form {
-            Section("启动") {
-                Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
-            }
-            Section("刷新") {
-                Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
-                    Text("5 分钟").tag(5); Text("10 分钟").tag(10)
-                    Text("30 分钟").tag(30); Text("60 分钟").tag(60)
-                }
-            }
-            Section("关于") {
-                LabeledContent("版本", value: SelfUpdater.currentVersion())
-                HStack {
-                    if let update = model.appUpdate {
-                        Label("新版本 \(update.version) 可用", systemImage: "arrow.down.circle.fill")
-                            .font(.system(size: 12)).foregroundStyle(.orange)
-                        Spacer()
-                        Button("前往下载") { model.openUpdatePage() }
-                            .buttonStyle(ATBTextButtonStyle())
-                    } else {
-                        Text(checkingUpdate ? "正在检查…" : "已是最新版本")
-                            .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
-                        Spacer()
-                        Button("检查更新") {
-                            checkingUpdate = true
-                            Task {
-                                await model.checkAppUpdate()
-                                checkingUpdate = false
-                            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
+                SettingsGrid {
+                    SettingsSectionCard(title: "启动", systemImage: "power", tint: .green) {
+                        Toggle("开机自动启动", isOn: Binding(get: { launch.isEnabled }, set: { launch.toggle($0) }))
+                        SettingsCaption(text: "跟随 macOS 登录项注册;系统设置改动时会自动保持现状。")
+                    }
+                    SettingsSectionCard(title: "刷新", systemImage: "clock.arrow.circlepath", tint: .atbBlue) {
+                        Picker("刷新间隔", selection: $model.refreshIntervalMinutes) {
+                            Text("5 分钟").tag(5); Text("10 分钟").tag(10)
+                            Text("30 分钟").tag(30); Text("60 分钟").tag(60)
                         }
-                        .buttonStyle(ATBTextButtonStyle())
-                        .disabled(checkingUpdate)
+                        SettingsCaption(text: "控制全部数据源的后台拉取节奏;历史趋势按采样间隔记录。")
+                    }
+                }
+                SettingsSectionCard(title: "关于", systemImage: "info.circle", tint: .secondary) {
+                    SettingsInfoRow(title: "当前版本", value: SelfUpdater.currentVersion()) { EmptyView() }
+                    HStack {
+                        if let update = model.appUpdate {
+                            Label("新版本 \(update.version) 可用", systemImage: "arrow.down.circle.fill")
+                                .font(.system(size: 12)).foregroundStyle(.orange)
+                            Spacer()
+                            Button("前往下载") { model.openUpdatePage() }
+                                .buttonStyle(ATBTextButtonStyle())
+                        } else {
+                            Text(checkingUpdate ? "正在检查…" : "已是最新版本")
+                                .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+                            Spacer()
+                            Button("检查更新") {
+                                checkingUpdate = true
+                                Task {
+                                    await model.checkAppUpdate()
+                                    checkingUpdate = false
+                                }
+                            }
+                            .buttonStyle(ATBTextButtonStyle())
+                            .disabled(checkingUpdate)
+                        }
                     }
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -162,71 +384,134 @@ private struct AppearanceSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
     @StateObject private var theme = ThemeManager.shared
     @StateObject private var menuBarStyle = MenuBarStyleManager.shared
+
     var body: some View {
-        Form {
-            Section("主题") {
-                Picker("主题", selection: $theme.theme) {
-                    ForEach(AppTheme.allCases) { t in
-                        Label(t.displayName, systemImage: t.iconName).tag(t)
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
+                themeCard
+                menuBarCard
+                SettingsGrid {
+                    providerTogglesCard
+                    panelDetailsCard
+                }
+            }
+        }
+    }
+
+    private var themeCard: some View {
+        SettingsSectionCard(title: "主题", systemImage: "circle.lefthalf.filled", tint: .purple) {
+            HStack(spacing: DesignTokens.spacingS) {
+                ForEach(SettingsPresentation.themeOptions(), id: \.theme) { option in
+                    ThemePreviewCard(option: option,
+                                     isSelected: theme.theme == option.theme) {
+                        theme.theme = option.theme
                     }
                 }
             }
-            Section {
-                Picker("菜单栏样式", selection: $menuBarStyle.scheme) {
-                    ForEach(MenuBarDisplayScheme.allCases) { s in
-                        Text(s.displayName).tag(s)
-                    }
+            SettingsCaption(text: "全 App 统一皮肤:主面板、设置页、登录窗与灵动岛同时使用;切换后立即生效。")
+        }
+    }
+
+    private var menuBarCard: some View {
+        SettingsSectionCard(title: "菜单栏", systemImage: "menubar.rectangle", tint: .atbBlue) {
+            Picker("显示样式", selection: $menuBarStyle.scheme) {
+                ForEach(MenuBarDisplayScheme.allCases) { s in
+                    Text(s.displayName).tag(s)
                 }
-            } header: {
-                Text("菜单栏")
-            } footer: {
-                Text("灵动岛:菜单栏常驻一枚黑色胶囊,汇总全部已启用数据源的健康度(需处理/告急/预警计数);鼠标悬停即弹簧展开为剩余口径实时卡片,点某一行直接跳到该数据源标签页,点胶囊仍打开主面板。")
+            }
+            HStack(spacing: DesignTokens.spacingS) {
+                SettingsStatusPill(text: "灵动岛皮肤跟随上方主题")
+                Text("悬停展开全源星图,点击服务跳对应标签页。")
                     .font(.system(size: 10))
+                    .foregroundStyle(.atbTextSecondary)
             }
-            Section {
+        }
+    }
+
+    private var providerTogglesCard: some View {
+        SettingsSectionCard(title: "数据源", systemImage: "square.grid.2x2", tint: .green) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2),
+                      alignment: .leading, spacing: DesignTokens.spacingXS) {
                 ForEach(ProviderKind.allCases) { kind in
                     Toggle(isOn: Binding(
                         get: { model.isEnabled(kind) },
                         set: { model.setEnabled(kind, $0) }
                     )) {
-                        Label {
-                            Text(kind.displayName)
-                        } icon: {
-                            // 真实品牌 logo(原色);「本机」回落 SF Symbol
+                        HStack(spacing: 6) {
                             if let mark = kind.brandMark {
-                                mark.mark(in: CGRect(x: 0, y: 0, width: 14, height: 14))
+                                mark.mark(in: CGRect(x: 0, y: 0, width: 13, height: 13))
                             } else {
                                 Image(systemName: kind.settingsIconName)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary)
                             }
+                            Text(kind.displayName)
+                                .font(.system(size: 12, weight: .medium))
                         }
                     }
+                    .toggleStyle(.checkbox)
                 }
-            } header: {
-                Text("数据源")
-            } footer: {
-                Text("关闭后:菜单栏不出列、面板不出标签页、停止该数据源的后台刷新,并不再参与告警与每日摘要。全部关闭时菜单栏降级为仅图标。")
-                    .font(.system(size: 10))
             }
-            Section {
-                HStack {
-                    Text("余额告急下限")
-                    Spacer()
-                    TextField("", value: $model.moneyFloor, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                        .monospacedDigit()
-                    Text("¥").foregroundStyle(.secondary)
-                }
-                Text("判定对象:DeepSeek 余额、MiMo 余额(「今日花费」不参与)。填 0 关闭余额判定。")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            } header: {
-                Text("灵动岛")
-            }
-            Section("面板") {
-                Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
-            }
+            SettingsCaption(text: "关闭后该源不显示、停止刷新,也不参与告警与每日摘要。")
         }
-        .formStyle(.grouped)
+    }
+
+    private var panelDetailsCard: some View {
+        SettingsSectionCard(title: "面板与余额", systemImage: "slider.horizontal.3", tint: .orange) {
+            HStack(spacing: DesignTokens.spacingS) {
+                Text("余额告急下限")
+                Spacer()
+                TextField("", value: $model.moneyFloor, format: .number)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                Text("¥").foregroundStyle(.secondary)
+            }
+            Toggle("显示用量趋势线", isOn: $model.sparklineEnabled)
+            SettingsCaption(text: "余额判定对象:DeepSeek 余额、MiMo 余额;填 0 关闭余额判定。")
+        }
+    }
+}
+
+private struct ThemePreviewCard: View {
+    let option: ThemeOptionPresentation
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(option.previewIsDark
+                          ? Color(red: 0.14, green: 0.18, blue: 0.26)
+                          : Color(red: 0.88, green: 0.92, blue: 0.97))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(isSelected ? Color.accentColor : Color.atbSeparator.opacity(0.65),
+                                          lineWidth: isSelected ? 1.6 : 0.7)
+                    )
+                    .frame(height: 44)
+                Text(option.footerLabel)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.atbTextSecondary)
+                Text(option.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.atbTextPrimary)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(Color.atbCardBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.65) : Color.clear,
+                                  lineWidth: isSelected ? 1.2 : 0)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.label)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 }
 
@@ -236,50 +521,51 @@ private struct NotificationSettingsPage: View {
     @StateObject private var model = TokenPlanModel.shared
     @StateObject private var notifier = NotificationManager.shared
     var body: some View {
-        Form {
-            Section("系统授权") {
-                HStack {
-                    Image(systemName: notifier.authorized ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(notifier.authorized ? .green : .orange)
-                    Text(notifier.authorized ? "通知权限已授予" : "通知权限未授予")
-                        .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
-                    Spacer()
-                    if !notifier.authorized {
-                        Button("打开系统设置") {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
-                                NSWorkspace.shared.open(url)
+        ScrollView {
+            VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
+                SettingsSectionCard(title: "系统授权", systemImage: "bell.badge", tint: .orange) {
+                    HStack(spacing: DesignTokens.spacingS) {
+                        Image(systemName: notifier.authorized ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(notifier.authorized ? .green : .orange)
+                        Text(notifier.authorized ? "通知权限已授予" : "通知权限未授予")
+                            .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+                        Spacer()
+                        if !notifier.authorized {
+                            Button("打开系统设置") {
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .buttonStyle(ATBTextButtonStyle())
+                        }
+                    }
+                    SettingsCaption(text: "授权关闭时仍会保存开关状态;重新授权后立即恢复通知。")
+                }
+                SettingsSectionCard(title: "用量告警", systemImage: "exclamationmark.shield", tint: .red) {
+                    Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
+                    if model.notificationsEnabled {
+                        HStack(spacing: DesignTokens.spacingM) {
+                            Picker("提示阈值", selection: Binding(
+                                get: { model.thresholdConfig.warning },
+                                set: { model.thresholdConfig = ThresholdConfig(warning: $0, critical: model.thresholdConfig.critical) }
+                            )) {
+                                Text("50%").tag(50); Text("70%").tag(70); Text("80%").tag(80)
+                            }
+                            Picker("严重阈值", selection: Binding(
+                                get: { model.thresholdConfig.critical },
+                                set: { model.thresholdConfig = ThresholdConfig(warning: model.thresholdConfig.warning, critical: $0) }
+                            )) {
+                                Text("80%").tag(80); Text("90%").tag(90); Text("95%").tag(95)
                             }
                         }
-                        .buttonStyle(ATBTextButtonStyle())
                     }
-                }
-            }
-            Section("用量告警") {
-                Toggle("接近上限时通知", isOn: $model.notificationsEnabled)
-                Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)
-                if model.dailyDigestEnabled {
-                    Text("每天 20:00 汇总阿里云 / OpenCode / Kimi / DeepSeek / 智谱 / MiMo / MiniMax 用量发送一条通知。")
-                        .font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
-                }
-                if model.notificationsEnabled {
-                    // 告警阈值(提示级):50/70/80
-                    Picker("提示阈值", selection: Binding(
-                        get: { model.thresholdConfig.warning },
-                        set: { model.thresholdConfig = ThresholdConfig(warning: $0, critical: model.thresholdConfig.critical) }
-                    )) {
-                        Text("50%").tag(50); Text("70%").tag(70); Text("80%").tag(80)
-                    }
-                    // 严重阈值:80/90/95
-                    Picker("严重阈值", selection: Binding(
-                        get: { model.thresholdConfig.critical },
-                        set: { model.thresholdConfig = ThresholdConfig(warning: model.thresholdConfig.warning, critical: $0) }
-                    )) {
-                        Text("80%").tag(80); Text("90%").tag(90); Text("95%").tag(95)
+                    Toggle("每日用量摘要", isOn: $model.dailyDigestEnabled)
+                    if model.dailyDigestEnabled {
+                        SettingsCaption(text: "每天 20:00 汇总各数据源用量并发送一条通知。")
                     }
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -322,15 +608,17 @@ private struct ServicesSettingsPage: View {
         ScrollView {
             VStack(spacing: DesignTokens.spacingM) {
                 credentialsStorageCard
-                aliyunCard
-                kimiCard
-                openCodeCard
-                deepSeekCard
-                zhipuCard
-                mimoCard
-                minimaxCard
-                ollamaCard
-                stepfunCard
+                SettingsGrid {
+                    aliyunCard
+                    kimiCard
+                    openCodeCard
+                    deepSeekCard
+                    zhipuCard
+                    mimoCard
+                    minimaxCard
+                    ollamaCard
+                    stepfunCard
+                }
             }
             .padding(DesignTokens.spacingL)
         }
@@ -387,6 +675,15 @@ private struct ServicesSettingsPage: View {
 
     // MARK: Kimi(多账户)
 
+    /// main 槽登录按钮文案:列表里有 main 时语义是"重登该账户"
+    /// (登录成别的账户会有换户确认弹窗兜底,不再静默覆盖)。
+    private var mainLoginTitle: String {
+        if let label = model.kimiAccounts.first(where: { $0.id == "main" })?.label {
+            return "重新登录(\(label))"
+        }
+        return "登录 Kimi 网页控制台"
+    }
+
     private var kimiCard: some View {
         cardContainer(icon: "sparkles", iconColor: .teal, title: "Kimi Code") {
             if model.kimiConfigured {
@@ -441,17 +738,22 @@ private struct ServicesSettingsPage: View {
                     }
                 }
                 HStack(spacing: DesignTokens.spacingS) {
-                    if model.kimiWebLoggedIn {
+                    // 只要有账户(哪怕 main 槽 token 失效)就提供「登录新账户」:
+                    // 否则想加第二个账户的用户只能走 main 登录按钮,把第一个账户静默覆盖
+                    //(2026-10-24 实案:双账户用户重登入口登录 B,A 被覆盖丢失)。
+                    if model.kimiWebLoggedIn || !model.kimiAccounts.isEmpty {
                         Button("登录新账户") {
                             kimiLoginAccountID = UUID().uuidString
                             kimiLoginLabel = model.kimiNextAccountLabel
                             showKimiLogin = true
                         }
                         .buttonStyle(ATBPrimaryButtonStyle())
+                    }
+                    if model.kimiWebLoggedIn {
                         Button("登出网页控制台") { model.clearKimi() }
                             .buttonStyle(ATBTextButtonStyle(color: .red)).font(.system(size: 11))
                     } else {
-                        Button("登录 Kimi 网页控制台") {
+                        Button(mainLoginTitle) {
                             kimiLoginAccountID = "main"
                             kimiLoginLabel = nil
                             showKimiLogin = true
@@ -930,21 +1232,10 @@ private struct ServicesSettingsPage: View {
 
     // MARK: 卡片零件
 
-    /// 卡片容器:头部(图标+标题)+ 内容,视觉 token 与弹层卡片一致。
+    /// 服务卡片:标题左侧给真实品牌徽标,未配置时保持灰阶,与设置页主题统一。
     private func cardContainer<Content: View>(icon: String, iconColor: Color, title: String,
-                                              @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: DesignTokens.spacingS + 2) {
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundStyle(iconColor)
-                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
-            }
-            content()
-        }
-        .padding(DesignTokens.spacingL)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+                                              @ViewBuilder content: @escaping () -> Content) -> some View {
+        SettingsSectionCard(title: title, systemImage: icon, tint: iconColor, content: content)
     }
 
     /// 已连接状态行:绿勾 + 描述。
@@ -957,7 +1248,7 @@ private struct ServicesSettingsPage: View {
 
     /// 说明文字(未配置引导/补充描述)。
     private func caption(_ text: String) -> some View {
-        Text(text).font(.system(size: 10)).foregroundStyle(.atbTextSecondary)
+        SettingsCaption(text: text)
     }
 }
 
@@ -1124,18 +1415,7 @@ private struct HistorySettingsPage: View {
     }
 
     private func historyCard(icon: String, iconColor: Color, title: String,
-                             @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: DesignTokens.spacingM) {
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: icon).font(.system(size: 13, weight: .bold)).foregroundStyle(iconColor)
-                Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.atbTextPrimary)
-            }
-            content()
-        }
-        .padding(DesignTokens.spacingL)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.atbCardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusL))
-        .shadow(color: Color.black.opacity(0.04), radius: 2, y: 1)
+                             @ViewBuilder content: @escaping () -> some View) -> some View {
+        SettingsSectionCard(title: title, systemImage: icon, tint: iconColor, content: content)
     }
 }

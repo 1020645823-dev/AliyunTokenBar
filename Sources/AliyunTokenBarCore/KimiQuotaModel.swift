@@ -152,6 +152,25 @@ public struct KimiQuota: Equatable {
         }
         return monthly?.resetTimeDisplay
     }
+
+    /// 套餐显示名(账户区分用):web 路径 = goods.title("Pro"/"Max")直通;
+    /// coding 回退路径 = LEVEL_* 枚举轻量格式化("LEVEL_INTERMEDIATE"→"Intermediate")。
+    public var planDisplayName: String? {
+        guard let level = membershipLevel, !level.isEmpty else { return nil }
+        guard level.uppercased().hasPrefix("LEVEL_") else { return level }
+        let core = level.dropFirst(6).replacingOccurrences(of: "_", with: " ").lowercased()
+        return core.prefix(1).uppercased() + core.dropFirst()
+    }
+
+    /// 该账户**最紧窗口**:5h/周/月取已用% 最高者(2026-10-24 实测不同套餐活跃窗口
+    /// 不同——Allegro 的用量在周/月维度、5h 恒 0;固定取 5h 会把周用 54% 的账户
+    /// 显示成 0%)。label 为 UI 短标签("5h"/"周"/"月")。
+    public var worstWindow: (label: String, pct: Int) {
+        var worst = (label: "5h", pct: fiveHour.pctInt)
+        if weekly.pctInt > worst.pct { worst = (label: "周", pct: weekly.pctInt) }
+        if let m = monthly, m.pctInt > worst.pct { worst = (label: "月", pct: m.pctInt) }
+        return worst
+    }
 }
 
 /// Kimi 加油包余额(官方后台已开通才展示)。
@@ -238,13 +257,18 @@ extension KimiQuota {
                                   monthlyUsedYuan: monthlyUsedYuan, monthlyLimitYuan: monthlyLimitYuan)
         }
 
-        let level = quotas.compactMap(\.membershipLevel).first { !$0.isEmpty }
+        // 套餐名去重拼接("Pro + Max"):多账户头部 tag 一眼看清各账户套餐,
+        // 而不是只露聚合前的第一个(v1.0.111 起该字段装 goods.title)
+        var seenPlans = Set<String>()
+        let levelJoined = quotas.compactMap(\.planDisplayName)
+            .filter { !$0.isEmpty && seenPlans.insert($0).inserted }
+            .joined(separator: " + ")
         let expire = quotas.compactMap(\.subscriptionExpireMs).min()
         return KimiQuota(fiveHour: sumWindow(\.fiveHour) ?? quotas[0].fiveHour,
                          weekly: sumWindow(\.weekly) ?? quotas[0].weekly,
                          monthly: sumWindow(\.monthly),
                          booster: booster,
-                         membershipLevel: level,
+                         membershipLevel: levelJoined.isEmpty ? nil : levelJoined,
                          subscriptionExpireMs: expire,
                          subscriptionBalance: balance)
     }

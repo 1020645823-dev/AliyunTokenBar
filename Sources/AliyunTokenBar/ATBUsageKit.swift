@@ -209,6 +209,10 @@ struct ATBThinMeterRow: View {
     var valueText: String? = nil
     var trailing: String? = nil
     var help: String? = nil
+    /// 列宽覆盖(默认全局 Token;Kimi 行 hint 是 "套餐·尾缀" 更长,收窄 label 补偿,
+    /// 两列合计不变,行内其余列对齐不受影响)
+    var labelWidth: CGFloat = DesignTokens.meterLabelWidth
+    var hintWidth: CGFloat = 46
 
     var body: some View {
         HStack(spacing: DesignTokens.spacingS) {
@@ -217,12 +221,12 @@ struct ATBThinMeterRow: View {
                 .foregroundStyle(Color.atbTextSecondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: DesignTokens.meterLabelWidth, alignment: .leading)
+                .frame(width: labelWidth, alignment: .leading)
             if let hint {
                 Text(hint)
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(Color.atbTextTertiary)
-                    .frame(width: 46, alignment: .leading)
+                    .frame(width: hintWidth, alignment: .leading)
             }
             Text("\(pct)%")
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -301,6 +305,34 @@ enum ATBAccountMenu {
         }
         Button("重命名", action: rename)
         Button("移除账户", action: remove)
+    }
+}
+
+/// 每账户仪表块头行(v1.0.122 多账户拆分:汇总仪表有误解,每账户各自成表)。
+/// 标签 + 套餐徽章 + 身份尾缀;右键菜单由调用方挂在本行上。
+struct ATBAccountDashHeader: View {
+    let label: String
+    let brand: Color
+    var tag: String? = nil
+    var hint: String? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.atbTextPrimary)
+            if let tag {
+                ATBBrandTag(text: tag, brand: brand)
+            }
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Color.atbTextTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 

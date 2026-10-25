@@ -6,6 +6,8 @@ import AliyunTokenBarCore
 /// 登录后从 localStorage 抓 web JWT(access_token + refresh_token),用于月度总额度。
 /// 2026-10-04 多账户:`accountID` 决定 JWT 写入哪个 Keychain 槽;
 /// 新账户(nonMain)登录成功后由调用方负责登记账户列表。
+/// 2026-10-24 身份判定:抓到 JWT 先解 sub 与既有账户槽比对——同户直存、
+/// 换户落已有槽须确认(防 main 被静默覆盖)、他槽已登记该户则拒绝(防重复)。
 @MainActor
 struct KimiLoginView: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -15,7 +17,20 @@ struct KimiLoginView: View {
     var newAccountLabel: String? = nil
     @State private var loading = false
     @State private var message = ""
+    /// 上一次处理过的 access token:登录成功后页面跳转会重复触发轮询,同 token 只处理一次;
+    /// 用户在窗内登出换号会拿到新 token,能再次进入判定。
+    @State private var lastHandledToken = ""
+    /// 待用户确认的换户替换(oldSub ≠ newSub 落已有槽)
+    @State private var pendingReplace: PendingReplace?
     @Environment(\.dismiss) private var dismiss
+
+    /// 换户替换确认弹窗载荷。
+    struct PendingReplace: Identifiable {
+        let id = UUID()
+        let token: KimiUsageService.KimiWebToken
+        let oldSub: String?
+        let newSub: String?
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,21 +58,79 @@ struct KimiLoginView: View {
                 HStack(spacing: DesignTokens.spacingS) {
                     LoadingRing().frame(width: 14, height: 14)
                     Text(message.isEmpty ? "正在获取用量配置..." : message)
-                        .font(.system(size: 12)).foregroundStyle(.atbTextSecondary)
+                        .font(.system(size: 12)).foregroundStyle(Color.atbTextSecondary)
                 }
                 .padding(DesignTokens.spacingM - 2)
             } else if !message.isEmpty {
-                Text(message).font(.system(size: 12)).foregroundStyle(.atbTextSecondary).padding(DesignTokens.spacingM - 2)
+                Text(message).font(.system(size: 12)).foregroundStyle(Color.atbTextSecondary)
+                    .padding(DesignTokens.spacingM - 2)
+                    .frame(maxWidth: .infinity)
             }
         }
         .background(Color.atbPanelBackground)
+        .alert(
+            "替换该账户的登录态?",
+            isPresented: Binding(
+                get: { pendingReplace != nil },
+                set: { if !$0 { pendingReplace = nil } }
+            ),
+            presenting: pendingReplace
+        ) { pending in
+            Button("替换", role: .destructive) {
+                let token = pending.token
+                pendingReplace = nil
+                Task { await finishLogin(token: token) }
+            }
+            Button("取消", role: .cancel) {
+                message = "未保存本次登录。如需换账户,请先在设置里「登录新账户」"
+            }
+        } message: { pending in
+            Text("本次登录的是 \(Self.hint(pending.newSub)),该槽当前是 \(Self.hint(pending.oldSub))。" +
+                 "替换后原账户登录态将被覆盖(之后可用「登录新账户」把它加回来)。")
+        }
     }
 
-    /// 登录成功(web JWT 拿到)后:写该账户的 Keychain 槽,刷新数据,关闭窗口。
+    /// 身份尾缀(与卡片副标题口径一致,取 sub 后 6 位)。
+    private static func hint(_ sub: String?) -> String {
+        guard let sub, sub.count > 6 else { return "未知身份" }
+        return "…\(sub.suffix(6))"
+    }
+
+    /// 轮询抓到 web JWT:先做身份判定,再决定直接落槽 / 请求确认 / 拒绝。
     private func handleLoginSuccess(accessToken: String, refreshToken: String) async {
+        guard accessToken != lastHandledToken, !loading, pendingReplace == nil else { return }
+        lastHandledToken = accessToken
+        let token = KimiUsageService.KimiWebToken(
+            accessToken: accessToken, refreshToken: refreshToken,
+            expiresAt: Date().timeIntervalSince1970 + 900
+        )
+        let newSub = KimiUsageService.jwtSubject(accessToken)
+        let slotSub = KimiUsageService.loadWebToken(accountID: accountID)
+            .flatMap { KimiUsageService.jwtSubject($0.accessToken) }
+        let others = model.kimiAccounts
+            .filter { $0.id != accountID }
+            .map { account in
+                KimiUsageService.KimiSlotSubject(
+                    id: account.id,
+                    sub: KimiUsageService.loadWebToken(accountID: account.id)
+                        .flatMap { KimiUsageService.jwtSubject($0.accessToken) }
+                )
+            }
+        switch KimiUsageService.judgeLoginIdentity(newSub: newSub, slotSub: slotSub, otherSlots: others) {
+        case .proceed:
+            await finishLogin(token: token)
+        case .replaceConfirmation(let oldSub, let newSub):
+            pendingReplace = PendingReplace(token: token, oldSub: oldSub, newSub: newSub)
+        case .duplicateOf(let otherID):
+            let label = model.kimiAccounts.first(where: { $0.id == otherID })?.label ?? otherID
+            message = "该账户已在列表中(\(label)),本次未保存。请在下方网页退出当前账号,登录另一个账户"
+        }
+    }
+
+    /// 身份放行后:写该账户的槽,刷新数据,关闭窗口。
+    private func finishLogin(token: KimiUsageService.KimiWebToken) async {
         loading = true
         message = "正在获取用量配置..."
-        let token = KimiUsageService.KimiWebToken(accessToken: accessToken, refreshToken: refreshToken, expiresAt: Date().timeIntervalSince1970 + 900)
         KimiUsageService.saveWebToken(token, accountID: accountID)
         if accountID != "main", let label = newAccountLabel {
             model.addKimiAccount(KimiAccount(id: accountID, label: label))
@@ -84,7 +157,10 @@ struct KimiWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = WKWebsiteDataStore.default()  // 用默认 store 保留登录态
+        // 多账户安全(2026-10-24):非持久 store——登录窗不携带上一个账户的网页登录态。
+        // 若共享 default store,「添加账户」窗口一打开就会抓到旧账户 token 秒成功,
+        // 把旧账户伪装成新账户登记。代价是每次登录都要完整输入(登录窗的本职)。
+        config.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"

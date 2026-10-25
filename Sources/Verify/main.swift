@@ -297,6 +297,28 @@ check("kimi jwtSubject 非 jwt → nil", KimiUsageService.jwtSubject("not-a-jwt"
 check("kimi jwtSubject 空段 → nil", KimiUsageService.jwtSubject("a..c") == nil)
 check("kimi jwtSubject 无标识字段 → nil", KimiUsageService.jwtSubject(makeKimiJWT(["exp": 123])) == nil)
 
+// --- Kimi 登录身份判定(防 main 槽静默覆盖/防同户重复登记) ---
+let slotA = "sub_aaaa", slotB = "sub_bbbb"
+check("kimi login 槽空 → 直接保存",
+      KimiUsageService.judgeLoginIdentity(newSub: slotA, slotSub: nil, otherSlots: []) == .proceed)
+check("kimi login 同户重登 → 直接保存",
+      KimiUsageService.judgeLoginIdentity(newSub: slotA, slotSub: slotA, otherSlots: []) == .proceed)
+check("kimi login 换户 → 要求确认替换",
+      KimiUsageService.judgeLoginIdentity(newSub: slotB, slotSub: slotA, otherSlots: [])
+      == .replaceConfirmation(oldSub: slotA, newSub: slotB))
+check("kimi login 他槽已登记该户 → 拒绝(优先于替换)",
+      KimiUsageService.judgeLoginIdentity(newSub: slotB, slotSub: slotA,
+                                          otherSlots: [KimiUsageService.KimiSlotSubject(id: "uuid-2", sub: slotB)])
+      == .duplicateOf(otherAccountID: "uuid-2"))
+check("kimi login 新户与槽同户但他人槽 sub 解不出 → 保存",
+      KimiUsageService.judgeLoginIdentity(newSub: slotA, slotSub: slotA,
+                                          otherSlots: [KimiUsageService.KimiSlotSubject(id: "uuid-2", sub: nil)]) == .proceed)
+check("kimi login 新 sub 解不出且槽有旧户 → 仍要求确认(防静默覆盖)",
+      KimiUsageService.judgeLoginIdentity(newSub: nil, slotSub: slotA, otherSlots: [])
+      == .replaceConfirmation(oldSub: slotA, newSub: nil))
+check("kimi login 新旧 sub 都解不出 → 保存(保持旧行为)",
+      KimiUsageService.judgeLoginIdentity(newSub: nil, slotSub: nil, otherSlots: []) == .proceed)
+
 // 订阅共享池:Work/Kimi 与 Code 共用同一总额度,不能把两套 limit 相加。
 let shared = KimiSubscriptionBalance(totalUsedRatio: 0.4173,
                                      codeUsedRatio: 0.2173,
@@ -386,6 +408,50 @@ let kq3 = KimiQuota(fiveHour: KimiWindow(used: 0, limit: 100, resetTimeMs: nil),
                     booster: nil, membershipLevel: nil,
                     subscriptionExpireMs: 1784678400000)
 check("kimi monthlyReset uses expire", kq3.monthlyResetDisplay == "2026-07-22 08:00:00")
+
+// --- Kimi 套餐名(ListSubscriptions;多账户区分的官方口径) ---
+let subsActive = """
+{"subscriptions":[
+  {"status":"SUBSCRIPTION_STATUS_CANCELED","goods":{"title":"旧Pro"}},
+  {"status":"SUBSCRIPTION_STATUS_ACTIVE","goods":{"title":"Pro","membershipLevel":"LEVEL_INTERMEDIATE"}}]}
+"""
+check("kimi subs 取 ACTIVE 的 goods.title",
+      KimiUsageService.parseSubscriptions(Data(subsActive.utf8)) == "Pro")
+let subsNoActive = #"{"subscriptions":[{"status":"SUBSCRIPTION_STATUS_CANCELED","goods":{"title":"Max"}}]}"#
+check("kimi subs 无 ACTIVE → 首个 title", KimiUsageService.parseSubscriptions(Data(subsNoActive.utf8)) == "Max")
+check("kimi subs 空列表 → nil", KimiUsageService.parseSubscriptions(Data(#"{"subscriptions":[]}"#.utf8)) == nil)
+check("kimi subs 垃圾 → nil", KimiUsageService.parseSubscriptions(Data("bad".utf8)) == nil)
+
+// planDisplayName:goods.title 直通;LEVEL_* 枚举轻量格式化
+func kimiAggQuota(_ level: String?) -> KimiQuota {
+    KimiQuota(fiveHour: KimiWindow(used: 1, limit: 10, resetTimeMs: nil),
+              weekly: KimiWindow(used: 2, limit: 10, resetTimeMs: nil),
+              monthly: nil, booster: nil, membershipLevel: level,
+              subscriptionExpireMs: nil)
+}
+check("kimi planDisplay title 直通", kimiAggQuota("Pro").planDisplayName == "Pro")
+check("kimi planDisplay LEVEL 枚举格式化", kimiAggQuota("LEVEL_INTERMEDIATE").planDisplayName == "Intermediate")
+check("kimi planDisplay nil → nil", kimiAggQuota(nil).planDisplayName == nil)
+
+// worstWindow:多套餐活跃窗口不同(Allegro 用量在周/月、5h 恒 0),取已用% 最高者
+check("kimi worstWindow 周高于 5h → 取周",
+      kimiAggQuota("Pro").worstWindow.label == "周" && kimiAggQuota("Pro").worstWindow.pct == 20)
+let kimiMonthlyHeavy = KimiQuota(fiveHour: KimiWindow(used: 1, limit: 100, resetTimeMs: nil),
+                                 weekly: KimiWindow(used: 2, limit: 100, resetTimeMs: nil),
+                                 monthly: KimiWindow(used: 90, limit: 100, resetTimeMs: nil),
+                                 booster: nil, membershipLevel: "Pro",
+                                 subscriptionExpireMs: nil)
+check("kimi worstWindow 月最高 → 取月",
+      kimiMonthlyHeavy.worstWindow.label == "月" && kimiMonthlyHeavy.worstWindow.pct == 90)
+
+// 聚合 membershipLevel = 套餐名去重拼接("Pro + Max"一眼看清各账户)
+let kAggDiff = KimiQuota.aggregate([kimiAggQuota("Pro"), kimiAggQuota("Max")])
+check("kimi 聚合套餐名拼接", kAggDiff?.membershipLevel == "Pro + Max")
+let kAggSame = KimiQuota.aggregate([kimiAggQuota("Pro"), kimiAggQuota("Pro")])
+check("kimi 聚合同套餐去重", kAggSame?.membershipLevel == "Pro")
+let kAggNone = KimiQuota.aggregate([kimiAggQuota(nil), kimiAggQuota(nil)])
+check("kimi 聚合无套餐 → nil", kAggNone?.membershipLevel == nil)
+check("kimi 聚合单账户原值", KimiQuota.aggregate([kimiAggQuota("Pro")])?.membershipLevel == "Pro")
 
 // --- Kimi 共享额度端到端(仅 KIMI_E2E=1;走本机 Keychain web token,不打印凭据)---
 // 与 App 定时刷新同一调用路径(fetchQuota → GetUsages + GetSubscriptionStats)。
@@ -1354,7 +1420,7 @@ check("kimi 聚合:订阅池取 max 0.45", kAgg?.subscriptionBalance?.totalUsedR
 check("kimi 聚合:加油包求和 ¥15", kAgg?.booster?.balanceYuan == 15)
 check("kimi 聚合:加油包月限求和 200", kAgg?.booster?.monthlyLimitYuan == 200)
 check("kimi 聚合:到期取最早 8000", kAgg?.subscriptionExpireMs == 8000)
-check("kimi 聚合:level 取首个非空", kAgg?.membershipLevel == "LEVEL_ADVANCED")
+check("kimi 聚合:level 去重拼接(经 planDisplayName)", kAgg?.membershipLevel == "Advanced")
 check("kimi 聚合:单账户原值", KimiQuota.aggregate([kAccA]) == kAccA)
 check("kimi 聚合:空数组 nil", KimiQuota.aggregate([]) == nil)
 // 加油包未启用不进聚合(仅 enabled 求和)
@@ -2425,6 +2491,52 @@ check("island 排序:金额列进档但不抢档内位次", {
                                                  islCol(.kimi, 0, 90)],                  // 告急 剩10
                                  config: islCfg, moneyFloor: 50)
     return rows.map(\.kind) == [.kimi, .deepSeek]
+}())
+
+// --- 设置页展示契约(标题/副标题/主题预览,UI 只渲染) ---
+check("settings presentation 五页齐全", SettingsPresentation.page("general").title == "通用"
+      && SettingsPresentation.page("appearance").subtitle.contains("主题")
+      && SettingsPresentation.page("notifications").icon == "bell"
+      && SettingsPresentation.page("services").detailGridColumns == 2
+      && SettingsPresentation.page("history").subtitle.contains("导出"))
+check("settings presentation system 主题文案", SettingsPresentation.themeSystemDisplayName == "跟随系统")
+check("settings theme previews 三档", {
+    let options = SettingsPresentation.themeOptions()
+    return options.map(\.theme) == [.system, .light, .dark]
+        && options.map(\.previewIsDark) == [false, false, true]
+        && options[0].label == "跟随系统"
+}())
+
+// --- App 主题:全 App(含灵动岛)统一明暗解析 ---
+check("theme system 跟随系统浅色", AppTheme.system.isDark(systemIsDark: false) == false)
+check("theme system 跟随系统深色", AppTheme.system.isDark(systemIsDark: true) == true)
+check("theme light 压过系统深色", AppTheme.light.isDark(systemIsDark: true) == false)
+check("theme dark 压过系统浅色", AppTheme.dark.isDark(systemIsDark: false) == true)
+
+// --- 灵动岛全源星图:每格取最紧窗口;余额源取余额(2026-10-24) ---
+check("island 星图:次窗更紧→展示次窗剩余", {
+    let metric = MenuBarTable.islandOverviewMetric(islCol(.kimi, 5, 78))
+    return metric.label == "周" && metric.value.text == "78%"
+        && MenuBarTable.remainingText(metric.value) == "剩 22%"
+}())
+check("island 星图:两窗同值→稳定取主窗", {
+    let metric = MenuBarTable.islandOverviewMetric(islCol(.kimi, 42, 42))
+    return metric.label == "5小时" && metric.value.text == "42%"
+}())
+check("island 星图:纯余额源→不拿今日花费冒充用量", {
+    let col = MenuBarTableColumn(kind: .deepSeek,
+                                 primary: MenuBarTableValue(text: "3.5", pct: nil),
+                                 secondary: MenuBarTableValue(text: "12", pct: nil, amount: 12))
+    let metric = MenuBarTable.islandOverviewMetric(col)
+    return metric.label == "余额" && metric.value.text == "12" && metric.value.amount == 12
+}())
+check("island 星图:单值无数据→保留窗口与横杠", {
+    let col = MenuBarTableColumn(singleValueKind: .aliyun,
+                                 primary: MenuBarTableValue(text: "—", pct: nil),
+                                 primaryLabel: "30天",
+                                 secondary: MenuBarTableValue(text: "—", pct: nil))
+    let metric = MenuBarTable.islandOverviewMetric(col)
+    return metric.label == "30天" && metric.value.text == "—" && metric.value.pct == nil
 }())
 
 // --- 余额行携带原始值(花费行不携带) + 需处理标记注入 ---

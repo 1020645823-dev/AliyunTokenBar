@@ -7,10 +7,14 @@ import AliyunTokenBarCore
 // v1.0.66 视觉语言 + v1.0.67 多账户(2026-10-04):
 // - 每个 Kimi 账户 = 一次 www.kimi.com 网页控制台登录(web JWT 按 id 分槽;
 //   首账户 "main" 复用旧槽 + 本机 KimiCodeBar/Kimi CLI 凭证,零迁移);
-// - 合计口径(KimiQuota.aggregate):5h/周/月计数窗口**求和**(每个订阅是独立池),
+// - 聚合口径(KimiQuota.aggregate):5h/周/月计数窗口**求和**(每个订阅是独立池),
 //   订阅共享池比率**取 max**(最紧的账户),加油包金额求和;
-// - 面板:合计三环 + token 绝对量行 + 每账户细条行(失败账户内联重登/移除);
-// - 添加账户:卡内「添加账户」→ 窗内登录新账户(登录即登记,自动并入合计)。
+// - 面板多账户呈现(v1.0.122 起分账户,2026-10-25 用户需求:汇总分母不存在于
+//   任何真实账户,有误解):**每账户一块独立仪表**(头行 + 各自三环 + 计数行
+//   + 订阅池/加油包紧凑行),不再显示聚合三环/聚合计数/聚合订阅池大卡;
+//   聚合值仅菜单栏/历史/摘要继续使用;
+// - 触顶预测基于聚合历史序列,多账户下会稀释(单账户烧满也看不出来),不出行;
+// - 添加账户:卡内「添加账户」→ 窗内登录新账户(登录即登记)。
 
 struct KimiCodeCard: View {
     @StateObject private var model = TokenPlanModel.shared
@@ -65,10 +69,10 @@ struct KimiCodeCard: View {
     private var subtitleText: String {
         let t = ATBTimeFormat.updated(model.kimiLastUpdated ?? ATBTimeFormat.latestData(model))
         let time = t.isEmpty ? "" : " · \(t) 更新"
-        // 单账户时把身份尾缀放进副标题(太长会被截断,故省去"三窗口共用")
         if model.kimiAccounts.count > 1 {
-            return "Moonshot · 三窗口共用\(time) · 合计"
+            return "Moonshot · 分账户统计\(time)"
         }
+        // 单账户时把身份尾缀放进副标题(太长会被截断,故省去"三窗口共用")
         if let hint = model.kimiAccountHint("main") {
             return "Moonshot\(time) · \(hint)"
         }
@@ -116,14 +120,21 @@ struct KimiCodeCard: View {
                     .buttonStyle(.plain)
             }
             .atbCard()
+        } else if model.kimiAccounts.count > 1 {
+            // 多账户:每账户一块独立仪表,聚合不上面板(汇总有误解)
+            VStack(spacing: DesignTokens.spacingM) {
+                ForEach(model.kimiAccounts) { account in
+                    accountDashboard(account)
+                }
+                if !model.kimiWebLoggedIn {
+                    kimiWebLoginHint
+                }
+            }
         } else if let q = model.kimiQuota {
             VStack(spacing: DesignTokens.spacingM) {
-                multiRingSection(q: q)
+                ringCard(q)
                 tokenCountRow(q)
                 forecastSection(q)
-                if model.kimiAccounts.count > 1 {
-                    accountList
-                }
                 if let balance = q.subscriptionBalance {
                     KimiSubscriptionCard(balance: balance)
                 } else if model.kimiWebLoggedIn {
@@ -151,8 +162,9 @@ struct KimiCodeCard: View {
         }
     }
 
-    private func multiRingSection(q: KimiQuota) -> some View {
-        ATBMultiRingCard(slots: [
+    /// 三环卡(单账户/每账户块共用):5h / 本周 / 本月;该窗口无数据(如月度)则整环隐藏。
+    private func ringCard(_ q: KimiQuota) -> some View {
+        var slots: [ATBMultiRingCard.Slot] = [
             ATBMultiRingCard.Slot(id: "5h",
                                   title: "5h",
                                   subtitle: q.fiveHour.slidingResetText ?? "—",
@@ -168,20 +180,26 @@ struct KimiCodeCard: View {
                                   bandColor: thresholdBrand(Int(q.weekly.pct.rounded()),
                                                             config: model.thresholdConfig,
                                                             brand: brand),
-                                  threshold: model.thresholdConfig),
-            ATBMultiRingCard.Slot(id: "monthly",
-                                  title: "本月",
-                                  subtitle: q.monthly.map { relativeReset($0) ?? "—" } ?? "—",
-                                  percentage: q.monthly?.pct ?? 0,
-                                  bandColor: thresholdBrand(
-                                    Int((q.monthly?.pct ?? 0).rounded()),
-                                    config: model.thresholdConfig, brand: brand),
                                   threshold: model.thresholdConfig)
-        ])
-        .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM, paddingV: DesignTokens.spacingS)
+        ]
+        if let m = q.monthly {
+            slots.append(ATBMultiRingCard.Slot(id: "monthly",
+                                               title: "本月",
+                                               subtitle: relativeReset(m) ?? "—",
+                                               percentage: m.pct,
+                                               bandColor: thresholdBrand(Int(m.pct.rounded()),
+                                                                         config: model.thresholdConfig,
+                                                                         brand: brand),
+                                               threshold: model.thresholdConfig))
+        }
+        return ATBMultiRingCard(slots: slots)
+            .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM, paddingV: DesignTokens.spacingS)
     }
 
     /// token 绝对量行(Kimi 独有:接口给 used/limit 计数,百分比看不出池子大小)。
+    /// ⚠️ 口径随通道:web 控制台(现行路径)返回**次数**(每窗口 ~100 次),
+    /// 本机 coding 凭证路径才是 token 量(几十万级)。按 limit 量级自适应单位,
+    /// 修复"次数挂 tokens 后缀"的错乱观感(2026-10-24 用户实案)。
     private func tokenCountRow(_ q: KimiQuota) -> some View {
         var parts: [String] = []
         parts.append("5h \(Self.tokenText(q.fiveHour.used))/\(Self.tokenText(q.fiveHour.limit))")
@@ -189,9 +207,13 @@ struct KimiCodeCard: View {
         if let m = q.monthly {
             parts.append("月 \(Self.tokenText(m.used))/\(Self.tokenText(m.limit))")
         }
-        return ATBInfoRow(icon: "number.circle.fill", text: parts.joined(separator: " · ") + " tokens",
+        let isCount = q.fiveHour.limit > 0 && q.fiveHour.limit <= 2000
+        return ATBInfoRow(icon: "number.circle.fill",
+                          text: parts.joined(separator: " · ") + (isCount ? " 次" : " tokens"),
                           tint: brand,
-                          help: "官方接口返回的已用/限额 token 计数(5h 为滚动窗口)")
+                          help: isCount
+                            ? "官方接口返回的已用/限额**次数**(web 控制台口径;5h 为滚动窗口,多账户求和)"
+                            : "官方接口返回的已用/限额 token 计数(5h 为滚动窗口)")
     }
 
     // MARK: 触顶预测(每窗口一行)
@@ -256,73 +278,90 @@ struct KimiCodeCard: View {
         }
     }
 
-    // MARK: 多账户行(5h 为主指标 + 周副标 + 3pt 条;右键重命名/重新登录/移除)
+    // MARK: 每账户仪表块(多账户拆分:三环/计数/订阅池/加油包都是该账户自己的;
+    // 头行右键重命名/重新登录/移除;失败账户保留内联重登/移除)
 
-    private var accountList: some View {
-        VStack(spacing: 4) {
-            ForEach(model.kimiAccounts) { account in
-                accountRow(account)
-            }
-        }
-    }
-
+    /// 单账户仪表块。快照缺失时按错误行/等待行兜底,块不消失。
     @ViewBuilder
-    private func accountRow(_ account: KimiAccount) -> some View {
-        if renamingID == account.id {
-            ATBRenameField(initial: account.label,
-                           onSave: { newLabel in
-                               model.renameKimiAccount(id: account.id, label: newLabel)
-                               renamingID = nil
-                           },
-                           onCancel: { renamingID = nil })
-                .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            accountRowContent(account)
-                .contextMenu {
-                    ATBAccountMenu.items(rename: { renamingID = account.id },
-                                         remove: { model.removeKimiAccount(id: account.id) },
-                                         relogin: { presentRelogin(accountID: account.id) })
+    private func accountDashboard(_ account: KimiAccount) -> some View {
+        let snap = model.kimiAccountQuotas.first(where: { $0.id == account.id })
+        VStack(spacing: DesignTokens.spacingS) {
+            if renamingID == account.id {
+                ATBRenameField(initial: account.label,
+                               onSave: { newLabel in
+                                   model.renameKimiAccount(id: account.id, label: newLabel)
+                                   renamingID = nil
+                               },
+                               onCancel: { renamingID = nil })
+                    .atbCard(paddingV: DesignTokens.spacingS - 2)
+            } else {
+                ATBAccountDashHeader(label: account.label, brand: brand,
+                                     tag: snap?.quota.planDisplayName,
+                                     hint: model.kimiAccountHint(account.id))
+                    .contextMenu {
+                        ATBAccountMenu.items(rename: { renamingID = account.id },
+                                             remove: { model.removeKimiAccount(id: account.id) },
+                                             relogin: { presentRelogin(accountID: account.id) })
+                    }
+            }
+            if let snap {
+                ringCard(snap.quota)
+                tokenCountRow(snap.quota)
+                if let balance = snap.quota.subscriptionBalance {
+                    accountPoolRow(balance)
                 }
+                if let booster = snap.quota.booster, booster.enabled {
+                    accountBoosterRow(booster)
+                }
+            } else if let err = model.kimiAccountErrors[account.id] {
+                accountErrorRow(err, account: account)
+            } else {
+                ATBUnavailableRow(title: "三窗口用量")
+            }
         }
     }
 
-    @ViewBuilder
-    private func accountRowContent(_ account: KimiAccount) -> some View {
-        let hint = model.kimiAccountHint(account.id)
-        if let snap = model.kimiAccountQuotas.first(where: { $0.id == account.id }) {
-            let pct = snap.quota.fiveHour.pctInt
-            let band = thresholdBrand(pct, config: model.thresholdConfig, brand: brand)
-            ATBThinMeterRow(
-                label: account.label,
-                pct: pct,
-                color: band,
-                hint: hint,
-                valueText: "周 \(snap.quota.weekly.pctInt)%",
-                trailing: ATBResetText.compact(fromMs: snap.quota.fiveHour.resetTimeMs),
-                help: "\(account.label)\(hint.map { " \($0)" } ?? ""):5h \(pct)% · 周 \(snap.quota.weekly.pctInt)%"
-                    + (snap.quota.monthly.map { " · 月 \($0.pctInt)%" } ?? " · 月 无"))
-        } else if let err = model.kimiAccountErrors[account.id] {
-            HStack(spacing: DesignTokens.spacingS) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.orange)
-                Text("\(account.label):\(err)")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.atbTextSecondary)
-                Spacer(minLength: 0)
-                Button("重新登录") { presentRelogin(accountID: account.id) }
-                    .buttonStyle(ATBTextButtonStyle(color: brand))
-                    .font(.system(size: 9))
-                Button("移除") { model.removeKimiAccount(id: account.id) }
-                    .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
-                    .font(.system(size: 9))
-            }
-            .atbCard(paddingV: DesignTokens.spacingS - 2)
-        } else {
-            ATBThinMeterRow(label: account.label, pct: 0, color: Color.atbTextTertiary,
-                            hint: hint, valueText: nil, trailing: "等待刷新…",
-                            help: "\(account.label):等待刷新")
+    /// 该账户订阅池紧凑行(Work/Code 分段;多账户下取代聚合「订阅池总量」大卡)。
+    private func accountPoolRow(_ balance: KimiSubscriptionBalance) -> some View {
+        var text = "订阅池 \(String(format: "%.2f%%", balance.totalUsedPercent))"
+        if let work = balance.workUsedPercent, let code = balance.codeUsedPercent {
+            text += " · Work \(String(format: "%.2f%%", work)) / Code \(String(format: "%.2f%%", code))"
         }
+        var help = "该账户 Work/Kimi + Code 共用订阅池的使用比例"
+        if let ms = balance.expireTimeMs {
+            help += ";重置 \(KimiSubscriptionCard.dateText(ms))"
+        }
+        return ATBInfoRow(icon: "chart.pie.fill", text: text, tint: brand, help: help)
+    }
+
+    /// 该账户加油包紧凑行。
+    private func accountBoosterRow(_ booster: KimiBooster) -> some View {
+        ATBInfoRow(icon: "wallet.pass.fill",
+                   text: "加油包 ¥\(String(format: "%.2f", booster.balanceYuan))"
+                       + " · 本月 ¥\(String(format: "%.2f", booster.monthlyUsedYuan))",
+                   tint: brand,
+                   help: "该账户加油包余额与本月消费")
+    }
+
+    /// 该账户拉取失败行(内联重登/移除;块头行已示账户名,行内不再重复)。
+    private func accountErrorRow(_ err: String, account: KimiAccount) -> some View {
+        HStack(spacing: DesignTokens.spacingS) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.orange)
+            Text(err)
+                .font(.system(size: 9))
+                .foregroundStyle(Color.atbTextSecondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button("重新登录") { presentRelogin(accountID: account.id) }
+                .buttonStyle(ATBTextButtonStyle(color: brand))
+                .font(.system(size: 9))
+            Button("移除") { model.removeKimiAccount(id: account.id) }
+                .buttonStyle(ATBTextButtonStyle(color: .atbCritical))
+                .font(.system(size: 9))
+        }
+        .atbCard(paddingV: DesignTokens.spacingS - 2)
     }
 
     /// 登录网页控制台引导行(main 账户未登录网页时显示;附加账户本身就是网页登录)
@@ -440,7 +479,7 @@ struct KimiSubscriptionCard: View {
         .atbStripeCard(brand: brand, paddingH: DesignTokens.spacingM, paddingV: DesignTokens.spacingS)
     }
 
-    private static func dateText(_ ms: Int64) -> String {
+    static func dateText(_ ms: Int64) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm"
         return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(ms) / 1000))

@@ -392,11 +392,24 @@ public final class TokenPlanModel: ObservableObject {
     /// 某账户下一标签("账户N",N = 现有数量+1)。
     public var kimiNextAccountLabel: String { "账户\(kimiAccounts.count + 1)" }
 
-    /// Kimi 账户的感官区分提示:登录态 JWT 里的用户标识尾 6 位
-    /// (web JWT 的 sub;main 无网页登录时回退本机 coding token 的 user_id)。
+    /// Kimi 账户的感官区分提示(2026-10-24 升级):套餐名 + 登录态 JWT 用户标识尾 6 位,
+    /// 紧凑形 "Pro·4f8rfg"(细条行 hint 列宽有限)——双账户不同套餐一眼分清,
+    /// 同套餐回落尾缀区分。(Kimi 网页端未暴露手机号查询,套餐名是最接近
+    /// StepFun 手机尾号的官方身份口径)
     public func kimiAccountHint(_ accountID: String) -> String? {
-        guard let sub = KimiUsageService.accountSubject(accountID: accountID), sub.count > 6 else { return nil }
-        return "…\(sub.suffix(6))"
+        let tail: String?
+        if let sub = KimiUsageService.accountSubject(accountID: accountID), sub.count > 6 {
+            tail = String(sub.suffix(6))
+        } else {
+            tail = nil
+        }
+        let plan = kimiAccountQuotas.first(where: { $0.id == accountID })?.quota.planDisplayName
+        switch (plan, tail) {
+        case let (p?, t?): return "\(p)·\(t)"
+        case let (p?, nil): return p
+        case let (nil, t?): return "…\(t)"
+        default: return nil
+        }
     }
 
     /// 重命名账户(didSet 持久化)。
